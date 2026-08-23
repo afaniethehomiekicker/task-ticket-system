@@ -34,9 +34,14 @@ func main() {
 	r.POST("/api/auth/register", controllers.Register(db))
 	r.POST("/api/auth/login", controllers.Login(db))
 
+	// Public Issues Route (Anyone can view issues)
+	r.GET("/api/issues", controllers.GetIssues(db))
+	r.GET("/api/activities", controllers.GetActivities(db))
+
 	// Protected Routes Group
 	protected := r.Group("/api")
 	protected.Use(middleware.AuthMiddleware())
+	protected.POST("/api/reports", controllers.CreateReport(db))
 	{
 		protected.GET("/protected-test", func(c *gin.Context) {
 			email, _ := c.Get("email")
@@ -47,6 +52,12 @@ func main() {
 				"role":    role,
 			})
 		})
+
+		// Protected Issue Creation Route (Requires JWT token)
+		protected.POST("/issues", controllers.CreateIssue(db))
+		protected.POST("/issues/:id/comments", controllers.AddComment(db))
+		protected.POST("/issues/:id/solutions", controllers.SubmitSolution(db))
+		protected.POST("/issues/:id/bookmark", controllers.ToggleBookmark(db))
 	}
 
 	// Get port from environment or default to 8080
