@@ -13,7 +13,7 @@ import (
 
 var DB *gorm.DB
 
-func ConnectDB() {
+func ConnectDB() *gorm.DB {
 	// 1. Connect to default postgres database first to create our app database
 	dsn := fmt.Sprintf(
 		"host=%s user=%s password=%s dbname=postgres port=%s sslmode=%s",
@@ -57,9 +57,12 @@ func ConnectDB() {
 	// Auto-Migrate Models
 	err = DB.AutoMigrate(
 		&models.User{},
+		&models.Issue{}, // Added Issue model migration here
 	)
 	if err != nil {
 		log.Fatalf("Failed to run auto-migration: %v", err)
 	}
 	log.Println("Database migration completed.")
+
+	return DB
 }

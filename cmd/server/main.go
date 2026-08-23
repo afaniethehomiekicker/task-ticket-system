@@ -5,31 +5,49 @@ import (
 	"os"
 
 	"devissues/internal/config"
+	"devissues/internal/controllers"
+	"devissues/internal/middleware"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
 
 func main() {
-	// Load environment variables from the .env file
+	// Load environment variables
 	err := godotenv.Load(".env")
 	if err != nil {
 		log.Println("Warning: .env file not found, reading from system environment variables")
 	}
 
-	// Connect to the database and run auto-migrations
-	config.ConnectDB()
+	// Connect to Database & Run Auto-Migrations
+	db := config.ConnectDB()
 
 	// Initialize Gin router
 	r := gin.Default()
 
-	// A simple test route to verify the server is working
+	// Health check endpoint
 	r.GET("/api/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{
-			"status":  "success",
-			"message": "Developer Issues & Solutions API is running smoothly!",
-		})
+		c.JSON(200, gin.H{"status": "Server is running smoothly!"})
 	})
+
+	// Authentication Routes
+	r.POST("/api/auth/register", controllers.Register(db))
+	r.POST("/api/auth/login", controllers.Login(db))
+
+	// Protected Routes Group
+	protected := r.Group("/api")
+	protected.Use(middleware.AuthMiddleware())
+	{
+		protected.GET("/protected-test", func(c *gin.Context) {
+			email, _ := c.Get("email")
+			role, _ := c.Get("role")
+			c.JSON(200, gin.H{
+				"message": "You have successfully accessed a protected route!",
+				"email":   email,
+				"role":    role,
+			})
+		})
+	}
 
 	// Get port from environment or default to 8080
 	port := os.Getenv("PORT")
