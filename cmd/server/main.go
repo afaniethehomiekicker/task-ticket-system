@@ -8,6 +8,7 @@ import (
 	"devissues/internal/controllers"
 	"devissues/internal/middleware"
 
+	"github.com/gin-contrib/cors" // Make sure to run `go get github.com/gin-contrib/cors` if needed
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -25,6 +26,14 @@ func main() {
 	// Initialize Gin router
 	r := gin.Default()
 
+	// Enable CORS for React Frontend
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:5173", "http://127.0.0.1:5173"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowCredentials: true,
+	}))
+
 	// Health check endpoint
 	r.GET("/api/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "Server is running smoothly!"})
@@ -33,15 +42,16 @@ func main() {
 	// Authentication Routes
 	r.POST("/api/auth/register", controllers.Register(db))
 	r.POST("/api/auth/login", controllers.Login(db))
+	r.POST("/api/issues/:id/comments", middleware.AuthMiddleware(), controllers.AddComment(db))
 
-	// Public Issues Route (Anyone can view issues)
+	// Public Issues Routes
 	r.GET("/api/issues", controllers.GetIssues(db))
+	r.GET("/api/issues/:id", controllers.GetIssueByID(db))
 	r.GET("/api/activities", controllers.GetActivities(db))
 
 	// Protected Routes Group
 	protected := r.Group("/api")
 	protected.Use(middleware.AuthMiddleware())
-	protected.POST("/api/reports", controllers.CreateReport(db))
 	{
 		protected.GET("/protected-test", func(c *gin.Context) {
 			email, _ := c.Get("email")
@@ -53,7 +63,7 @@ func main() {
 			})
 		})
 
-		// Protected Issue Creation Route (Requires JWT token)
+		// Protected Issue Routes (Requires JWT token) -> results in /api/issues, etc.
 		protected.POST("/issues", controllers.CreateIssue(db))
 		protected.POST("/issues/:id/comments", controllers.AddComment(db))
 		protected.POST("/issues/:id/solutions", controllers.SubmitSolution(db))

@@ -11,74 +11,75 @@ export default function Login() {
 
   const handleLogin = async (e) => {
     e.preventDefault();
-    setError('');
     setLoading(true);
+    setError('');
 
     try {
-      const response = await API.post('/auth/login', { email, password });
-      // Save token to localStorage
-      localStorage.setItem('token', response.data.token);
-      // Navigate to dashboard
+      const res = await API.post('/auth/login', { email, password });
+      // Assuming token is returned in response
+      localStorage.setItem('token', res.data.token);
       navigate('/dashboard');
     } catch (err) {
-      console.error('Login failed', err);
-      setError('Invalid email or password. Please try again.');
+      setError(err.response?.data?.error || 'Invalid credentials. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center p-6 text-gray-100">
-      <div className="max-w-md w-full bg-gray-900 border border-gray-800 rounded-2xl p-8 shadow-xl">
-        <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold text-white">Dev Issues System</h1>
-          <p className="text-sm text-gray-400 mt-1">Sign in to your internal developer account</p>
+    <div style={{ minHeight: '100vh', backgroundColor: '#030712', color: '#f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', fontFamily: 'sans-serif' }}>
+      <div style={{ maxWidth: '400px', width: '100%', backgroundColor: '#111827', border: '1px solid #1f2937', borderRadius: '16px', padding: '32px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5)' }}>
+        
+        {/* Header */}
+        <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+          <h1 style={{ fontSize: '24px', fontWeight: 'bold', color: '#ffffff', margin: '0 0 8px 0', letterSpacing: '-0.025em' }}>Welcome Back</h1>
+          <p style={{ fontSize: '14px', color: '#9ca3af', margin: 0 }}>Sign in to your dev issues account</p>
         </div>
 
+        {/* Error Message */}
         {error && (
-          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm text-center">
+          <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', color: '#f87171', padding: '12px', borderRadius: '8px', fontSize: '14px', marginBottom: '20px', textAlign: 'center' }}>
             {error}
           </div>
         )}
 
-        <form onSubmit={handleLogin} className="space-y-4">
+        {/* Form */}
+        <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">
-              Email Address
-            </label>
-            <input
-              type="email"
+            <label style={{ fontSize: '12px', fontWeight: '600', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '6px' }}>Email Address</label>
+            <input 
+              type="email" 
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 transition"
-              placeholder="developer@company.com"
+              placeholder="name@example.com"
+              style={{ width: '100%', padding: '12px 16px', backgroundColor: '#030712', border: '1px solid #1f2937', borderRadius: '8px', color: '#ffffff', fontSize: '14px', outline: 'none', boxSizing: 'border-box' }}
             />
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">
-              Password
-            </label>
-            <input
-              type="password"
+            <label style={{ fontSize: '12px', fontWeight: '600', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '6px' }}>Password</label>
+            <input 
+              type="password" 
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 transition"
               placeholder="••••••••"
+              style={{ width: '100%', padding: '12px 16px', backgroundColor: '#030712', border: '1px solid #1f2937', borderRadius: '8px', color: '#ffffff', fontSize: '14px', outline: 'none', boxSizing: 'border-box' }}
             />
           </div>
 
-          <button
-            type="submit"
+          <button 
+            type="submit" 
             disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded-lg text-sm transition duration-200 mt-2 disabled:opacity-50"
+            style={{ width: '100%', backgroundColor: '#3b82f6', color: '#ffffff', border: 'none', padding: '12px', borderRadius: '8px', fontSize: '14px', fontWeight: '600', cursor: 'pointer', transition: 'background 0.2s', marginTop: '8px' }}
+            onMouseOver={(e) => !loading && (e.target.style.backgroundColor = '#2563eb')}
+            onMouseOut={(e) => !loading && (e.target.style.backgroundColor = '#3b82f6')}
           >
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
+
       </div>
     </div>
   );

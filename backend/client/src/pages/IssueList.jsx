@@ -4,104 +4,96 @@ import API from '../services/api';
 
 export default function IssueList() {
   const [issues, setIssues] = useState([]);
+  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
   const navigate = useNavigate();
 
   useEffect(() => {
-    const fetchIssues = async () => {
-      try {
-        const res = await API.get('/issues');
-        setIssues(res.data.issues || []);
-      } catch (err) {
-        console.error('Failed to fetch issues', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchIssues();
+    API.get('/issues')
+      .then(res => setIssues(res.data.issues || res.data))
+      .catch(err => console.error(err))
+      .finally(() => setLoading(false));
   }, []);
 
-  const filteredIssues = issues.filter(
-    (issue) =>
-      issue.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      issue.category?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      issue.technology?.toLowerCase().includes(searchQuery.toLowerCase())
+  const filteredIssues = issues.filter(issue => 
+    issue.title?.toLowerCase().includes(search.toLowerCase()) ||
+    issue.category?.toLowerCase().includes(search.toLowerCase())
   );
 
+  if (loading) {
+    return (
+      <div style={{ minHeight: '100vh', backgroundColor: '#030712', color: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif' }}>
+        <p style={{ color: '#9ca3af', fontSize: '14px' }}>Loading issues feed...</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-100 p-8">
-      {/* Header */}
-      <div className="flex justify-between items-center mb-8 border-b border-gray-800 pb-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight text-white">Technical Issues Feed</h1>
-          <p className="text-sm text-gray-400 mt-1">Browse and search reported bugs, errors, and solutions.</p>
-        </div>
-        <div className="flex gap-4">
-          <button
+    <div style={{ minHeight: '100vh', backgroundColor: '#030712', color: '#f3f4f6', padding: '32px', display: 'flex', justifyContent: 'center', fontFamily: 'sans-serif' }}>
+      <div style={{ maxWidth: '800px', width: '100%', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #1f2937', paddingBottom: '16px' }}>
+          <div>
+            <h1 style={{ fontSize: '24px', fontWeight: 'bold', color: '#ffffff', margin: '0 0 4px 0', letterSpacing: '-0.025em' }}>Technical Issues Feed</h1>
+            <p style={{ fontSize: '14px', color: '#9ca3af', margin: 0 }}>Browse and search reported bugs, errors, and solutions.</p>
+          </div>
+          <button 
             onClick={() => navigate('/dashboard')}
-            className="bg-gray-800 hover:bg-gray-700 text-gray-200 px-4 py-2 rounded-lg text-sm font-medium transition"
+            style={{ backgroundColor: '#1f2937', color: '#ffffff', border: 'none', padding: '8px 16px', borderRadius: '8px', fontSize: '14px', fontWeight: '500', cursor: 'pointer', transition: 'background 0.2s' }}
+            onMouseOver={(e) => e.target.style.backgroundColor = '#374151'}
+            onMouseOut={(e) => e.target.style.backgroundColor = '#1f2937'}
           >
             Dashboard
           </button>
         </div>
-      </div>
 
-      {/* Search Bar */}
-      <div className="mb-6">
-        <input
-          type="text"
-          placeholder="Search issues by title, category, or technology..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500 transition shadow-sm"
-        />
-      </div>
+        {/* Search Bar */}
+        <div>
+          <input 
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search issues by title, category, or technology..."
+            style={{ width: '100%', padding: '12px 16px', backgroundColor: '#111827', border: '1px solid #1f2937', borderRadius: '12px', color: '#ffffff', fontSize: '14px', outline: 'none', boxSizing: 'border-box' }}
+          />
+        </div>
 
-      {/* Issue Feed Grid / List */}
-      {loading ? (
-        <p className="text-gray-400 text-sm">Loading issues...</p>
-      ) : filteredIssues.length === 0 ? (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center text-gray-400">
-          <p>No issues found matching your search.</p>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {filteredIssues.map((issue) => (
-            <div
-              key={issue.ID || issue.id}
-              onClick={() => navigate(`/issues/${issue.ID || issue.id}`)}
-              className="bg-gray-900 border border-gray-800 hover:border-gray-700 rounded-xl p-6 transition shadow-sm cursor-pointer"
-            >
-              <div className="flex justify-between items-start mb-2">
-                <h2 className="text-lg font-semibold text-white">{issue.title}</h2>
-                <span className="bg-blue-500/10 text-blue-400 border border-blue-500/20 text-xs px-2.5 py-1 rounded-full font-medium">
-                  {issue.status || 'Open'}
-                </span>
+        {/* Issues List */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {filteredIssues.length === 0 ? (
+            <p style={{ color: '#9ca3af', textAlign: 'center', padding: '40px 0' }}>No issues found.</p>
+          ) : (
+            filteredIssues.map((issue, index) => (
+              <div 
+                key={issue.ID || issue.id || issue._id || index}
+                style={{ backgroundColor: '#111827', border: '1px solid #1f2937', borderRadius: '12px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)' }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <span style={{ fontSize: '11px', fontWeight: '600', color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '4px' }}>
+                      📂 {issue.category || 'General'} &nbsp;|&nbsp; ⚡ {issue.priority || 'Normal'}
+                    </span>
+                    <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#ffffff', margin: 0 }}>{issue.title}</h2>
+                  </div>
+                  <button 
+                    onClick={() => navigate(`/issues/${issue.ID || issue.id || issue._id}`)}
+                    style={{ backgroundColor: '#3b82f6', color: '#ffffff', border: 'none', padding: '6px 14px', borderRadius: '6px', fontSize: '13px', fontWeight: '500', cursor: 'pointer', transition: 'background 0.2s' }}
+                    onMouseOver={(e) => e.target.style.backgroundColor = '#2563eb'}
+                    onMouseOut={(e) => e.target.style.backgroundColor = '#3b82f6'}
+                  >
+                    Open
+                  </button>
+                </div>
+                <p style={{ fontSize: '14px', color: '#9ca3af', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                  {issue.description}
+                </p>
               </div>
-              <p className="text-sm text-gray-400 mb-4 line-clamp-2">{issue.description}</p>
-              <div className="flex flex-wrap gap-2 text-xs">
-                {issue.category && (
-                  <span className="bg-gray-800 text-gray-300 px-2.5 py-1 rounded-md">
-                    📂 {issue.category}
-                  </span>
-                )}
-                {issue.technology && (
-                  <span className="bg-gray-800 text-gray-300 px-2.5 py-1 rounded-md">
-                    ⚙️ {issue.technology}
-                  </span>
-                )}
-                {issue.priority && (
-                  <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-1 rounded-md">
-                    ⚡ {issue.priority}
-                  </span>
-                )}
-              </div>
-            </div>
-          ))}
+            ))
+          )}
         </div>
-      )}
+
+      </div>
     </div>
   );
 }

@@ -26,8 +26,7 @@ export default function CreateIssue() {
         priority,
         status: 'Open',
       });
-      // Redirect back to the issues feed after successful creation
-      navigate('/issues');
+      navigate('/dashboard');
     } catch (err) {
       console.error('Failed to create issue', err);
       setError('Failed to create issue. Please check your inputs and try again.');
@@ -37,30 +36,33 @@ export default function CreateIssue() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-100 p-8">
-      <div className="max-w-2xl mx-auto bg-gray-900 border border-gray-800 rounded-2xl p-8 shadow-xl">
-        <div className="flex justify-between items-center mb-6 border-b border-gray-800 pb-4">
+    <div style={{ minHeight: '100vh', backgroundColor: '#030712', color: '#f3f4f6', padding: '32px' }}>
+      <div style={{ maxWidth: '672px', margin: '0 auto', backgroundColor: '#111827', border: '1px solid #1f2937', borderRadius: '16px', padding: '32px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.3)' }}>
+        
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', borderBottom: '1px solid #1f2937', paddingBottom: '16px' }}>
           <div>
-            <h1 className="text-2xl font-bold text-white">Report New Technical Issue</h1>
-            <p className="text-sm text-gray-400 mt-1">Provide details, error info, and environment notes.</p>
+            <h1 style={{ fontSize: '24px', fontWeight: 'bold', color: '#ffffff', margin: 0 }}>Report New Technical Issue</h1>
+            <p style={{ fontSize: '14px', color: '#9ca3af', marginTop: '4px' }}>Provide details, error info, and environment notes.</p>
           </div>
           <button
-            onClick={() => navigate('/issues')}
-            className="bg-gray-800 hover:bg-gray-700 text-gray-200 px-4 py-2 rounded-lg text-sm font-medium transition"
+            onClick={() => navigate('/dashboard')}
+            style={{ backgroundColor: '#1f2937', color: '#e5e7eb', border: 'none', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer', fontSize: '14px', fontWeight: '500' }}
           >
-            Back to Feed
+            Back to Dashboard
           </button>
         </div>
 
         {error && (
-          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm text-center">
+          <div style={{ marginBottom: '16px', padding: '12px', backgroundColor: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: '8px', color: '#f87171', fontSize: '14px', textAlign: 'center' }}>
             {error}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        {/* Form */}
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: '500', color: '#9ca3af', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Issue Title
             </label>
             <input
@@ -69,19 +71,19 @@ export default function CreateIssue() {
               onChange={(e) => setTitle(e.target.value)}
               required
               placeholder="e.g. GORM Preload not loading nested relationship"
-              className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 transition"
+              style={{ width: '100%', backgroundColor: '#030712', border: '1px solid #1f2937', borderRadius: '8px', padding: '10px 16px', fontSize: '14px', color: '#ffffff', outline: 'none', boxSizing: 'border-box' }}
             />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
             <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: '500', color: '#9ca3af', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 Category
               </label>
               <select
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
-                className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 transition"
+                style={{ width: '100%', backgroundColor: '#030712', border: '1px solid #1f2937', borderRadius: '8px', padding: '10px 16px', fontSize: '14px', color: '#ffffff', outline: 'none', boxSizing: 'border-box' }}
               >
                 <option value="Backend">Backend</option>
                 <option value="Frontend">Frontend</option>
@@ -93,13 +95,13 @@ export default function CreateIssue() {
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: '500', color: '#9ca3af', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 Priority
               </label>
               <select
                 value={priority}
                 onChange={(e) => setPriority(e.target.value)}
-                className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 transition"
+                style={{ width: '100%', backgroundColor: '#030712', border: '1px solid #1f2937', borderRadius: '8px', padding: '10px 16px', fontSize: '14px', color: '#ffffff', outline: 'none', boxSizing: 'border-box' }}
               >
                 <option value="Low">Low</option>
                 <option value="Normal">Normal</option>
@@ -111,7 +113,7 @@ export default function CreateIssue() {
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: '500', color: '#9ca3af', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Technology / Stack
             </label>
             <input
@@ -119,12 +121,12 @@ export default function CreateIssue() {
               value={technology}
               onChange={(e) => setTechnology(e.target.value)}
               placeholder="e.g. Go / Gin / GORM / PostgreSQL"
-              className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500 transition"
+              style={{ width: '100%', backgroundColor: '#030712', border: '1px solid #1f2937', borderRadius: '8px', padding: '10px 16px', fontSize: '14px', color: '#ffffff', outline: 'none', boxSizing: 'border-box' }}
             />
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1 uppercase tracking-wider">
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: '500', color: '#9ca3af', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Detailed Description & Steps to Reproduce
             </label>
             <textarea
@@ -133,14 +135,14 @@ export default function CreateIssue() {
               onChange={(e) => setDescription(e.target.value)}
               required
               placeholder="Describe the expected vs actual behavior, error message, or logs..."
-              className="w-full bg-gray-950 border border-gray-800 rounded-lg p-4 text-sm text-white focus:outline-none focus:border-blue-500 transition"
+              style={{ width: '100%', backgroundColor: '#030712', border: '1px solid #1f2937', borderRadius: '8px', padding: '16px', fontSize: '14px', color: '#ffffff', outline: 'none', boxSizing: 'border-box', resize: 'vertical' }}
             ></textarea>
           </div>
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-medium py-3 rounded-lg text-sm transition duration-200 disabled:opacity-50 shadow-lg shadow-blue-600/20"
+            style={{ width: '100%', backgroundColor: '#2563eb', color: '#ffffff', fontWeight: '500', padding: '12px', borderRadius: '8px', border: 'none', cursor: 'pointer', fontSize: '14px', opacity: loading ? 0.5 : 1, transition: 'background-color 0.2s' }}
           >
             {loading ? 'Publishing Issue...' : 'Publish Issue'}
           </button>
