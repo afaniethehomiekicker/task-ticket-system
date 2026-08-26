@@ -13,10 +13,9 @@ export default function Dashboard() {
       try {
         // Fetch both issues and activities concurrently
         const [issuesRes, activitiesRes] = await Promise.all([
-          API.get('/issues'),
-          API.get('/activities')
-        ]);
-        
+  API.get('/api/issues'),
+  API.get('/api/activities') 
+]);
         const issuesData = Array.isArray(issuesRes.data) ? issuesRes.data : (issuesRes.data?.issues || []);
         const activitiesData = Array.isArray(activitiesRes.data) ? activitiesRes.data : (activitiesRes.data?.activities || []);
         

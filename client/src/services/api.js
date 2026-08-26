@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const API = axios.create({
-  baseURL: 'http://localhost:8080/api', // Adjust if your Go backend runs on a different port
+  baseURL: 'http://localhost:8080', // Adjust if your Go backend runs on a different port
   headers: {
     'Content-Type': 'application/json',
   },

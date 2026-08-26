@@ -7,6 +7,7 @@ import (
 
 	"devissues/internal/models"
 
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -74,5 +75,38 @@ func ConnectDB() *gorm.DB {
 	}
 	log.Println("Database migration completed.")
 
+	// 3. Seed Default Admin according to requirements
+	SeedAdmin(DB)
+
 	return DB
+}
+
+func SeedAdmin(db *gorm.DB) {
+	var count int64
+	// Check if any admin already exists in the database
+	db.Model(&models.User{}).Where("role = ?", "admin").Count(&count)
+
+	if count == 0 {
+		// Hash the default password (`admin123`)
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+		if err != nil {
+			log.Printf("Failed to hash admin password: %v", err)
+			return
+		}
+
+		adminUser := models.User{
+			Name:     "System Admin",
+			Username: "admin",
+			Email:    "admin@dev.com",
+			Password: string(hashedPassword),
+			Role:     "admin", // Single strict admin role
+			Status:   "Active",
+		}
+
+		if err := db.Create(&adminUser).Error; err != nil {
+			log.Printf("Failed to seed default admin: %v", err)
+		} else {
+			log.Println("Default admin account seeded successfully: admin@dev.com / admin123")
+		}
+	}
 }
