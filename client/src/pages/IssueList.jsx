@@ -9,7 +9,7 @@ export default function IssueList() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    API.get('/issues')
+    API.get('/api/issues')
       .then(res => setIssues(res.data.issues || res.data))
       .catch(err => console.error(err))
       .finally(() => setLoading(false));

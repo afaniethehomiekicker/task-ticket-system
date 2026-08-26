@@ -12,8 +12,18 @@ import (
 // Add Comment to an Issue
 func AddComment(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		issueID := c.Param("id")
-		userID, _ := c.Get("user_id")
+		issueIDParam := c.Param("id")
+		parsedIssueID, err := strconv.ParseUint(issueIDParam, 10, 32)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid issue ID"})
+			return
+		}
+
+		userID, exists := c.Get("user_id")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			return
+		}
 
 		var input models.Comment
 		if err := c.ShouldBindJSON(&input); err != nil {
@@ -21,11 +31,7 @@ func AddComment(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		input.IssueID = uint(issueID[0]) // simplified casting or convert properly
-		// Better: use strconv.ParseUint for issueID safely:
-		// parsedID, _ := strconv.ParseUint(issueID, 10, 32)
-		// input.IssueID = uint(parsedID)
-
+		input.IssueID = uint(parsedIssueID)
 		input.UserID = uint(userID.(float64))
 
 		db.Create(&input)
@@ -37,8 +43,18 @@ func AddComment(db *gorm.DB) gin.HandlerFunc {
 // Submit a Solution to an Issue
 func SubmitSolution(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		issueID := c.Param("id")
-		userID, _ := c.Get("user_id")
+		issueIDParam := c.Param("id")
+		parsedIssueID, err := strconv.ParseUint(issueIDParam, 10, 32)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid issue ID"})
+			return
+		}
+
+		userID, exists := c.Get("user_id")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			return
+		}
 
 		var input models.Solution
 		if err := c.ShouldBindJSON(&input); err != nil {
@@ -52,15 +68,15 @@ func SubmitSolution(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		input.UserID = uint(userIDFloat)
-
-		// Parse issue ID safely
+		// Verify issue exists
 		var issue models.Issue
-		if err := db.First(&issue, issueID).Error; err != nil {
+		if err := db.First(&issue, parsedIssueID).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Issue not found"})
 			return
 		}
-		input.IssueID = issue.ID
+
+		input.IssueID = uint(parsedIssueID)
+		input.UserID = uint(userIDFloat)
 
 		db.Create(&input)
 		db.Preload("User").First(&input, input.ID)

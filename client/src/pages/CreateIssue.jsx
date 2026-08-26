@@ -18,7 +18,7 @@ export default function CreateIssue() {
     setLoading(true);
 
     try {
-      await API.post('/issues', {
+      await API.post('/api/issues', {
         title,
         description,
         category,

@@ -73,11 +73,10 @@ func GetIssueByID(db *gorm.DB) gin.HandlerFunc {
 		var issue models.Issue
 
 		// Fetch the issue and preload associated fields (adjust preload names if your model relationships differ)
-		if err := db.Preload("User").First(&issue, id).Error; err != nil {
+		if err := db.Preload("User").Preload("Comments").Preload("Comments.User").Preload("Solutions").Preload("Solutions.User").First(&issue, id).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Issue not found"})
 			return
 		}
-
 		c.JSON(http.StatusOK, gin.H{"issue": issue})
 	}
 }

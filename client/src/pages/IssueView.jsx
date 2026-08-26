@@ -1,26 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import API from '../services/api';
 
 export default function IssueView() {
   const { id } = useParams();
-  const navigate = useNavigate();
   const [issue, setIssue] = useState(null);
-  const [loading, setLoading] = useState(true);
-  
-  // Comments and Solutions States
   const [comments, setComments] = useState([]);
-  const [newComment, setNewComment] = useState('');
-  const [commentType, setCommentType] = useState('comment'); // 'comment' or 'solution'
+  const [commentText, setCommentText] = useState('');
+  const [commentType, setCommentType] = useState('Discussion Comment');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
   const fetchIssueDetails = async () => {
     try {
-      const res = await API.get(`/issues/${id}`);
-      setIssue(res.data.issue);
-      // Agar backend se comments bhi sath aate hain toh yahan set kar sakte ho:
-      // setComments(res.data.issue.comments || []);
+      const res = await API.get(`/api/issues/${id}`);
+      // Handle both direct object or wrapped response data
+      const issueData = res.data.issue || res.data.data || res.data;
+      setIssue(issueData);
+      setComments(issueData.comments || issueData.Comments || []);
     } catch (err) {
-      console.error(err);
+      setError('Failed to load issue details.');
     } finally {
       setLoading(false);
     }
@@ -32,157 +31,103 @@ export default function IssueView() {
 
   const handleCommentSubmit = async (e) => {
     e.preventDefault();
-    try {
-      const payload = {
-        content: newComment,
-        isSolution: commentType === 'solution'
-      };
+    if (!commentText.trim()) return;
 
-      await API.post(`/issues/${id}/comments`, payload);
-      setNewComment('');
-      fetchIssueDetails(); // Refresh details/comments
+    try {
+      await API.post(`/api/issues/${id}/comments`, { 
+        content: commentText,
+        type: commentType 
+      });
+      setCommentText('');
+      fetchIssueDetails();
     } catch (err) {
       console.error('Failed to post comment/solution', err);
     }
   };
 
-  if (loading) {
-    return (
-      <div style={{ minHeight: '100vh', backgroundColor: '#030712', color: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif' }}>
-        <p style={{ color: '#9ca3af', fontSize: '14px' }}>Loading issue details...</p>
-      </div>
-    );
-  }
+  if (loading) return <div style={{ padding: '24px', color: '#fff', textAlign: 'center' }}>Loading issue details...</div>;
+  if (error) return <div style={{ padding: '24px', color: '#f87171', textAlign: 'center' }}>{error}</div>;
 
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#030712', color: '#f3f4f6', padding: '32px', display: 'flex', justifyContent: 'center', fontFamily: 'sans-serif' }}>
-      <div style={{ maxWidth: '768px', width: '100%', backgroundColor: '#111827', border: '1px solid #1f2937', borderRadius: '16px', padding: '32px', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5)', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div style={{ minHeight: '100vh', backgroundColor: '#030712', color: '#f3f4f6', padding: '32px', fontFamily: 'sans-serif' }}>
+      <div style={{ maxWidth: '800px', margin: '0 auto' }}>
         
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #1f2937', paddingBottom: '16px' }}>
-          <div>
-            <h1 style={{ fontSize: '24px', fontWeight: 'bold', color: '#ffffff', margin: '0 0 4px 0', letterSpacing: '-0.025em' }}>Issue Details</h1>
-            <p style={{ fontSize: '14px', color: '#9ca3af', margin: 0 }}>View bug info and troubleshooting details.</p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+          <Link to="/dashboard" style={{ backgroundColor: '#1f2937', color: '#ffffff', padding: '8px 16px', borderRadius: '8px', fontSize: '13px', textDecoration: 'none', fontWeight: '600' }}>
+            &larr; Back to Dashboard
+          </Link>
+        </div>
+
+        {issue && (
+          <div style={{ backgroundColor: '#111827', border: '1px solid #1f2937', borderRadius: '16px', padding: '28px', marginBottom: '24px', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.3)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+              <h1 style={{ fontSize: '22px', fontWeight: 'bold', color: '#ffffff', margin: 0 }}>
+                {issue.title || issue.Title || 'Untitled Issue'}
+              </h1>
+              <span style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', color: '#60a5fa', border: '1px solid rgba(59, 130, 246, 0.2)', padding: '4px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: '600' }}>
+                {issue.category || issue.Category || 'Backend'}
+              </span>
+            </div>
+
+            <div style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '16px' }}>
+              Technology: <strong style={{ color: '#e5e7eb' }}>{issue.technology || issue.Technology || issue.technologies || 'N/A'}</strong> | Priority: <strong style={{ color: '#e5e7eb' }}>{issue.priority || issue.Priority || 'Normal'}</strong>
+            </div>
+
+            <div style={{ borderTop: '1px solid #1f2937', paddingTop: '16px', marginTop: '16px' }}>
+              <h4 style={{ fontSize: '12px', fontWeight: '700', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Detailed Description & Steps to Reproduce:</h4>
+              <p style={{ fontSize: '14px', color: '#d1d5db', lineHeight: '1.6', whiteSpace: 'pre-wrap', margin: 0 }}>
+                {issue.description || issue.Description || 'No description provided.'}
+              </p>
+            </div>
           </div>
-          <button 
-            onClick={() => navigate('/issues')}
-            style={{ backgroundColor: '#1f2937', color: '#ffffff', border: 'none', padding: '8px 16px', borderRadius: '8px', fontSize: '14px', fontWeight: '500', cursor: 'pointer', transition: 'background 0.2s' }}
-            onMouseOver={(e) => e.target.style.backgroundColor = '#374151'}
-            onMouseOut={(e) => e.target.style.backgroundColor = '#1f2937'}
-          >
-            Back to Feed
-          </button>
-        </div>
+        )}
 
-        {/* Title */}
-        <div style={{ backgroundColor: '#030712', padding: '16px', borderRadius: '12px', border: '1px solid #1f2937' }}>
-          <span style={{ fontSize: '11px', fontWeight: '600', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '4px' }}>Issue Title</span>
-          <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#ffffff', margin: 0 }}>{issue?.title}</h2>
-        </div>
+        {/* Solutions & Discussion Section */}
+        <div style={{ backgroundColor: '#111827', border: '1px solid #1f2937', borderRadius: '16px', padding: '28px', marginBottom: '24px' }}>
+          <h3 style={{ fontSize: '18px', fontWeight: 'bold', color: '#ffffff', marginBottom: '20px' }}>Solutions & Discussion</h3>
 
-        {/* Meta info Grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
-          <div style={{ backgroundColor: '#030712', padding: '16px', borderRadius: '12px', border: '1px solid #1f2937' }}>
-            <span style={{ fontSize: '11px', fontWeight: '600', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '4px' }}>Category</span>
-            <p style={{ fontSize: '14px', color: '#ffffff', margin: 0 }}>📂 {issue?.category || 'General'}</p>
-          </div>
-          <div style={{ backgroundColor: '#030712', padding: '16px', borderRadius: '12px', border: '1px solid #1f2937' }}>
-            <span style={{ fontSize: '11px', fontWeight: '600', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '4px' }}>Priority</span>
-            <p style={{ fontSize: '14px', color: '#ffffff', margin: 0 }}>⚡ {issue?.priority || 'Normal'}</p>
-          </div>
-        </div>
+          {comments.length === 0 ? (
+            <p style={{ color: '#9ca3af', fontSize: '14px', marginBottom: '24px' }}>No comments or solutions yet. Be the first to help out!</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px' }}>
+              {comments.map((comment, index) => (
+                <div key={index} style={{ backgroundColor: '#030712', border: '1px solid #1f2937', borderRadius: '10px', padding: '16px' }}>
+                  <div style={{ fontSize: '12px', color: '#60a5fa', fontWeight: '600', marginBottom: '4px' }}>{comment.type || comment.Type || 'Comment'}</div>
+                  <p style={{ fontSize: '14px', color: '#e5e7eb', margin: 0 }}>{comment.content || comment.Content}</p>
+                </div>
+              ))}
+            </div>
+          )}
 
-        {/* Description */}
-        <div style={{ backgroundColor: '#030712', padding: '16px', borderRadius: '12px', border: '1px solid #1f2937' }}>
-          <span style={{ fontSize: '11px', fontWeight: '600', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '4px' }}>Detailed Description</span>
-          <p style={{ fontSize: '14px', color: '#d1d5db', whiteSpace: 'pre-wrap', lineHeight: '1.6', fontFamily: 'monospace', margin: 0 }}>{issue?.description}</p>
-        </div>
-
-        {/* --- Comments & Solutions Section --- */}
-        <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
-          <h2 style={{ fontSize: '20px', fontWeight: 'bold', color: '#ffffff', borderBottom: '1px solid #1f2937', paddingBottom: '12px', margin: 0 }}>
-            Solutions & Discussion
-          </h2>
-
-          {/* Submit Comment / Solution Form */}
-          <form onSubmit={handleCommentSubmit} style={{ backgroundColor: '#030712', border: '1px solid #1f2937', borderRadius: '12px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <form onSubmit={handleCommentSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px', borderTop: '1px solid #1f2937', paddingTop: '20px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <label style={{ fontSize: '13px', fontWeight: '600', color: '#9ca3af', textTransform: 'uppercase' }}>
-                Post a Solution or Comment
-              </label>
+              <label style={{ fontSize: '12px', fontWeight: '700', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Post a Solution or Comment</label>
               <select 
-                value={commentType} 
+                value={commentType}
                 onChange={(e) => setCommentType(e.target.value)}
-                style={{ backgroundColor: '#111827', color: '#ffffff', border: '1px solid #1f2937', padding: '6px 12px', borderRadius: '6px', fontSize: '13px', outline: 'none' }}
+                style={{ backgroundColor: '#030712', border: '1px solid #1f2937', color: '#fff', padding: '6px 12px', borderRadius: '6px', fontSize: '12px', outline: 'none' }}
               >
-                <option value="comment">Discussion Comment</option>
-                <option value="solution">Technical Solution 💡</option>
+                <option value="Discussion Comment">Discussion Comment</option>
+                <option value="Working Solution">Working Solution</option>
               </select>
             </div>
 
             <textarea 
-              rows="3"
-              value={newComment}
-              onChange={(e) => setNewComment(e.target.value)}
-              placeholder="Write your explanation, fix, or code example here..."
+              value={commentText}
+              onChange={(e) => setCommentText(e.target.value)}
               required
-              style={{ width: '100%', backgroundColor: '#111827', border: '1px solid #1f2937', borderRadius: '8px', padding: '12px', color: '#ffffff', fontSize: '14px', outline: 'none', boxSizing: 'border-box', resize: 'vertical' }}
+              rows="4"
+              placeholder="Write your comment or solution here..."
+              style={{ width: '100%', padding: '12px 16px', backgroundColor: '#030712', border: '1px solid #1f2937', borderRadius: '8px', color: '#fff', fontSize: '14px', outline: 'none', boxSizing: 'border-box', resize: 'vertical' }}
             />
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <button 
-                type="submit"
-                style={{ backgroundColor: '#2563eb', color: '#ffffff', border: 'none', padding: '10px 20px', borderRadius: '8px', fontWeight: '500', fontSize: '14px', cursor: 'pointer' }}
-              >
-                Post {commentType === 'solution' ? 'Solution' : 'Comment'}
-              </button>
-            </div>
+            
+            <button 
+              type="submit"
+              style={{ alignSelf: 'flex-end', backgroundColor: '#3b82f6', color: '#fff', border: 'none', padding: '10px 24px', borderRadius: '8px', fontWeight: '600', fontSize: '14px', cursor: 'pointer', transition: 'background 0.2s' }}
+            >
+              Post Comment
+            </button>
           </form>
-
-          {/* Comments & Solutions List */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            {comments && comments.length > 0 ? (
-              comments.map((item, index) => (
-                <div 
-                  key={index} 
-                  style={{ 
-                    backgroundColor: '#030712', 
-                    border: item.isSolution ? '1px solid #10b981' : '1px solid #1f2937', 
-                    borderRadius: '12px', 
-                    padding: '20px', 
-                    display: 'flex', 
-                    flexDirection: 'column', 
-                    gap: '12px',
-                    position: 'relative'
-                  }}
-                >
-                  {item.isSolution && (
-                    <span style={{ position: 'absolute', top: '16px', right: '16px', backgroundColor: 'rgba(16, 185, 129, 0.1)', color: '#34d399', border: '1px solid #10b981', padding: '2px 10px', borderRadius: '20px', fontSize: '12px', fontWeight: '600' }}>
-                      Accepted Solution ✓
-                    </span>
-                  )}
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <div style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: '#374151', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '14px', color: '#ffffff' }}>
-                      {item.author ? item.author.charAt(0).toUpperCase() : 'U'}
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '14px', fontWeight: '600', color: '#ffffff' }}>{item.author || 'Developer'}</div>
-                      <div style={{ fontSize: '12px', color: '#9ca3af' }}>{item.createdAt || 'Just now'}</div>
-                    </div>
-                  </div>
-
-                  <p style={{ fontSize: '14px', color: '#e5e7eb', margin: 0, whiteSpace: 'pre-wrap', lineHeight: '1.5' }}>
-                    {item.content || item.body}
-                  </p>
-                </div>
-              ))
-            ) : (
-              <div style={{ textAlign: 'center', padding: '24px', color: '#6b7280', fontSize: '14px', backgroundColor: '#030712', borderRadius: '12px', border: '1px solid #1f2937' }}>
-                No comments or solutions yet. Be the first to help out!
-              </div>
-            )}
-          </div>
         </div>
 
       </div>
