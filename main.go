@@ -42,7 +42,6 @@ func main() {
 	// Authentication Routes
 	r.POST("/api/auth/register", controllers.Register(db))
 	r.POST("/api/auth/login", controllers.Login(db))
-	r.POST("/api/issues/:id/comments", middleware.AuthMiddleware(), controllers.AddComment(db))
 
 	// Public Issues Routes
 	r.GET("/api/issues", controllers.GetIssues(db))
