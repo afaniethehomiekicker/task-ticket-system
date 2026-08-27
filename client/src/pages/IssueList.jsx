@@ -1,99 +1,90 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import API from '../services/api';
 
 export default function IssueList() {
   const [issues, setIssues] = useState([]);
-  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
-  const navigate = useNavigate();
 
   useEffect(() => {
     API.get('/api/issues')
-      .then(res => setIssues(res.data.issues || res.data))
-      .catch(err => console.error(err))
+      .then(res => {
+        const data = res.data.issues || res.data.data || res.data;
+        setIssues(Array.isArray(data) ? data : []);
+      })
+      .catch(err => console.error('Failed to fetch issues', err))
       .finally(() => setLoading(false));
   }, []);
 
-  const filteredIssues = issues.filter(issue => 
-    issue.title?.toLowerCase().includes(search.toLowerCase()) ||
-    issue.category?.toLowerCase().includes(search.toLowerCase())
-  );
-
-  if (loading) {
-    return (
-      <div style={{ minHeight: '100vh', backgroundColor: '#030712', color: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'sans-serif' }}>
-        <p style={{ color: '#9ca3af', fontSize: '14px' }}>Loading issues feed...</p>
-      </div>
-    );
-  }
-
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#030712', color: '#f3f4f6', padding: '32px', display: 'flex', justifyContent: 'center', fontFamily: 'sans-serif' }}>
-      <div style={{ maxWidth: '800px', width: '100%', display: 'flex', flexDirection: 'column', gap: '24px' }}>
-        
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #1f2937', paddingBottom: '16px' }}>
-          <div>
-            <h1 style={{ fontSize: '24px', fontWeight: 'bold', color: '#ffffff', margin: '0 0 4px 0', letterSpacing: '-0.025em' }}>Technical Issues Feed</h1>
-            <p style={{ fontSize: '14px', color: '#9ca3af', margin: 0 }}>Browse and search reported bugs, errors, and solutions.</p>
-          </div>
-          <button 
-            onClick={() => navigate('/dashboard')}
-            style={{ backgroundColor: '#1f2937', color: '#ffffff', border: 'none', padding: '8px 16px', borderRadius: '8px', fontSize: '14px', fontWeight: '500', cursor: 'pointer', transition: 'background 0.2s' }}
-            onMouseOver={(e) => e.target.style.backgroundColor = '#374151'}
-            onMouseOut={(e) => e.target.style.backgroundColor = '#1f2937'}
-          >
+    <div style={{ minHeight: '100vh', backgroundColor: '#f8f9fa', fontFamily: 'Open Sans, sans-serif', display: 'flex' }}>
+      
+      {/* Soft UI Sidebar */}
+      <aside style={{ width: '260px', backgroundColor: '#ffffff', borderRight: '1px solid rgba(0,0,0,0.05)', padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div style={{ fontSize: '15px', fontWeight: 'bold', color: '#2d3748', letterSpacing: '-0.5px' }}>
+          ⚡ DevSolve <span style={{ fontWeight: '300', color: '#a0aec0' }}>Dashboard</span>
+        </div>
+        <nav style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <Link to="/dashboard" style={{ textDecoration: 'none', color: '#67748e', padding: '12px 16px', borderRadius: '12px', fontSize: '14px', fontWeight: '600' }}>
             Dashboard
-          </button>
+          </Link>
+          <Link to="/issues" style={{ textDecoration: 'none', color: '#fff', backgroundColor: '#344767', padding: '12px 16px', borderRadius: '12px', fontSize: '14px', fontWeight: '600', boxShadow: '0 20px 27px 0 rgba(0, 0, 0, 0.05)' }}>
+            Issues List
+          </Link>
+          <Link to="/issues/new" style={{ textDecoration: 'none', color: '#67748e', padding: '12px 16px', borderRadius: '12px', fontSize: '14px', fontWeight: '600' }}>
+            Create Issue
+          </Link>
+        </nav>
+      </aside>
+
+      {/* Main Content Area */}
+      <main style={{ flex: 1, padding: '32px', boxSizing: 'border-box', overflowY: 'auto' }}>
+        
+        {/* Header Bar */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
+          <div>
+            <span style={{ fontSize: '12px', color: '#67748e', fontWeight: '600' }}>Pages / Issues</span>
+            <h1 style={{ fontSize: '20px', fontWeight: 'bold', color: '#2d3748', margin: '4px 0 0 0' }}>All Development Issues</h1>
+          </div>
+          <Link to="/issues/new" style={{ backgroundColor: '#cb0c9f', color: '#fff', padding: '10px 20px', borderRadius: '12px', textDecoration: 'none', fontWeight: '600', fontSize: '13px', boxShadow: '0 4px 7px -1px rgba(203, 12, 159, 0.4)' }}>
+            + New Issue
+          </Link>
         </div>
 
-        {/* Search Bar */}
-        <div>
-          <input 
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search issues by title, category, or technology..."
-            style={{ width: '100%', padding: '12px 16px', backgroundColor: '#111827', border: '1px solid #1f2937', borderRadius: '12px', color: '#ffffff', fontSize: '14px', outline: 'none', boxSizing: 'border-box' }}
-          />
-        </div>
-
-        {/* Issues List */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {filteredIssues.length === 0 ? (
-            <p style={{ color: '#9ca3af', textAlign: 'center', padding: '40px 0' }}>No issues found.</p>
+        {/* Issues List Card */}
+        <div style={{ backgroundColor: '#ffffff', borderRadius: '20px', padding: '24px', boxShadow: '0 20px 27px 0 rgba(0, 0, 0, 0.05)' }}>
+          <h3 style={{ fontSize: '16px', fontWeight: 'bold', color: '#2d3748', marginBottom: '16px' }}>Issue Repository</h3>
+          
+          {loading ? (
+            <p style={{ color: '#67748e', fontSize: '14px' }}>Loading issues...</p>
+          ) : issues.length === 0 ? (
+            <p style={{ color: '#67748e', fontSize: '14px' }}>No issues found.</p>
           ) : (
-            filteredIssues.map((issue, index) => (
-              <div 
-                key={issue.ID || issue.id || issue._id || index}
-                style={{ backgroundColor: '#111827', border: '1px solid #1f2937', borderRadius: '12px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)' }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                  <div>
-                    <span style={{ fontSize: '11px', fontWeight: '600', color: '#60a5fa', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '4px' }}>
-                      📂 {issue.category || 'General'} &nbsp;|&nbsp; ⚡ {issue.priority || 'Normal'}
-                    </span>
-                    <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#ffffff', margin: 0 }}>{issue.title}</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {issues.map((issue, index) => {
+                const issueId = issue.id || issue.ID;
+                const issueTitle = issue.title || issue.Title || 'Untitled Issue';
+                const issueCategory = issue.category || issue.Category || 'General';
+
+                if (!issueId) return null;
+
+                return (
+                  <div key={issueId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', backgroundColor: '#f8f9fa', borderRadius: '14px', border: '1px solid rgba(0,0,0,0.02)' }}>
+                    <div>
+                      <span style={{ fontSize: '14px', fontWeight: 'bold', color: '#2d3748', display: 'block', marginBottom: '4px' }}>{issueTitle}</span>
+                      <span style={{ fontSize: '12px', color: '#67748e', backgroundColor: '#edf2f7', padding: '2px 8px', borderRadius: '6px' }}>Category: {issueCategory}</span>
+                    </div>
+                    <Link to={`/issues/${issueId}`} style={{ fontSize: '12px', fontWeight: '600', color: '#344767', textDecoration: 'none', backgroundColor: '#fff', padding: '8px 14px', borderRadius: '10px', border: '1px solid #e2e8f0' }}>
+                      View Details &rarr;
+                    </Link>
                   </div>
-                  <button 
-                    onClick={() => navigate(`/issues/${issue.ID || issue.id || issue._id}`)}
-                    style={{ backgroundColor: '#3b82f6', color: '#ffffff', border: 'none', padding: '6px 14px', borderRadius: '6px', fontSize: '13px', fontWeight: '500', cursor: 'pointer', transition: 'background 0.2s' }}
-                    onMouseOver={(e) => e.target.style.backgroundColor = '#2563eb'}
-                    onMouseOut={(e) => e.target.style.backgroundColor = '#3b82f6'}
-                  >
-                    Open
-                  </button>
-                </div>
-                <p style={{ fontSize: '14px', color: '#9ca3af', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-                  {issue.description}
-                </p>
-              </div>
-            ))
+                );
+              })}
+            </div>
           )}
         </div>
 
-      </div>
+      </main>
     </div>
   );
 }
