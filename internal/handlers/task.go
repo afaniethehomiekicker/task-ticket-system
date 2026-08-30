@@ -65,8 +65,29 @@ func GetTasks(c *gin.Context) {
 	projectID := c.Query("project_id")
 
 	query := database.DB.Preload("Assignee")
+
+	// Optional project filtering
 	if projectID != "" {
 		query = query.Where("project_id = ?", projectID)
+	}
+
+	// Enforce role-based visibility rules
+	userRole, exists := c.Get("userRole")
+	if exists {
+		switch userRole {
+		case "Staff":
+			userID, _ := c.Get("userID") // Assuming userID is stored in context on login/auth
+			query = query.Where("assignee_id = ?", userID)
+		case "Supervisor":
+			userID, _ := c.Get("userID")
+			// Supervisor sees their own tasks and tasks assigned to staff under them
+			query = query.Where("assignee_id = ? OR assignee_id IN (SELECT id FROM users WHERE supervisor_id = ?)", userID, userID)
+		case "Admin":
+			teamID, _ := c.Get("teamID") // Assuming teamID is stored in context
+			query = query.Where("team_id = ?", teamID)
+		case "Super Admin":
+			// Super Admin sees all tasks, no extra filter needed
+		}
 	}
 
 	if result := query.Find(&tasks); result.Error != nil {

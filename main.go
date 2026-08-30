@@ -7,6 +7,7 @@ import (
 	"task-ticket-backend/internal/models"
 	"task-ticket-backend/internal/routes"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -32,6 +33,15 @@ func main() {
 	}
 
 	r := gin.Default()
+
+	// Configure and add CORS middleware so React can talk to the backend
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:5173"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowCredentials: true,
+	}))
+
 	routes.RegisterRoutes(r)
 
 	port := os.Getenv("PORT")

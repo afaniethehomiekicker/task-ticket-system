@@ -18,8 +18,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.POST("/auth/register", handlers.Register)
 		api.POST("/auth/login", handlers.Login)
 
-		// Project endpoints
-		api.POST("/projects", handlers.CreateProject)
+		// Project endpoints (Public/General read if needed, or remove GET if admin-only)
 		api.GET("/projects", handlers.GetProjects)
 
 		// Task and Kanban endpoints
@@ -48,11 +47,9 @@ func RegisterRoutes(r *gin.Engine) {
 		// Protected Admin/Super Admin group
 		adminGroup := api.Group("/")
 		adminGroup.Use(middleware.AuthorizeRole("Super Admin", "Admin"))
-
 		{
 			adminGroup.POST("/projects", handlers.CreateProject)
 			adminGroup.GET("/audit-logs", handlers.GetAuditLogs)
-
 		}
 	}
 }

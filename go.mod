@@ -3,6 +3,7 @@ module task-ticket-backend
 go 1.26.3
 
 require (
+	github.com/gin-contrib/cors v1.7.2
 	github.com/gin-gonic/gin v1.12.0
 	github.com/joho/godotenv v1.5.1
 	golang.org/x/crypto v0.55.0
