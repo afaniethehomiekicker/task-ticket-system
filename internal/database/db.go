@@ -32,6 +32,8 @@ func ConnectDB() {
 	if err != nil {
 		log.Fatal("Failed to auto-migrate database: ", err)
 	}
+	// Call the seed function here
+	SeedSuperAdmin()
 
 	log.Println("Database connection and auto-migration established successfully.")
 }
