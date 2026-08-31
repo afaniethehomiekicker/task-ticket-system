@@ -18,6 +18,9 @@ func RegisterRoutes(r *gin.Engine) {
 		api.POST("/auth/register", handlers.Register)
 		api.POST("/auth/login", handlers.Login)
 
+		// User endpoints
+		api.GET("/users", handlers.GetUsers)
+
 		// Project endpoints (Public/General read if needed, or remove GET if admin-only)
 		api.GET("/projects", handlers.GetProjects)
 

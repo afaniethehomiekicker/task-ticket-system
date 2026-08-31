@@ -22,8 +22,8 @@ type Project struct {
 	Description string `json:"description"`
 	Status      string `json:"status"` // Active, Completed, Archived
 	Deadline    string `json:"deadline"`
-	OwnerID     uint   `json:"owner_id"` // References User ID who created/owns it
-	Owner       User   `json:"owner" gorm:"foreignKey:OwnerID"`
+	OwnerID     *uint  `json:"owner_id"`                        // Changed to pointer
+	Owner       *User  `json:"owner" gorm:"foreignKey:OwnerID"` // Changed to pointer
 }
 
 type Task struct {
@@ -43,12 +43,12 @@ type Ticket struct {
 	TicketNumber string `json:"ticket_number" gorm:"unique"`
 	Title        string `json:"title" binding:"required"`
 	Description  string `json:"description"`
-	Category     string `json:"category"`    // e.g., Bug, Support, Feature Request
-	Department   string `json:"department"`  // e.g., Engineering, IT, HR
-	Status       string `json:"status"`      // Open, Assigned, In Progress, Pending, Escalated, Resolved, Closed, Reopened
-	Priority     string `json:"priority"`    // Low, Normal, High, Urgent, Critical
-	AssigneeID   uint   `json:"assignee_id"` // Admin, Supervisor, or Staff assigned
-	Assignee     User   `json:"assignee" gorm:"foreignKey:AssigneeID"`
+	Category     string `json:"category"`
+	Department   string `json:"department"`
+	Status       string `json:"status"`
+	Priority     string `json:"priority"`
+	AssigneeID   *uint  `json:"assignee_id"` // Changed to pointer
+	Assignee     *User  `json:"assignee" gorm:"foreignKey:AssigneeID"`
 }
 type SubTask struct {
 	gorm.Model

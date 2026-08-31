@@ -17,12 +17,13 @@ type CreateTicketInput struct {
 	Category    string `json:"category"`
 	Department  string `json:"department"`
 	Priority    string `json:"priority"`
-	AssigneeID  uint   `json:"assignee_id"`
+	Status      string `json:"status"` // Captures status selected from the frontend modal
+	AssigneeID  *uint  `json:"assignee_id"`
 }
 
 type UpdateTicketStatusInput struct {
 	Status     string `json:"status" binding:"required"`
-	AssigneeID uint   `json:"assignee_id"`
+	AssigneeID *uint  `json:"assignee_id"`
 }
 
 // Create a new ticket with an auto-generated ticket number
@@ -33,13 +34,14 @@ func CreateTicket(c *gin.Context) {
 		return
 	}
 
-	// Generate unique ticket number based on timestamp (e.g., TCK-20260829-1525)
 	ticketNum := fmt.Sprintf("TCK-%s-%d", time.Now().Format("20060102"), time.Now().Unix()%10000)
 
-	status := "Open"
-	if input.AssigneeID > 0 {
-		status = "Assigned"
+	// Use input status if provided, otherwise default to "new" to match Kanban board columns
+	status := input.Status
+	if status == "" {
+		status = "new"
 	}
+
 	if input.Priority == "" {
 		input.Priority = "Normal"
 	}
@@ -52,7 +54,7 @@ func CreateTicket(c *gin.Context) {
 		Department:   input.Department,
 		Status:       status,
 		Priority:     input.Priority,
-		AssigneeID:   input.AssigneeID,
+		AssigneeID:   input.AssigneeID, // Pass pointer directly; nil writes NULL to PostgreSQL
 	}
 
 	if result := database.DB.Create(&ticket); result.Error != nil {
@@ -93,7 +95,7 @@ func UpdateTicketStatus(c *gin.Context) {
 	}
 
 	ticket.Status = input.Status
-	if input.AssigneeID > 0 {
+	if input.AssigneeID != nil {
 		ticket.AssigneeID = input.AssigneeID
 	}
 	database.DB.Save(&ticket)

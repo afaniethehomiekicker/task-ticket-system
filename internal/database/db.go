@@ -4,6 +4,8 @@ import (
 	"log"
 	"os"
 
+	"task-ticket-backend/internal/models"
+
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -17,5 +19,19 @@ func ConnectDB() {
 	if err != nil {
 		log.Fatal("Failed to connect to database: ", err)
 	}
-	log.Println("Database connection established successfully.")
+
+	// Auto-migrate all models including SubTasks and Comments
+	err = DB.AutoMigrate(
+		&models.User{},
+		&models.Project{},
+		&models.Task{},
+		&models.Ticket{},
+		&models.SubTask{},
+		&models.Comment{},
+	)
+	if err != nil {
+		log.Fatal("Failed to auto-migrate database: ", err)
+	}
+
+	log.Println("Database connection and auto-migration established successfully.")
 }

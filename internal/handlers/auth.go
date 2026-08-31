@@ -89,3 +89,14 @@ func Login(c *gin.Context) {
 		},
 	})
 }
+
+// GetUsers fetches all registered users for assignment dropdowns
+func GetUsers(c *gin.Context) {
+	var users []models.User
+	if result := database.DB.Find(&users); result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch users"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"users": users})
+}

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 
 	"task-ticket-backend/internal/database"
@@ -13,13 +14,14 @@ type CreateProjectInput struct {
 	Title       string `json:"title" binding:"required"`
 	Description string `json:"description"`
 	Deadline    string `json:"deadline"`
-	OwnerID     uint   `json:"owner_id" binding:"required"`
+	OwnerID     *uint  `json:"owner_id"` // Defined as pointer
 }
 
 // Create a new project
 func CreateProject(c *gin.Context) {
 	var input CreateProjectInput
 	if err := c.ShouldBindJSON(&input); err != nil {
+		fmt.Printf("DEBUG BIND ERROR: %v\n", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -29,11 +31,12 @@ func CreateProject(c *gin.Context) {
 		Description: input.Description,
 		Status:      "Active",
 		Deadline:    input.Deadline,
-		OwnerID:     input.OwnerID,
+		OwnerID:     input.OwnerID, // Matches *uint in models.Project
 	}
 
 	if result := database.DB.Create(&project); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create project"})
+		fmt.Printf("DEBUG DB ERROR: %v\n", result.Error)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
 		return
 	}
 
