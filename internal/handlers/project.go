@@ -58,3 +58,38 @@ func GetProjects(c *gin.Context) {
 		"projects": projects,
 	})
 }
+
+// UpdateProject handles updating existing project details
+func UpdateProject(c *gin.Context) {
+	id := c.Param("id")
+	var project models.Project
+	if result := database.DB.First(&project, id); result.Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
+		return
+	}
+
+	if err := c.ShouldBindJSON(&project); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	database.DB.Save(&project)
+	c.JSON(http.StatusOK, gin.H{"message": "Project updated successfully", "project": project})
+}
+
+// DeleteProject removes a project by ID
+func DeleteProject(c *gin.Context) {
+	id := c.Param("id")
+	var project models.Project
+	if result := database.DB.First(&project, id); result.Error != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
+		return
+	}
+
+	if result := database.DB.Delete(&project); result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete project"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Project deleted successfully"})
+}

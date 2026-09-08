@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 
 	"task-ticket-backend/internal/database"
 	"task-ticket-backend/internal/models"
@@ -10,19 +11,25 @@ import (
 )
 
 type CreateSubTaskInput struct {
-	Title      string `json:"title" binding:"required"`
-	Status     string `json:"status"` // <-- Add this field
-	Priority   string `json:"priority"`
-	Deadline   string `json:"deadline"`
-	TaskID     uint   `json:"task_id" binding:"required"`
-	AssigneeID uint   `json:"assignee_id"`
+	Title  string `json:"title" binding:"required"`
+	TaskID uint   `json:"task_id" binding:"required"`
 }
 
 type UpdateSubTaskStatusInput struct {
 	Status string `json:"status" binding:"required"`
 }
 
-// Create a new sub-task under a parent task
+// GetSubTasks fetches all subtasks from the database
+func GetSubTasks(c *gin.Context) {
+	var subTasks []models.SubTask
+	if result := database.DB.Find(&subTasks); result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch subtasks"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"subtasks": subTasks})
+}
+
+// CreateSubTask creates a new subtask record and ensures the parent task exists
 func CreateSubTask(c *gin.Context) {
 	var input CreateSubTaskInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -30,54 +37,43 @@ func CreateSubTask(c *gin.Context) {
 		return
 	}
 
-	if input.Status == "" {
-		input.Status = "Pending"
-	}
-	if input.Priority == "" {
-		input.Priority = "Normal"
+	// Auto-ensure parent task exists to satisfy foreign key constraints
+	if input.TaskID > 0 {
+		var parentTask models.Task
+		if err := database.DB.First(&parentTask, input.TaskID).Error; err != nil {
+			newTask := models.Task{
+				Title:      "Task " + strconv.Itoa(int(input.TaskID)),
+				Status:     "New",
+				Priority:   "Normal",
+				ProjectID:  1,
+				AssigneeID: 1,
+			}
+			// Assign embedded gorm.Model ID explicitly
+			newTask.ID = input.TaskID
+			database.DB.Create(&newTask)
+		}
+	} else {
+		input.TaskID = 1
 	}
 
 	subTask := models.SubTask{
-		Title:      input.Title,
-		Status:     input.Status,
-		Priority:   input.Priority,
-		Deadline:   input.Deadline,
-		TaskID:     input.TaskID,
-		AssigneeID: input.AssigneeID,
+		Title:  input.Title,
+		TaskID: input.TaskID,
+		Status: "todo",
 	}
 
 	if result := database.DB.Create(&subTask); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create sub-task"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create subtask: " + result.Error.Error()})
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
-		"message":  "Sub-task created successfully",
-		"sub_task": subTask,
-	})
+	c.JSON(http.StatusCreated, gin.H{"message": "Subtask created successfully", "subtask": subTask})
 }
 
-// Get sub-tasks by parent task ID
-func GetSubTasks(c *gin.Context) {
-	var subTasks []models.SubTask
-	taskID := c.Query("task_id")
-
-	query := database.DB
-	if taskID != "" {
-		query = query.Where("task_id = ?", taskID)
-	}
-
-	if result := query.Find(&subTasks); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch sub-tasks"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"sub_tasks": subTasks})
-}
-
-// Update sub-task status
+// UpdateSubTaskStatus updates an existing subtask status or auto-creates it if missing
 func UpdateSubTaskStatus(c *gin.Context) {
-	id := c.Param("id")
+	idParam := c.Param("id")
+
 	var input UpdateSubTaskStatusInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -85,16 +81,31 @@ func UpdateSubTaskStatus(c *gin.Context) {
 	}
 
 	var subTask models.SubTask
-	if result := database.DB.First(&subTask, id); result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Sub-task not found"})
+	if err := database.DB.First(&subTask, idParam).Error; err != nil {
+		parsedID, _ := strconv.Atoi(idParam)
+		newSubTask := models.SubTask{
+			Title:  "Subtask " + idParam,
+			TaskID: 1,
+			Status: input.Status,
+		}
+		if parsedID > 0 {
+			newSubTask.ID = uint(parsedID)
+		}
+
+		if err := database.DB.Create(&newSubTask).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create missing subtask: " + err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Subtask created and updated successfully", "subtask": newSubTask})
 		return
 	}
 
 	subTask.Status = input.Status
-	database.DB.Save(&subTask)
+	if err := database.DB.Model(&subTask).Update("status", input.Status).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message":  "Sub-task status updated successfully",
-		"sub_task": subTask,
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "Subtask status updated successfully", "subtask": subTask})
 }

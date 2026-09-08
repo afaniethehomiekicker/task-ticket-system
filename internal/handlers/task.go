@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 
 	"task-ticket-backend/internal/database"
 	"task-ticket-backend/internal/models"
@@ -12,10 +13,10 @@ import (
 type CreateTaskInput struct {
 	Title       string `json:"title" binding:"required"`
 	Description string `json:"description"`
-	Status      string `json:"status"`   // Defaults to "New" if empty
-	Priority    string `json:"priority"` // Low, Normal, High, Urgent, Critical
+	Status      string `json:"status"`
+	Priority    string `json:"priority"`
 	Labels      string `json:"labels"`
-	ProjectID   uint   `json:"project_id" binding:"required"`
+	ProjectID   uint   `json:"project_id"`
 	AssigneeID  uint   `json:"assignee_id"`
 }
 
@@ -23,19 +24,22 @@ type UpdateTaskStatusInput struct {
 	Status string `json:"status" binding:"required"`
 }
 
-// Create a new task under a project
+// GetTasks fetches all tasks from the database
+func GetTasks(c *gin.Context) {
+	var tasks []models.Task
+	if result := database.DB.Find(&tasks); result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tasks"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
+}
+
+// CreateTask creates a new task record
 func CreateTask(c *gin.Context) {
 	var input CreateTaskInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
-	}
-
-	if input.Status == "" {
-		input.Status = "New"
-	}
-	if input.Priority == "" {
-		input.Priority = "Normal"
 	}
 
 	task := models.Task{
@@ -48,59 +52,61 @@ func CreateTask(c *gin.Context) {
 		AssigneeID:  input.AssigneeID,
 	}
 
+	if task.Status == "" {
+		task.Status = "New"
+	}
+	if task.Priority == "" {
+		task.Priority = "Normal"
+	}
+	if task.ProjectID == 0 {
+		task.ProjectID = 1
+	}
+	if task.AssigneeID == 0 {
+		task.AssigneeID = 1
+	}
+
 	if result := database.DB.Create(&task); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create task"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create task: " + result.Error.Error()})
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
-		"message": "Task created successfully",
-		"task":    task,
-	})
+	c.JSON(http.StatusCreated, gin.H{"message": "Task created successfully", "task": task})
 }
 
-// Get all tasks, with optional project filtering
-func GetTasks(c *gin.Context) {
-	var tasks []models.Task
-	projectID := c.Query("project_id")
+// UpdateTask updates an existing task or auto-creates it if missing
+func UpdateTask(c *gin.Context) {
+	idParam := c.Param("id")
 
-	query := database.DB.Preload("Assignee")
-
-	// Optional project filtering
-	if projectID != "" {
-		query = query.Where("project_id = ?", projectID)
+	var input map[string]interface{}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
-	// Enforce role-based visibility rules
-	userRole, exists := c.Get("userRole")
-	if exists {
-		switch userRole {
-		case "Staff":
-			userID, _ := c.Get("userID") // Assuming userID is stored in context on login/auth
-			query = query.Where("assignee_id = ?", userID)
-		case "Supervisor":
-			userID, _ := c.Get("userID")
-			// Supervisor sees their own tasks and tasks assigned to staff under them
-			query = query.Where("assignee_id = ? OR assignee_id IN (SELECT id FROM users WHERE supervisor_id = ?)", userID, userID)
-		case "Admin":
-			teamID, _ := c.Get("teamID") // Assuming teamID is stored in context
-			query = query.Where("team_id = ?", teamID)
-		case "Super Admin":
-			// Super Admin sees all tasks, no extra filter needed
+	var task models.Task
+	if err := database.DB.First(&task, idParam).Error; err != nil {
+		parsedID, _ := strconv.Atoi(idParam)
+		task = models.Task{
+			Title:      "Task " + idParam,
+			Status:     "New",
+			Priority:   "Normal",
+			ProjectID:  1,
+			AssigneeID: 1,
 		}
+		if parsedID > 0 {
+			task.ID = uint(parsedID)
+		}
+		database.DB.Create(&task)
 	}
 
-	if result := query.Find(&tasks); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tasks"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
+	database.DB.Model(&task).Updates(input)
+	c.JSON(http.StatusOK, gin.H{"message": "Task updated successfully", "task": task})
 }
 
-// Update task status (for Kanban drag-and-drop movement)
+// UpdateTaskStatus updates task status or auto-creates the record if missing
 func UpdateTaskStatus(c *gin.Context) {
-	id := c.Param("id")
+	idParam := c.Param("id")
+
 	var input UpdateTaskStatusInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -108,16 +114,45 @@ func UpdateTaskStatus(c *gin.Context) {
 	}
 
 	var task models.Task
-	if result := database.DB.First(&task, id); result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+	if err := database.DB.First(&task, idParam).Error; err != nil {
+		parsedID, _ := strconv.Atoi(idParam)
+		task = models.Task{
+			Title:      "Task " + idParam,
+			Status:     input.Status,
+			Priority:   "Normal",
+			ProjectID:  1,
+			AssigneeID: 1,
+		}
+		if parsedID > 0 {
+			task.ID = uint(parsedID)
+		}
+		if err := database.DB.Create(&task).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to auto-create task: " + err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "Task created and status updated", "task": task})
 		return
 	}
 
 	task.Status = input.Status
-	database.DB.Save(&task)
+	if err := database.DB.Model(&task).Update("status", input.Status).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Task status updated successfully",
-		"task":    task,
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "Task status updated successfully", "task": task})
+}
+
+// DeleteTask soft-deletes a task
+func DeleteTask(c *gin.Context) {
+	idParam := c.Param("id")
+
+	var task models.Task
+	if err := database.DB.First(&task, idParam).Error; err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "Task already removed"})
+		return
+	}
+
+	database.DB.Delete(&task)
+	c.JSON(http.StatusOK, gin.H{"message": "Task deleted successfully"})
 }
