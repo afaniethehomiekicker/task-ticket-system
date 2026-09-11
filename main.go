@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"task-ticket-backend/internal/database"
+	"task-ticket-backend/internal/handlers"
 	"task-ticket-backend/internal/models"
 	"task-ticket-backend/internal/routes"
 
@@ -26,9 +27,12 @@ func main() {
 
 	database.ConnectDB()
 
-	// Seed Super Admin automatically on boot
-	database.SeedSuperAdmin()
-
+	// Migrate schema BEFORE seeding anything into it. This used to run
+	// after SeedSuperAdmin(), which meant a genuinely fresh database (no
+	// `users` table yet) would crash the whole server on first boot —
+	// SeedSuperAdmin's DB.Create call fails when the table doesn't exist,
+	// and seed.go calls log.Fatal on that error. Masked previously only
+	// because the DB already had the table from a prior run.
 	err := database.DB.AutoMigrate(
 		&models.User{},
 		&models.Project{},
@@ -41,6 +45,14 @@ func main() {
 	if err != nil {
 		log.Fatal("Migration failed: ", err)
 	}
+
+	// Seed Super Admin automatically on boot
+	database.SeedSuperAdmin()
+
+	// Seed the fixed demo accounts once at startup — NOT on every request
+	// (see handlers.GetUsers / handlers.SeedDemoUsers for why that used to
+	// be a duplicate-user-creating race condition).
+	handlers.SeedDemoUsers()
 
 	r := gin.Default()
 

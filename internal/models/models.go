@@ -40,16 +40,17 @@ type Task struct {
 
 type Ticket struct {
 	gorm.Model
-	TicketNumber string `json:"ticket_number" gorm:"unique"`
-	Title        string `json:"title" binding:"required"`
-	Description  string `json:"description"`
-	Category     string `json:"category"`
-	Department   string `json:"department"`
-	Status       string `json:"status"`
-	Priority     string `json:"priority"`
-	AssigneeID   *uint  `json:"assignee_id"` // Changed to pointer
-	Assignee     *User  `json:"assignee" gorm:"foreignKey:AssigneeID"`
+	TicketNumber      string `json:"ticket_number"`
+	Title             string `json:"title"`
+	Description       string `json:"description"`
+	Priority          string `json:"priority"`
+	Status            string `json:"status"`
+	Category          string `json:"category"`
+	ResolutionSummary string `json:"resolution_summary"`
+	AssignedToID      *uint  `gorm:"column:assigned_to_id" json:"assigned_to_id"`
+	AssignedTo        *User  `gorm:"foreignKey:AssignedToID" json:"assigned_to,omitempty"`
 }
+
 type SubTask struct {
 	gorm.Model
 	Title      string `json:"title" binding:"required"`

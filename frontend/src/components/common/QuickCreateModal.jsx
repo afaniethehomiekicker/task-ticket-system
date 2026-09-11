@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { SEED_USERS } from '../../data/seedData';
+import AsyncSelect from 'react-select/async';
 
-// Categories kept consistent with the filter dropdown already shown in
-// TicketsView.jsx so tickets created here always match an existing filter.
 const TICKET_CATEGORIES = [
   'Technical Support',
   'Bug Report',
@@ -54,6 +53,83 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   const [ticketProjectId, setTicketProjectId] = useState('');
 
   if (!isOpen) return null;
+
+  // Server-side User Search for Client Select
+  const loadUserOptions = async (inputValue) => {
+    try {
+      const res = await fetch(`/api/users?search=${encodeURIComponent(inputValue)}`);
+      if (!res.ok) throw new Error('Search failed');
+      const data = await res.json();
+      const users = data.users || [];
+      return users.map(u => ({
+        value: u.id || u.ID,
+        label: `${u.name} (${u.role ? u.role.toUpperCase() : 'USER'}) ${u.companyName ? `— ${u.companyName}` : ''}`
+      }));
+    } catch (err) {
+      const availableUsers = (allUsers && allUsers.length > 0) ? allUsers : SEED_USERS;
+      const filtered = availableUsers.filter(u => 
+        u.name?.toLowerCase().includes(inputValue.toLowerCase()) ||
+        u.email?.toLowerCase().includes(inputValue.toLowerCase())
+      );
+      return filtered.map(u => ({
+        value: u.id,
+        label: `${u.name} (${u.role ? u.role.toUpperCase() : 'USER'}) ${u.companyName ? `— ${u.companyName}` : ''}`
+      }));
+    }
+  };
+
+  // Server-side Project Search
+  const loadProjectOptions = async (inputValue) => {
+    try {
+      const res = await fetch(`/api/projects?search=${encodeURIComponent(inputValue)}`);
+      if (!res.ok) throw new Error('Search failed');
+      const data = await res.json();
+      const prjs = data.projects || [];
+      return [
+        { value: '', label: 'No Project (Unassigned)' },
+        ...prjs.map(p => ({ value: p.id || p.ID, label: `${p.code || 'PRJ'} — ${p.title}` }))
+      ];
+    } catch (err) {
+      const filtered = (visibleProjects || []).filter(p => 
+        p.title?.toLowerCase().includes(inputValue.toLowerCase()) ||
+        p.code?.toLowerCase().includes(inputValue.toLowerCase())
+      );
+      return [
+        { value: '', label: 'No Project (Unassigned)' },
+        ...filtered.map(p => ({ value: p.id, label: `${p.code} — ${p.title}` }))
+      ];
+    }
+  };
+
+  const customStyles = {
+    control: (base, state) => ({
+      ...base,
+      backgroundColor: 'rgba(24, 24, 27, 0.8)',
+      borderColor: state.isFocused ? '#6366f1' : '#3f3f46',
+      borderRadius: '0.5rem',
+      padding: '2px',
+      fontSize: '0.875rem',
+      boxShadow: 'none',
+      '&:hover': { borderColor: '#6366f1' }
+    }),
+    menu: (base) => ({
+      ...base,
+      backgroundColor: '#18181b',
+      border: '1px solid #3f3f46',
+      borderRadius: '0.5rem',
+      zIndex: 60,
+      fontSize: '0.875rem'
+    }),
+    option: (base, state) => ({
+      ...base,
+      backgroundColor: state.isFocused ? '#3f3f46' : '#18181b',
+      color: '#f4f4f5',
+      cursor: 'pointer'
+    }),
+    singleValue: (base) => ({ ...base, color: '#f4f4f5' }),
+    input: (base) => ({ ...base, color: '#f4f4f5' }),
+    placeholder: (base) => ({ ...base, color: '#a1a1aa' })
+  };
 
   const resetAllFields = () => {
     setProjectName('');
@@ -150,8 +226,6 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     ticket: 'New Ticket'
   }[localTab];
 
-  const availableUsers = (allUsers && allUsers.length > 0) ? allUsers : SEED_USERS;
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
       <div
@@ -172,22 +246,17 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
-                  1. Select Client / Company *
+                  1. Select Client / Company * (Searchable)
                 </label>
-                <select
-                  id="project-client-select"
-                  value={projectClientId}
-                  onChange={(e) => setProjectClientId(e.target.value)}
-                  required
-                  className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
-                >
-                  <option value="">-- Choose Parent Client or Company --</option>
-                  {availableUsers.map(user => (
-                    <option key={user.id} value={user.id}>
-                      {user.name} ({user.role ? user.role.toUpperCase() : 'USER'}) {user.companyName ? `— ${user.companyName}` : ''}
-                    </option>
-                  ))}
-                </select>
+                <AsyncSelect
+                  cacheOptions
+                  defaultOptions
+                  isSearchable
+                  loadOptions={loadUserOptions}
+                  onChange={(option) => setProjectClientId(option ? option.value : '')}
+                  placeholder="Type to search client or company..."
+                  styles={customStyles}
+                />
               </div>
 
               <div>
@@ -298,23 +367,22 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
-                  Project
+                  Project (Searchable)
                 </label>
                 {lockedProjectId ? (
                   <div className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-800 bg-slate-100 dark:bg-zinc-900/60 text-sm text-slate-700 dark:text-zinc-300">
                     {lockedProject ? `${lockedProject.code} — ${lockedProject.title}` : 'Current Project'}
                   </div>
                 ) : (
-                  <select
-                    value={taskProjectId}
-                    onChange={(e) => setTaskProjectId(e.target.value)}
-                    className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
-                  >
-                    <option value="">No Project (Unassigned)</option>
-                    {visibleProjects?.map(p => (
-                      <option key={p.id} value={p.id}>{p.code} — {p.title}</option>
-                    ))}
-                  </select>
+                  <AsyncSelect
+                    cacheOptions
+                    defaultOptions
+                    isSearchable
+                    loadOptions={loadProjectOptions}
+                    onChange={(option) => setTaskProjectId(option ? option.value : '')}
+                    placeholder="Search project by name or code..."
+                    styles={customStyles}
+                  />
                 )}
               </div>
 
@@ -405,18 +473,17 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
-                  Select Project
+                  Select Project (Searchable)
                 </label>
-                <select
-                  value={ticketProjectId}
-                  onChange={(e) => setTicketProjectId(e.target.value)}
-                  className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
-                >
-                  <option value="">No Project (General Inquiry)</option>
-                  {visibleProjects?.map(p => (
-                    <option key={p.id} value={p.id}>{p.code} — {p.title}</option>
-                  ))}
-                </select>
+                <AsyncSelect
+                  cacheOptions
+                  defaultOptions
+                  isSearchable
+                  loadOptions={loadProjectOptions}
+                  onChange={(option) => setTicketProjectId(option ? option.value : '')}
+                  placeholder="Search project by name or code..."
+                  styles={customStyles}
+                />
               </div>
 
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-300 dark:border-zinc-800">

@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
   LifeBuoy, Plus, Search, Filter, Download, Clock, 
-  AlertTriangle, ShieldAlert, ArrowUpDown, Building, User as UserIcon, Pin
+  AlertTriangle, ShieldAlert, ArrowUpDown, Building, User as UserIcon, Pin, Pencil
 } from 'lucide-react';
 import { PriorityBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
 import { exportTicketsToCSV } from '../../utils/exportUtils';
@@ -14,6 +14,7 @@ export const TicketsView = () => {
     allUsers, 
     currentUser, 
     setSelectedTicketId, 
+    setSelectedTicketEditId,
     openQuickCreate,
     updateTicket
   } = useApp();
@@ -201,6 +202,7 @@ export const TicketsView = () => {
                   <th className="p-3.5">Status</th>
                   <th className="p-3.5">Escalation</th>
                   <th className="p-3.5">SLA Target</th>
+                  <th className="p-3.5 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-300/50 dark:divide-zinc-800/60 text-slate-800 dark:text-zinc-300">
@@ -282,6 +284,19 @@ export const TicketsView = () => {
                             {t.slaDueTime ? new Date(t.slaDueTime).toLocaleDateString() : 'Active'}
                           </span>
                         </div>
+                      </td>
+                      <td className="p-3.5 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedTicketEditId(t.id);
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold rounded-md border border-indigo-300 dark:border-indigo-800/80 bg-indigo-50/80 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition cursor-pointer"
+                        >
+                          <Pencil className="w-3 h-3" />
+                          Edit
+                        </button>
                       </td>
                     </tr>
                   );

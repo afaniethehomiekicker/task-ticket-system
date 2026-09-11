@@ -6,7 +6,7 @@ import {
   SEED_AUDIT_LOGS, 
   SEED_NOTIFICATIONS 
 } from '../data/seedData';
-import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import {
   filterProjectsForUser, filterTasksForUser, filterTicketsForUser,
   DEFAULT_PERMISSION_MATRIX, getRoleDisplayName
@@ -21,6 +21,45 @@ export const getBackendId = (rawId) => {
   return match ? parseInt(match[0], 10) : null;
 };
 
+// --- Canonical user identity helpers -------------------------------------
+// Every user in local state uses a single, stable string `id` (the seed
+// scheme, e.g. 'usr_super_admin', or 'usr_<backendId>' for a user that
+// originated on the backend). A user record may ALSO carry a `backendId`
+// (the raw numeric/string id the Go API uses for that same person) so API
+// calls can address the right row without the frontend ever having to
+// juggle two id schemes at the call site. `legacyId` is kept only for
+// backwards compatibility with any code/data that still references the
+// pre-normalization seed id.
+//
+// normalizeUserKey is the single source of truth for "is this the same
+// person" — used by both the dedup merge below AND anywhere else in the
+// app that needs to match a backend record to a local one. It prefers
+// email (more reliable, less prone to formatting drift) and falls back to
+// a normalized full name only when no email is available on either side.
+const normalizeUserKey = (user) => {
+  if (!user) return null;
+  const email = (user.email || '').toLowerCase().trim();
+  if (email) return `email:${email}`;
+  const name = (user.name || '').toLowerCase().trim();
+  return name ? `name:${name}` : null;
+};
+
+// Looks up a user by ANY id scheme it might be referenced by: the
+// canonical local `id`, the legacy seed id, or the raw backend id. This is
+// the one place that lookup logic lives — call sites (createTicket,
+// updateTicket, assignTicket, etc.) should use this instead of re-writing
+// the same three-way String() comparison inline, so a future id-scheme
+// change only has to happen here.
+const findUserByAnyId = (users, rawId) => {
+  if (!rawId && rawId !== 0) return null;
+  const target = String(rawId);
+  return (users || []).find(u =>
+    String(u.id) === target ||
+    String(u.legacyId) === target ||
+    (u.backendId !== undefined && u.backendId !== null && String(u.backendId) === target)
+  ) || null;
+};
+
 const AppContext = createContext(undefined);
 
 const STORAGE_KEYS = {
@@ -32,7 +71,8 @@ const STORAGE_KEYS = {
   NOTIFICATIONS: 'pm_system_notifications_v1',
   CURRENT_USER_ID: 'pm_system_active_user_id_v1',
   DARK_MODE: 'pm_system_theme_dark_v1',
-  PERMISSION_MATRIX: 'pm_system_permission_matrix_v1'
+  PERMISSION_MATRIX: 'pm_system_permission_matrix_v1',
+  CUSTOM_ROLES: 'pm_system_custom_roles_v1'
 };
 
 export const AppProvider = ({ children }) => {
@@ -82,8 +122,26 @@ export const AppProvider = ({ children }) => {
     return saved ? JSON.parse(saved) : DEFAULT_PERMISSION_MATRIX;
   });
 
-  // --- Smart Merge Public Fetch from Go Backend API ---
+  const [customRoles, setCustomRoles] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.CUSTOM_ROLES);
+    return saved ? JSON.parse(saved) : ['super_admin', 'admin', 'supervisor', 'staff', 'client'];
+  });
+
   useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.CUSTOM_ROLES, JSON.stringify(customRoles));
+  }, [customRoles]);
+
+  // Guards against React 18 StrictMode's dev-only double-invoke of
+  // mount effects. Without this, fetchInitialData would run twice on
+  // first mount; the merge logic above is idempotent against that on its
+  // own, but there's no reason to hit four API endpoints twice every load.
+  const didFetchInitialDataRef = useRef(false);
+
+  // --- Strict Email & Identity Fetch from Go Backend API ---
+  useEffect(() => {
+    if (didFetchInitialDataRef.current) return;
+    didFetchInitialDataRef.current = true;
+
     const fetchInitialData = async () => {
       try {
         const [usersRes, projectsRes, tasksRes, ticketsRes] = await Promise.allSettled([
@@ -97,12 +155,80 @@ export const AppProvider = ({ children }) => {
           const data = await usersRes.value.json();
           if (data.users && data.users.length > 0) {
             setAllUsers(prev => {
-              const apiMap = new Map(data.users.map(u => [String(u.id || u.ID), u]));
-              return prev.map(seedUser => {
-                const idStr = String(seedUser.id);
-                const numId = idStr.match(/\d+/)?.[0];
-                const apiUser = apiMap.get(idStr) || (numId ? apiMap.get(numId) : null) || data.users.find(u => u.email === seedUser.email);
-                return apiUser ? { ...seedUser, ...apiUser } : seedUser;
+              // Backend records arrive with { id/ID, email, name, ... } and
+              // integer ids; local records use the string seed-id scheme.
+              // Give every backend record a normalized shape up front so
+              // the rest of this function never has to special-case
+              // `u.id || u.ID` again.
+              const apiUsers = data.users.map(u => ({
+                ...u,
+                backendId: u.id ?? u.ID,
+              }));
+
+              // Single map, keyed by normalizeUserKey (email, falling back
+              // to full name), built from the CURRENT local state. This is
+              // the one lookup used for every backend record — no separate
+              // id-based map, since local seed ids and backend ids are
+              // different schemes and will essentially never collide on
+              // their own (that mismatch was the root cause of matches
+              // silently failing and backend records being treated as new
+              // people).
+              const localByKey = new Map();
+              prev.forEach(u => {
+                const key = normalizeUserKey(u);
+                if (key) localByKey.set(key, u);
+              });
+
+              const newLocalUsers = [];
+
+              apiUsers.forEach(apiUser => {
+                const key = normalizeUserKey(apiUser);
+                const existingLocal = key ? localByKey.get(key) : null;
+
+                if (existingLocal) {
+                  // Matched an existing local user — update that SAME
+                  // object in place (by merging into a new object that
+                  // keeps the local canonical id) rather than appending a
+                  // clone. Re-store it in the map under its own key so a
+                  // later backend record that also resolves to this key
+                  // (shouldn't normally happen, but defensive) merges into
+                  // this updated version instead of re-matching the stale
+                  // one.
+                  const merged = {
+                    ...existingLocal,
+                    ...apiUser,
+                    id: existingLocal.id,
+                    legacyId: existingLocal.legacyId || existingLocal.id,
+                    backendId: apiUser.backendId,
+                  };
+                  localByKey.set(key, merged);
+                } else {
+                  // Genuinely new person the backend knows about that
+                  // local state doesn't. Normalize its id into the local
+                  // string scheme (`usr_<backendId>`) so every other part
+                  // of the app — which assumes string ids — keeps working,
+                  // while backendId is preserved for API calls.
+                  const normalized = {
+                    ...apiUser,
+                    id: `usr_${apiUser.backendId}`,
+                  };
+                  if (key) localByKey.set(key, normalized);
+                  else newLocalUsers.push(normalized);
+                }
+              });
+
+              // Rebuild the array from the de-duplicated map (covers every
+              // local user, whether or not a backend match updated it)
+              // plus any keyless stragglers, then run one final strict
+              // safeguard pass: no two entries may share a normalized
+              // email or name, no matter how they got into the array.
+              const merged = [...localByKey.values(), ...newLocalUsers];
+              const seen = new Set();
+              return merged.filter(u => {
+                const key = normalizeUserKey(u) || `id:${u.id}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
               });
             });
           }
@@ -205,6 +331,7 @@ export const AppProvider = ({ children }) => {
                     title: api.title || seed.title,
                     status: api.status || seed.status,
                     priority: api.priority || seed.priority,
+                    assignedToId: api.assigned_to_id || api.assignedToId || seed.assignedToId,
                     labels: Array.isArray(api.labels) ? api.labels : (typeof api.labels === 'string' && api.labels ? api.labels.split(',') : seed.labels || []),
                     internalNotes: seed.internalNotes || api.internalNotes || [],
                     comments: seed.comments || api.comments || [],
@@ -218,6 +345,7 @@ export const AppProvider = ({ children }) => {
                 ...t,
                 id: t.id || t.ID,
                 ticketNumber: t.ticketNumber || t.TicketNumber || `TCK-${t.id || t.ID}`,
+                assignedToId: t.assigned_to_id || t.assignedToId,
                 labels: Array.isArray(t.labels) ? t.labels : (typeof t.labels === 'string' && t.labels ? t.labels.split(',') : []),
                 internalNotes: t.internalNotes || [],
                 comments: t.comments || [],
@@ -238,7 +366,7 @@ export const AppProvider = ({ children }) => {
 
   useEffect(() => {
     if (!currentUserId) return;
-    const activeUser = allUsers.find(u => String(u.id) === String(currentUserId));
+    const activeUser = findUserByAnyId(allUsers, currentUserId);
     if (!activeUser || (activeUser.role !== 'super_admin' && activeUser.role !== 'admin')) return;
 
     const fetchAuditLogs = async () => {
@@ -270,6 +398,7 @@ export const AppProvider = ({ children }) => {
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [selectedTaskEditId, setSelectedTaskEditId] = useState(null);
   const [selectedTicketId, setSelectedTicketId] = useState(null);
+  const [selectedTicketEditId, setSelectedTicketEditId] = useState(null);
   const [selectedProjectDetailId, setSelectedProjectDetailId] = useState(null);
   const [selectedProjectEditId, setSelectedProjectEditId] = useState(null);
   const [quickCreateOpen, setQuickCreateOpenState] = useState(false);
@@ -336,15 +465,14 @@ export const AppProvider = ({ children }) => {
 
   const currentUser = useMemo(() => {
     if (!currentUserId) return null;
-    const found = allUsers.find(u => String(u.id) === String(currentUserId));
-    return found || null;
+    return findUserByAnyId(allUsers, currentUserId);
   }, [allUsers, currentUserId]);
 
   const setCurrentUserId = (id) => {
     setCurrentUserIdState(id);
     localStorage.setItem(STORAGE_KEYS.CURRENT_USER_ID, String(id));
 
-    const switchedUser = allUsers.find(u => String(u.id) === String(id));
+    const switchedUser = findUserByAnyId(allUsers, id);
     if (switchedUser) {
       logAudit({
         actorId: id,
@@ -588,7 +716,11 @@ export const AppProvider = ({ children }) => {
     const taskNumber = `TSK-${count}`;
     const newId = `tsk_${Date.now().toString(36)}`;
 
-    const assignee = allUsers?.find(u => String(u.id) === String(data.assignedToId));
+    const assignee = allUsers?.find(u => 
+      String(u.id) === String(data.assignedToId) ||
+      String(u.legacyId) === String(data.assignedToId) ||
+      (u.backendId && String(u.backendId) === String(data.assignedToId))
+    );
     const supervisorId = assignee?.supervisorId || data.supervisorId;
     const adminId = assignee?.adminId || data.adminId;
 
@@ -622,7 +754,7 @@ export const AppProvider = ({ children }) => {
           priority: newTask.priority || 'Normal',
           labels: Array.isArray(newTask.labels) ? newTask.labels.join(',') : newTask.labels,
           project_id: getBackendId(newTask.projectId) || 1,
-          assignee_id: getBackendId(newTask.assignedToId) || 1
+          assignee_id: assignee?.backendId || getBackendId(newTask.assignedToId) || 1
         })
       });
     } catch (err) {
@@ -1017,7 +1149,7 @@ export const AppProvider = ({ children }) => {
         await fetch('/api/comments', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content, task_id: targetTaskId, author_id: getBackendId(currentUser?.id) || 1 })
+          body: JSON.stringify({ content, task_id: targetTaskId, author_id: currentUser?.backendId || getBackendId(currentUser?.id) || 1 })
         });
       } catch (err) {
         console.error('Failed to sync comment to API:', err);
@@ -1079,7 +1211,7 @@ export const AppProvider = ({ children }) => {
     const ticketNumber = `TCK-${count}`;
     const newId = `tck_${Date.now().toString(36)}`;
 
-    const assignee = allUsers.find(u => String(u.id) === String(data.assignedToId));
+    const assignee = findUserByAnyId(allUsers, data.assignedToId);
     const supervisorId = assignee?.supervisorId || data.supervisorId;
     const adminId = assignee?.adminId || data.adminId;
 
@@ -1103,11 +1235,12 @@ export const AppProvider = ({ children }) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          ticket_number: newTicket.ticketNumber,
           title: newTicket.title,
           description: newTicket.description,
           priority: newTicket.priority || 'Normal',
           status: newTicket.status || 'New',
-          assigned_to_id: getBackendId(newTicket.assignedToId) || 1
+          assigned_to_id: assignee?.backendId || getBackendId(newTicket.assignedToId) || null
         })
       });
     } catch (err) {
@@ -1173,12 +1306,26 @@ export const AppProvider = ({ children }) => {
 
   const updateTicket = async (id, updates) => {
     const targetId = getBackendId(id);
+    const hasAssignedProp = 'assignedToId' in updates || 'assigned_to_id' in updates;
+    const rawAssignedId = updates.assignedToId !== undefined ? updates.assignedToId : updates.assigned_to_id;
+
+    // Find the actual user object from allUsers via the shared canonical
+    // lookup — matches on local id, legacyId, or backendId so this
+    // resolves correctly regardless of which id scheme the caller passed.
+    const targetUser = findUserByAnyId(allUsers, rawAssignedId);
+
+    const canonicalAssignedId = targetUser ? targetUser.id : (rawAssignedId && rawAssignedId !== 'unassigned' ? rawAssignedId : null);
+    const apiAssignedId = targetUser ? (targetUser.backendId || getBackendId(targetUser.id)) : getBackendId(rawAssignedId);
+
     if (targetId) {
       try {
         await fetch(`/api/tickets/${targetId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updates)
+          body: JSON.stringify({
+            ...updates,
+            assigned_to_id: hasAssignedProp ? apiAssignedId : undefined
+          })
         });
       } catch (err) {
         console.error('Failed to sync updateTicket to API:', err);
@@ -1187,7 +1334,14 @@ export const AppProvider = ({ children }) => {
 
     setTickets(prev => prev.map(t => {
       if (String(t.id) === String(id)) {
-        return { ...t, ...updates, updatedAt: new Date().toISOString() };
+        return { 
+          ...t, 
+          ...updates, 
+          assignedToId: hasAssignedProp ? canonicalAssignedId : t.assignedToId,
+          supervisorId: targetUser?.supervisorId || t.supervisorId,
+          adminId: targetUser?.adminId || t.adminId,
+          updatedAt: new Date().toISOString() 
+        };
       }
       return t;
     }));
@@ -1408,13 +1562,13 @@ export const AppProvider = ({ children }) => {
     const ticket = tickets.find(t => String(t.id) === String(ticketId));
     if (!ticket) return;
 
-    const agent = allUsers.find(u => String(u.id) === String(agentId));
+    const agent = findUserByAnyId(allUsers, agentId);
 
     setTickets(prev => prev.map(t => {
       if (String(t.id) === String(ticketId)) {
         return {
           ...t,
-          assignedToId: agentId || undefined,
+          assignedToId: agent ? agent.id : (agentId || undefined),
           supervisorId: agent?.supervisorId || t.supervisorId,
           adminId: agent?.adminId || t.adminId,
           updatedAt: new Date().toISOString()
@@ -1560,6 +1714,67 @@ export const AppProvider = ({ children }) => {
     });
   };
 
+  const createCustomRole = (roleKey, roleDisplayName, initialPermissions = {}) => {
+    if (currentUser?.role !== 'super_admin') return;
+
+    const normalizedKey = roleKey.toLowerCase().trim().replace(/\s+/g, '_');
+    if (!normalizedKey) return;
+
+    if (customRoles.includes(normalizedKey)) {
+      alert('Role already exists!');
+      return;
+    }
+
+    setCustomRoles(prev => [...prev, normalizedKey]);
+
+    setPermissionMatrix(prev => ({
+      ...prev,
+      [normalizedKey]: initialPermissions
+    }));
+
+    logAudit({
+      actorId: currentUser?.id,
+      actorName: currentUser?.name,
+      actorRole: currentUser?.role,
+      action: 'CUSTOM_ROLE_CREATED',
+      entityType: 'role',
+      entityId: normalizedKey,
+      entityTitle: roleDisplayName || roleKey,
+      details: `Super Admin created custom role: ${roleDisplayName || roleKey}`
+    });
+  };
+
+  const deleteCustomRole = (roleKey) => {
+    if (currentUser?.role !== 'super_admin') return;
+
+    const builtInRoles = ['super_admin', 'admin', 'supervisor', 'staff', 'client'];
+    if (builtInRoles.includes(roleKey)) return;
+
+    setCustomRoles(prev => {
+      const updated = prev.filter(r => r !== roleKey);
+      localStorage.setItem(STORAGE_KEYS.CUSTOM_ROLES, JSON.stringify(updated));
+      return updated;
+    });
+
+    setPermissionMatrix(prev => {
+      const updated = { ...prev };
+      delete updated[roleKey];
+      localStorage.setItem(STORAGE_KEYS.PERMISSION_MATRIX, JSON.stringify(updated));
+      return updated;
+    });
+
+    logAudit({
+      actorId: currentUser?.id,
+      actorName: currentUser?.name,
+      actorRole: currentUser?.role,
+      action: 'CUSTOM_ROLE_DELETED',
+      entityType: 'role',
+      entityId: roleKey,
+      entityTitle: roleKey,
+      details: `Super Admin deleted custom role: ${roleKey}`
+    });
+  };
+
   const updateRolePermission = (role, permissionKey, value) => {
     if (currentUser?.role !== 'super_admin') return;
     if (role === 'super_admin') return;
@@ -1615,6 +1830,7 @@ export const AppProvider = ({ children }) => {
     setAuditLogs(SEED_AUDIT_LOGS);
     setNotifications(SEED_NOTIFICATIONS);
     setPermissionMatrix(DEFAULT_PERMISSION_MATRIX);
+    setCustomRoles(['super_admin', 'admin', 'supervisor', 'staff', 'client']);
     setActiveTab('dashboard');
   };
 
@@ -1677,6 +1893,9 @@ export const AppProvider = ({ children }) => {
         toggleUserActiveStatus: toggleUserStatus,
         toggleUserPermission,
         permissionMatrix,
+        customRoles,
+        createCustomRole,
+        deleteCustomRole,
         updateRolePermission,
         markNotificationAsRead,
         markAllNotificationsAsRead,
@@ -1689,6 +1908,8 @@ export const AppProvider = ({ children }) => {
         setSelectedProjectEditId,
         selectedTicketId,
         setSelectedTicketId,
+        selectedTicketEditId,
+        setSelectedTicketEditId,
         selectedProjectDetailId,
         setSelectedProjectDetailId,
         quickCreateOpen,

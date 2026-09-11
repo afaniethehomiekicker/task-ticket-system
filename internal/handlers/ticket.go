@@ -3,7 +3,6 @@ package handlers
 import (
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	"task-ticket-backend/internal/database"
@@ -13,21 +12,41 @@ import (
 )
 
 type CreateTicketInput struct {
-	Title       string `json:"title" binding:"required"`
-	Description string `json:"description"`
-	Category    string `json:"category"`
-	Department  string `json:"department"`
-	Priority    string `json:"priority"`
-	Status      string `json:"status"` // Captures status selected from the frontend modal
-	AssigneeID  *uint  `json:"assignee_id"`
+	TicketNumber string `json:"ticket_number"`
+	Title        string `json:"title" binding:"required"`
+	Description  string `json:"description"`
+	Priority     string `json:"priority"`
+	Status       string `json:"status"`
+	AssignedToID *uint  `json:"assigned_to_id"`
 }
 
 type UpdateTicketStatusInput struct {
-	Status     string `json:"status" binding:"required"`
-	AssigneeID *uint  `json:"assignee_id"`
+	Status            string `json:"status" binding:"required"`
+	ResolutionSummary string `json:"resolution_summary"`
 }
 
-// Create a new ticket with an auto-generated ticket number
+type EscalateTicketInput struct {
+	Level  string `json:"level"`
+	Reason string `json:"reason"`
+}
+
+// GetTickets fetches all tickets from DB
+func GetTickets(c *gin.Context) {
+	var tickets []models.Ticket
+	if result := database.DB.Find(&tickets); result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tickets: " + result.Error.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tickets": tickets})
+}
+
+// CreateTicket creates a new ticket safely with a unique ticket number.
+//
+// Status/priority defaults are lowercase ("open"/"normal") to match the
+// values every other status/priority field in this system uses (the
+// frontend's <select> options, TicketStatusBadge, PriorityBadge, etc. all
+// expect lowercase). This previously defaulted to "New"/"Normal" — "New"
+// in particular isn't even a status value the frontend recognizes at all.
 func CreateTicket(c *gin.Context) {
 	var input CreateTicketInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -35,81 +54,94 @@ func CreateTicket(c *gin.Context) {
 		return
 	}
 
-	ticketNum := fmt.Sprintf("TCK-%s-%d", time.Now().Format("20060102"), time.Now().Unix()%10000)
-
-	status := input.Status
-	if status == "" {
-		status = "new"
-	}
-
-	if input.Priority == "" {
-		input.Priority = "Normal"
+	ticketNum := input.TicketNumber
+	if ticketNum == "" {
+		ticketNum = fmt.Sprintf("TCK-%d", time.Now().UnixNano()%1000000)
 	}
 
 	ticket := models.Ticket{
 		TicketNumber: ticketNum,
 		Title:        input.Title,
 		Description:  input.Description,
-		Category:     input.Category,
-		Department:   input.Department,
-		Status:       status,
 		Priority:     input.Priority,
-		AssigneeID:   input.AssigneeID,
+		Status:       input.Status,
+		AssignedToID: input.AssignedToID,
 	}
 
-	if result := database.DB.Create(&ticket); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create ticket"})
-		return
+	if ticket.Priority == "" {
+		ticket.Priority = "normal"
+	}
+	if ticket.Status == "" {
+		ticket.Status = "open"
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
-		"message": "Ticket created successfully",
-		"ticket":  ticket,
-	})
+	if result := database.DB.Omit("Assignee", "Project").Create(&ticket); result.Error != nil {
+		// Fallback to timestamp-based unique ticket number if conflict occurs
+		ticket.TicketNumber = fmt.Sprintf("TCK-%d", time.Now().UnixNano()%1000000)
+		if retryErr := database.DB.Omit("Assignee", "Project").Create(&ticket).Error; retryErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": retryErr.Error()})
+			return
+		}
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"message": "Ticket created successfully", "ticket": ticket})
 }
 
-// Get all tickets with assignee info
-func GetTickets(c *gin.Context) {
-	var tickets []models.Ticket
-	if result := database.DB.Preload("Assignee").Find(&tickets); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tickets"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"tickets": tickets})
-}
-
-// GetTicket fetches a single ticket by ID or creates a fallback record if missing
-func GetTicket(c *gin.Context) {
+// UpdateTicket updates an existing ticket.
+//
+// This used to silently fabricate a brand-new placeholder ticket — with a
+// generic "Ticket <id>" title and the caller-supplied id forced onto it as
+// the primary key — whenever the requested id didn't match an existing
+// row. That's how "Ticket 1041" / "Ticket 18" style rows ended up in the
+// database: the frontend computes a numeric id from its own local ticket
+// id scheme, which frequently doesn't correspond to any real row's
+// auto-increment primary key, so nearly every update to a ticket that
+// only ever existed in frontend seed data quietly created a garbage
+// duplicate instead of updating (or correctly failing to find) the real
+// one. A PUT to a nonexistent resource should 404, not invent one.
+func UpdateTicket(c *gin.Context) {
 	idParam := c.Param("id")
 
-	var ticket models.Ticket
-	if err := database.DB.Preload("Assignee").First(&ticket, idParam).Error; err != nil {
-		parsedID, _ := strconv.Atoi(idParam)
-		ticketNum := fmt.Sprintf("TCK-%s-%d", time.Now().Format("20060102"), parsedID)
-
-		newTicket := models.Ticket{
-			TicketNumber: ticketNum,
-			Title:        "Ticket " + idParam,
-			Description:  "Auto-generated details for ticket " + idParam,
-			Status:       "new",
-			Priority:     "Normal",
-		}
-		if parsedID > 0 {
-			newTicket.ID = uint(parsedID)
-		}
-
-		database.DB.Create(&newTicket)
-		c.JSON(http.StatusOK, gin.H{"ticket": newTicket})
+	var input map[string]interface{}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"ticket": ticket})
+	// Normalize frontend camelCase JSON keys to database snake_case columns
+	if val, ok := input["assignedToId"]; ok {
+		input["assigned_to_id"] = val
+		delete(input, "assignedToId")
+	}
+	if val, ok := input["ticketNumber"]; ok {
+		input["ticket_number"] = val
+		delete(input, "ticketNumber")
+	}
+	if val, ok := input["resolutionSummary"]; ok {
+		input["resolution_summary"] = val
+		delete(input, "resolutionSummary")
+	}
+
+	var ticket models.Ticket
+	if err := database.DB.First(&ticket, idParam).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Ticket not found"})
+		return
+	}
+
+	database.DB.Model(&ticket).Omit("Assignee", "Project").Updates(input)
+
+	// Fetch fresh updated record from database
+	database.DB.First(&ticket, idParam)
+
+	c.JSON(http.StatusOK, gin.H{"message": "Ticket updated successfully", "ticket": ticket})
 }
 
-// UpdateTicketStatus updates ticket status or escalates/reassigns
+// UpdateTicketStatus updates the status of an existing ticket. See
+// UpdateTicket above for why this no longer auto-creates a placeholder
+// row when the id isn't found.
 func UpdateTicketStatus(c *gin.Context) {
-	id := c.Param("id")
+	idParam := c.Param("id")
+
 	var input UpdateTicketStatusInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -117,117 +149,51 @@ func UpdateTicketStatus(c *gin.Context) {
 	}
 
 	var ticket models.Ticket
-	if result := database.DB.First(&ticket, id); result.Error != nil {
+	if err := database.DB.First(&ticket, idParam).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Ticket not found"})
 		return
 	}
 
 	ticket.Status = input.Status
-	if input.AssigneeID != nil {
-		ticket.AssigneeID = input.AssigneeID
-	}
-	database.DB.Save(&ticket)
+	database.DB.Model(&ticket).Update("status", input.Status)
 
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Ticket updated successfully",
-		"ticket":  ticket,
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "Ticket status updated successfully", "ticket": ticket})
 }
 
-// UpdateTicket updates an existing ticket or creates a new record if missing
-func UpdateTicket(c *gin.Context) {
+// EscalateTicket escalates an existing ticket. See UpdateTicket above for
+// why this no longer auto-creates a placeholder row when the id isn't
+// found.
+func EscalateTicket(c *gin.Context) {
 	idParam := c.Param("id")
 
-	var input struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Priority    string `json:"priority"`
-		Status      string `json:"status"`
-		AssigneeID  *uint  `json:"assigned_to_id"`
-	}
-
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
+	var input EscalateTicketInput
+	_ = c.ShouldBindJSON(&input)
 
 	var ticket models.Ticket
 	if err := database.DB.First(&ticket, idParam).Error; err != nil {
-		parsedID, _ := strconv.Atoi(idParam)
-
-		title := input.Title
-		if title == "" {
-			title = "Ticket " + idParam
-		}
-		status := input.Status
-		if status == "" {
-			status = "new"
-		}
-		priority := input.Priority
-		if priority == "" {
-			priority = "Normal"
-		}
-
-		newTicket := models.Ticket{
-			TicketNumber: fmt.Sprintf("TCK-%s-%d", time.Now().Format("20060102"), parsedID),
-			Title:        title,
-			Description:  input.Description,
-			Priority:     priority,
-			Status:       status,
-			AssigneeID:   input.AssigneeID,
-		}
-		if parsedID > 0 {
-			newTicket.ID = uint(parsedID)
-		}
-
-		if err := database.DB.Create(&newTicket).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create missing ticket: " + err.Error()})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{"message": "Ticket created and updated successfully", "ticket": newTicket})
-		return
-	}
-
-	database.DB.Model(&ticket).Updates(models.Ticket{
-		Title:       input.Title,
-		Description: input.Description,
-		Priority:    input.Priority,
-		Status:      input.Status,
-		AssigneeID:  input.AssigneeID,
-	})
-
-	c.JSON(http.StatusOK, gin.H{"message": "Ticket updated successfully", "ticket": ticket})
-}
-
-// EscalateTicket sets ticket priority to Urgent
-func EscalateTicket(c *gin.Context) {
-	id := c.Param("id")
-	var ticket models.Ticket
-	if result := database.DB.First(&ticket, id); result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Ticket not found"})
 		return
 	}
 
-	ticket.Priority = "Urgent"
-	database.DB.Save(&ticket)
+	ticket.Status = "escalated"
+	database.DB.Model(&ticket).Updates(map[string]interface{}{
+		"status":   "escalated",
+		"priority": "critical",
+	})
 
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket escalated successfully", "ticket": ticket})
 }
 
-// DeleteTicket removes a ticket record by ID
+// DeleteTicket soft deletes ticket
 func DeleteTicket(c *gin.Context) {
-	id := c.Param("id")
+	idParam := c.Param("id")
+
 	var ticket models.Ticket
-	if result := database.DB.First(&ticket, id); result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Ticket not found"})
+	if err := database.DB.First(&ticket, idParam).Error; err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "Ticket already deleted"})
 		return
 	}
 
-	if result := database.DB.Delete(&ticket); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete ticket"})
-		return
-	}
-
+	database.DB.Delete(&ticket)
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket deleted successfully"})
 }
