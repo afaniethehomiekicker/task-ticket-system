@@ -10,10 +10,11 @@ import (
 )
 
 type CreateCommentInput struct {
-	Content  string `json:"content" binding:"required"`
-	UserID   uint   `json:"user_id" binding:"required"`
-	TaskID   *uint  `json:"task_id"`
-	TicketID *uint  `json:"ticket_id"`
+	Content    string `json:"content" binding:"required"`
+	UserID     uint   `json:"user_id" binding:"required"`
+	TaskID     *uint  `json:"task_id"`
+	TicketID   *uint  `json:"ticket_id"`
+	IsInternal bool   `json:"is_internal"`
 }
 
 // Add a comment to a task or ticket
@@ -31,16 +32,19 @@ func CreateComment(c *gin.Context) {
 	}
 
 	comment := models.Comment{
-		Content:  input.Content,
-		UserID:   input.UserID,
-		TaskID:   input.TaskID,
-		TicketID: input.TicketID,
+		Content:    input.Content,
+		UserID:     input.UserID,
+		TaskID:     input.TaskID,
+		TicketID:   input.TicketID,
+		IsInternal: input.IsInternal,
 	}
 
 	if result := database.DB.Create(&comment); result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create comment"})
 		return
 	}
+
+	database.DB.Preload("User").First(&comment, comment.ID)
 
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Comment added successfully",

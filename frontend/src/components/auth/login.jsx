@@ -1,38 +1,68 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Lock, User, Mail } from 'lucide-react';
+import { Lock, Mail } from 'lucide-react';
 
 export const Login = () => {
-  const { setCurrentUserId, users } = useApp();
-  
-  const [isAdminLogin, setIsAdminLogin] = useState(false);
-  const [identifier, setIdentifier] = useState(''); // Username for admin, Email for staff
+  const { setCurrentUserId, setAuthToken, allUsers } = useApp();
+
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleLogin = (e) => {
+  // Resolves the backend's returned user (email + role) against the
+  // frontend's already-loaded allUsers list, the same way every other
+  // part of the app matches a backend record to a local one — by email,
+  // not by trusting a bare id the backend happens to send back. Falls
+  // back to the raw backend id only if no local match exists yet (e.g.
+  // fetchInitialData hasn't merged this particular user in yet).
+  const resolveLocalUserId = (backendUser) => {
+    const email = (backendUser.email || '').toLowerCase().trim();
+    const match = (allUsers || []).find(u => (u.email || '').toLowerCase().trim() === email);
+    return match ? match.id : backendUser.id;
+  };
+
+  const handleLogin = async (e) => {
     e.preventDefault();
     setError('');
 
-    const userList = users || [];
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !password) {
+      setError('Please enter both your email and password.');
+      return;
+    }
 
-    const foundUser = userList.find(u => {
-      if (isAdminLogin) {
-        // Fallback check to support cached local storage or username field
-        return u.role === 'super_admin' && (
-          u.username === identifier || 
-          u.id === identifier || 
-          identifier.toLowerCase() === 'superadmin'
-        );
-      } else {
-        return u.email === identifier && u.role !== 'super_admin';
+    setIsSubmitting(true);
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      // The backend is the ONLY source of truth on whether these
+      // credentials are valid. A non-2xx response — 401 for wrong/empty
+      // password, 400 for a malformed request, anything else — means
+      // login failed, full stop. There is no local fallback check: the
+      // previous version of this component looked a user up by email
+      // alone and never verified the password against anything, which is
+      // exactly the vulnerability this rewrite closes.
+      if (!res.ok || !data.user) {
+        setError(data.error || 'Invalid email or password.');
+        return;
       }
-    });
 
-    if (foundUser) {
-      setCurrentUserId(foundUser.id);
-    } else {
-      setError(isAdminLogin ? 'Invalid super admin username.' : 'Invalid staff email.');
+      // Store the token BEFORE switching currentUserId, so that if any
+      // effect reacts to currentUserId changing and immediately makes an
+      // authenticated request, the token is already in place.
+      setAuthToken(data.token);
+      setCurrentUserId(resolveLocalUserId(data.user));
+    } catch (err) {
+      setError('Could not reach the server. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -45,7 +75,7 @@ export const Login = () => {
           </div>
           <h2 className="text-xl font-bold text-white">Ticket System Login</h2>
           <p className="text-xs text-slate-400 mt-1">
-            {isAdminLogin ? 'Super Admin Portal (Login via Username)' : 'Staff Portal (Login via Email)'}
+            Sign in with your email and password
           </p>
         </div>
 
@@ -58,18 +88,18 @@ export const Login = () => {
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-slate-300 mb-1">
-              {isAdminLogin ? 'Username' : 'Email Address'}
+              Email Address
             </label>
             <div className="relative">
               <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-                {isAdminLogin ? <User className="w-4 h-4" /> : <Mail className="w-4 h-4" />}
+                <Mail className="w-4 h-4" />
               </span>
               <input
-                type={isAdminLogin ? 'text' : 'email'}
+                type="email"
                 required
-                value={identifier}
-                onChange={(e) => setIdentifier(e.target.value)}
-                placeholder={isAdminLogin ? 'Enter superadmin username' : 'name@company.com'}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="name@company.com"
                 className="w-full pl-9 pr-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-indigo-500"
               />
             </div>
@@ -83,6 +113,7 @@ export const Login = () => {
               </span>
               <input
                 type="password"
+                required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
@@ -91,24 +122,12 @@ export const Login = () => {
             </div>
           </div>
 
-          <div className="flex items-center justify-between text-xs">
-            <button
-              type="button"
-              onClick={() => {
-                setIsAdminLogin(!isAdminLogin);
-                setIdentifier('');
-              }}
-              className="text-indigo-400 hover:underline"
-            >
-              {isAdminLogin ? 'Switch to Staff Email Login' : 'Login as Super Admin?'}
-            </button>
-          </div>
-
           <button
             type="submit"
-            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs transition"
+            disabled={isSubmitting}
+            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-lg text-xs transition"
           >
-            Sign In to Dashboard
+            {isSubmitting ? 'Signing in...' : 'Sign In to Dashboard'}
           </button>
         </form>
       </div>

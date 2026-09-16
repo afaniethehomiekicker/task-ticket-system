@@ -248,7 +248,8 @@ export const KanbanBoardView = () => {
                           <div className="pt-2 border-t border-slate-300/60 dark:border-zinc-800/80 flex items-center justify-between text-[11px] text-slate-500 dark:text-zinc-400">
                             <div className="flex items-center gap-2">
                               <span className="flex items-center gap-1" title="Due Date">
-                                <Clock className="w-3 h-3" /> {task.dueDate ? String(task.dueDate).substring(5) : '--/--'}
+                                
+{task?.dueDate ? String(task.dueDate).substring(5) : '--/--'}
                               </span>
                               {taskChecklists.length > 0 && (
                                 <span className="flex items-center gap-1" title="Checklists">

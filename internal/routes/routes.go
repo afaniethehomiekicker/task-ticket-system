@@ -28,6 +28,12 @@ func RegisterRoutes(r *gin.Engine) {
 		// User management endpoints
 		api.GET("/users", handlers.GetUsers)
 
+		// Client / Company profile endpoints. GET is open (needed for the
+		// client picker when creating a project) — POST/PUT/DELETE are
+		// gated in adminGroup below, since these are business-sensitive
+		// records only Admin/Super Admin should be creating or editing.
+		api.GET("/clients", handlers.GetClients)
+
 		// Project endpoints
 		api.GET("/projects", handlers.GetProjects)
 		api.PUT("/projects/:id", handlers.UpdateProject)
@@ -60,13 +66,24 @@ func RegisterRoutes(r *gin.Engine) {
 		api.GET("/search", handlers.GlobalSearch)
 		api.GET("/reports/summary", handlers.GetSystemReport)
 
-		// Protected Admin / Super Admin routes
+		// Protected Admin / Super Admin routes. AuthenticateJWT MUST run
+		// before AuthorizeRole — it's what verifies the token and sets
+		// "userRole" on the context; AuthorizeRole only reads that
+		// already-verified value, it doesn't verify anything itself.
+		// Previously AuthorizeRole trusted a raw, client-settable
+		// X-User-Role header directly, which meant anyone could grant
+		// themselves Super Admin access on these routes with no
+		// authentication at all.
 		adminGroup := api.Group("/")
+		adminGroup.Use(middleware.AuthenticateJWT())
 		adminGroup.Use(middleware.AuthorizeRole("Super Admin", "Admin"))
 		{
 			adminGroup.POST("/projects", handlers.CreateProject)
 			adminGroup.DELETE("/projects/:id", handlers.DeleteProject)
 			adminGroup.GET("/audit-logs", handlers.GetAuditLogs)
+			adminGroup.POST("/clients", handlers.CreateClient)
+			adminGroup.PUT("/clients/:id", handlers.UpdateClient)
+			adminGroup.DELETE("/clients/:id", handlers.DeleteClient)
 		}
 	}
 }

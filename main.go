@@ -9,7 +9,6 @@ import (
 
 	"task-ticket-backend/internal/database"
 	"task-ticket-backend/internal/handlers"
-	"task-ticket-backend/internal/models"
 	"task-ticket-backend/internal/routes"
 
 	"github.com/gin-contrib/cors"
@@ -25,34 +24,27 @@ func main() {
 		log.Println("No .env file found, relying on system environment")
 	}
 
+	// ConnectDB already runs AutoMigrate and SeedSuperAdmin internally
+	// (see database/db.go) before returning here — no need to repeat
+	// either of those in main. They used to be duplicated here, which was
+	// harmless (AutoMigrate is idempotent, SeedSuperAdmin no-ops once a
+	// Super Admin exists) but redundant and confusing to maintain in two
+	// places.
 	database.ConnectDB()
-
-	// Migrate schema BEFORE seeding anything into it. This used to run
-	// after SeedSuperAdmin(), which meant a genuinely fresh database (no
-	// `users` table yet) would crash the whole server on first boot —
-	// SeedSuperAdmin's DB.Create call fails when the table doesn't exist,
-	// and seed.go calls log.Fatal on that error. Masked previously only
-	// because the DB already had the table from a prior run.
-	err := database.DB.AutoMigrate(
-		&models.User{},
-		&models.Project{},
-		&models.Task{},
-		&models.Ticket{},
-		&models.SubTask{},
-		&models.Comment{},
-		&models.AuditLog{},
-	)
-	if err != nil {
-		log.Fatal("Migration failed: ", err)
-	}
-
-	// Seed Super Admin automatically on boot
-	database.SeedSuperAdmin()
 
 	// Seed the fixed demo accounts once at startup — NOT on every request
 	// (see handlers.GetUsers / handlers.SeedDemoUsers for why that used to
 	// be a duplicate-user-creating race condition).
 	handlers.SeedDemoUsers()
+
+	// Order matters: Projects reference Users (owner/admin/members), and
+	// Tasks/Tickets reference both Projects and Users. Each seeder looks
+	// up its dependencies by email/code and silently skips if they're not
+	// found yet, but that's a safety net, not a substitute for calling
+	// them in the right order.
+	database.SeedDemoProjects()
+	database.SeedDemoTasks()
+	database.SeedDemoTickets()
 
 	r := gin.Default()
 

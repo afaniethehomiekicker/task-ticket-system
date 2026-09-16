@@ -185,7 +185,9 @@ export const Sidebar = ({ onOpenQuickCreate }) => {
             System Live (v3.2)
           </span>
           <span className="font-mono text-[10px]">
-            {currentUser.department.substring(0, 4).toUpperCase()}
+            <span className="font-mono text-[10px]">
+  {(currentUser?.department || currentUser?.role || 'GEN').substring(0, 4).toUpperCase()}
+</span>
           </span>
         </div>
       </div>

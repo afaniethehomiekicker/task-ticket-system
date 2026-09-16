@@ -2,31 +2,113 @@ package middleware
 
 import (
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 )
 
-// AuthorizeRole checks if the user's role matches one of the allowed roles
-func AuthorizeRole(allowedRoles ...string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// Assuming role is passed via header or session/JWT context for simplicity
-		userRole := c.GetHeader("X-User-Role")
+// jwtSecret is read once from the environment. In production this MUST be
+// set to a long, random value via the JWT_SECRET env var — the fallback
+// below exists only so local/dev environments don't crash on missing
+// config, and it is deliberately obvious in logs that it's insecure.
+var jwtSecret = []byte(getJWTSecret())
 
-		if userRole == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Missing user role header"})
+func getJWTSecret() string {
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		return "INSECURE_DEV_ONLY_CHANGE_ME"
+	}
+	return secret
+}
+
+type Claims struct {
+	UserID uint   `json:"user_id"`
+	Role   string `json:"role"`
+	jwt.RegisteredClaims
+}
+
+// GenerateToken creates a signed JWT for a successfully authenticated
+// user. Called from handlers.Login after bcrypt verification succeeds —
+// this is the ONLY place a token should ever be minted.
+func GenerateToken(userID uint, role string) (string, error) {
+	claims := Claims{
+		UserID: userID,
+		Role:   role,
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jwtSecret)
+}
+
+// AuthenticateJWT verifies the Authorization: Bearer <token> header against
+// a real signed token this server issued, and — only on success — stores
+// the verified user id and role on the Gin context for downstream
+// handlers/middleware (AuthorizeRole below) to read. This replaces trusting
+// a client-supplied X-User-Role header, which is inherently forgeable:
+// nothing stops any request from setting that header to whatever it wants,
+// regardless of whether the caller ever authenticated.
+func AuthenticateJWT() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Missing or malformed Authorization header"})
 			c.Abort()
 			return
 		}
 
-		// Super Admin bypasses all role checks
-		if userRole == "Super Admin" {
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+
+		claims := &Claims{}
+		token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
+			return jwtSecret, nil
+		})
+
+		if err != nil || !token.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Invalid or expired token"})
+			c.Abort()
+			return
+		}
+
+		c.Set("userID", claims.UserID)
+		c.Set("userRole", claims.Role)
+		c.Next()
+	}
+}
+
+// AuthorizeRole checks the ROLE FROM THE VERIFIED TOKEN (set by
+// AuthenticateJWT, above) against the allowed roles for this route. Must
+// run after AuthenticateJWT in the middleware chain — see routes.go.
+//
+// Comparison is case-insensitive on purpose: this backend currently has
+// role strings seeded in two different casings ("Super Admin" in
+// seed.go's SeedSuperAdmin vs "super_admin" in handlers.SeedDemoUsers and
+// the entire frontend). Case-insensitive comparison here is a stopgap so
+// neither casing silently locks legitimate users out; the actual fix is
+// standardizing on one casing everywhere role strings are seeded or
+// checked, which still hasn't been done.
+func AuthorizeRole(allowedRoles ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userRole, exists := c.Get("userRole")
+		if !exists {
+			// Should be unreachable if AuthenticateJWT ran first, but
+			// fail closed rather than assume.
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: No authenticated role on request"})
+			c.Abort()
+			return
+		}
+
+		roleStr, _ := userRole.(string)
+
+		// Super Admin bypasses all role checks, regardless of casing.
+		if strings.EqualFold(roleStr, "super_admin") || strings.EqualFold(roleStr, "Super Admin") {
 			c.Next()
 			return
 		}
 
 		allowed := false
 		for _, role := range allowedRoles {
-			if userRole == role {
+			if strings.EqualFold(roleStr, role) {
 				allowed = true
 				break
 			}

@@ -35,14 +35,24 @@ func ConnectDB() {
 		log.Fatal("Failed to connect to database: ", err)
 	}
 
-	// Auto-migrate all models including SubTasks and Comments
+	// Auto-migrate all models. GORM automatically creates the many2many
+	// join tables (project_members, project_supervisors,
+	// task_dependencies) from the struct tags on Project/Task, as long as
+	// those owning models are listed here — no separate join-table struct
+	// needs to be registered.
 	err = DB.AutoMigrate(
 		&models.User{},
+		&models.Client{},
 		&models.Project{},
+		&models.ProjectAttachment{},
 		&models.Task{},
+		&models.Checklist{},
+		&models.TaskAttachment{},
 		&models.Ticket{},
+		&models.TicketAttachment{},
 		&models.SubTask{},
 		&models.Comment{},
+		&models.AuditLog{},
 	)
 	if err != nil {
 		log.Fatal("Failed to auto-migrate database: ", err)

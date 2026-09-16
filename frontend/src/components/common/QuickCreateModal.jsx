@@ -13,7 +13,7 @@ const TICKET_CATEGORIES = [
 ];
 
 export const QuickCreateModal = ({ isOpen, onClose }) => {
-  const { createProject, createTask, createTicket, quickCreateConfig, visibleProjects, currentUser, allUsers } = useApp() || {};
+  const { createProject, createTask, createTicket, createClient, quickCreateConfig, visibleProjects, currentUser, allUsers } = useApp() || {};
 
   const [localTab, setLocalTab] = useState(quickCreateConfig?.tab || 'project');
   const [openNonce, setOpenNonce] = useState(0);
@@ -40,6 +40,13 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   const [prjStartDate, setPrjStartDate] = useState('');
   const [prjDueDate, setPrjDueDate] = useState('');
   const [projectClientId, setProjectClientId] = useState('');
+  const [selectedClientName, setSelectedClientName] = useState('');
+  const [showNewClientForm, setShowNewClientForm] = useState(false);
+  const [newClientName, setNewClientName] = useState('');
+  const [newClientContact, setNewClientContact] = useState('');
+  const [newClientEmail, setNewClientEmail] = useState('');
+  const [clientPickerNonce, setClientPickerNonce] = useState(0);
+  const [isCreatingClient, setIsCreatingClient] = useState(false);
 
   // Form states — Task
   const [taskTitle, setTaskTitle] = useState('');
@@ -75,6 +82,58 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
         value: u.id,
         label: `${u.name} (${u.role ? u.role.toUpperCase() : 'USER'}) ${u.companyName ? `— ${u.companyName}` : ''}`
       }));
+    }
+  };
+
+  // Server-side Client/Company search — hits the real /api/clients
+  // endpoint, not /api/users. This replaces a previous stub that searched
+  // the staff directory and displayed a companyName field that doesn't
+  // exist on User at all: picking a "client" used to mean picking a
+  // regular team member, with no way to tell an actual external client
+  // apart from a colleague, and the resulting clientId pointed at
+  // nothing a project's real client_id foreign key could ever resolve.
+  const loadClientOptions = async (inputValue) => {
+    try {
+      const res = await fetch(`/api/clients?search=${encodeURIComponent(inputValue)}`);
+      if (!res.ok) throw new Error('Search failed');
+      const data = await res.json();
+      const clientsList = data.clients || [];
+      return clientsList.map(c => ({
+        value: c.id ?? c.ID,
+        label: `${c.company_name}${c.contact_person ? ` — ${c.contact_person}` : ''}`
+      }));
+    } catch (err) {
+      return [];
+    }
+  };
+
+  const handleQuickAddClient = async (e) => {
+    e.preventDefault();
+    if (!newClientName.trim() || typeof createClient !== 'function') return;
+
+    setIsCreatingClient(true);
+    const created = await createClient({
+      companyName: newClientName.trim(),
+      contactPerson: newClientContact.trim(),
+      email: newClientEmail.trim(),
+    });
+    setIsCreatingClient(false);
+
+    if (created) {
+      setProjectClientId(created.id);
+      setSelectedClientName(created.companyName);
+      setShowNewClientForm(false);
+      setNewClientName('');
+      setNewClientContact('');
+      setNewClientEmail('');
+      // AsyncSelect below is uncontrolled (no `value` prop) — bumping this
+      // key forces it to remount so its displayed value doesn't silently
+      // disagree with projectClientId now pointing at the just-created
+      // client. The confirmation line under the field covers the gap
+      // between the remount and the next time someone actually searches.
+      setClientPickerNonce(n => n + 1);
+    } else {
+      alert('Could not create the client. Please try again.');
     }
   };
 
@@ -138,6 +197,11 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     setPrjStartDate('');
     setPrjDueDate('');
     setProjectClientId('');
+    setSelectedClientName('');
+    setShowNewClientForm(false);
+    setNewClientName('');
+    setNewClientContact('');
+    setNewClientEmail('');
     setTaskTitle('');
     setTaskProjectId('');
     setTaskPriority('normal');
@@ -245,18 +309,84 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
           {localTab === 'project' && (
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
-                  1. Select Client / Company * (Searchable)
-                </label>
-                <AsyncSelect
-                  cacheOptions
-                  defaultOptions
-                  isSearchable
-                  loadOptions={loadUserOptions}
-                  onChange={(option) => setProjectClientId(option ? option.value : '')}
-                  placeholder="Type to search client or company..."
-                  styles={customStyles}
-                />
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider">
+                    1. Select Client / Company *
+                  </label>
+                  {!showNewClientForm && (
+                    <button
+                      type="button"
+                      onClick={() => setShowNewClientForm(true)}
+                      className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:underline"
+                    >
+                      + New Client
+                    </button>
+                  )}
+                </div>
+
+                {!showNewClientForm ? (
+                  <>
+                    <AsyncSelect
+                      key={clientPickerNonce}
+                      cacheOptions
+                      defaultOptions
+                      isSearchable
+                      loadOptions={loadClientOptions}
+                      onChange={(option) => {
+                        setProjectClientId(option ? option.value : '');
+                        setSelectedClientName(option ? option.label : '');
+                      }}
+                      placeholder="Type to search client or company..."
+                      styles={customStyles}
+                    />
+                    {selectedClientName && (
+                      <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1">
+                        Selected: {selectedClientName}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <div className="p-3 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 space-y-2.5">
+                    <input
+                      type="text"
+                      placeholder="Company name *"
+                      value={newClientName}
+                      onChange={(e) => setNewClientName(e.target.value)}
+                      className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Contact person"
+                      value={newClientContact}
+                      onChange={(e) => setNewClientContact(e.target.value)}
+                      className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                    />
+                    <input
+                      type="email"
+                      placeholder="Email"
+                      value={newClientEmail}
+                      onChange={(e) => setNewClientEmail(e.target.value)}
+                      className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                    />
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setShowNewClientForm(false)}
+                        className="px-3 py-1.5 text-xs text-slate-600 dark:text-zinc-400 hover:bg-slate-200 dark:hover:bg-zinc-800 rounded-lg"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleQuickAddClient}
+                        disabled={!newClientName.trim() || isCreatingClient}
+                        className="px-3 py-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg"
+                      >
+                        {isCreatingClient ? 'Creating...' : 'Create & Select'}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>

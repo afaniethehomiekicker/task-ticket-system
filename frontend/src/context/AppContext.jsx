@@ -1,8 +1,4 @@
 import { 
-  SEED_PROJECTS, 
-  SEED_TASKS, 
-  SEED_USERS, 
-  SEED_TICKETS, 
   SEED_AUDIT_LOGS, 
   SEED_NOTIFICATIONS 
 } from '../data/seedData';
@@ -13,7 +9,13 @@ import {
 } from '../utils/permissions';
 import confetti from 'canvas-confetti';
 
-// Export helper at top level so it is available globally
+// Still needed for Projects/Tasks/Tickets, which haven't been normalized
+// to real backend ids yet this pass — they still use the old string
+// scheme (e.g. 'prj_eng_01'), so every create/update call for them
+// extracts a numeric id via this function. Once those entities get the
+// same normalization treatment Users just got, this can likely shrink or
+// go away entirely (it already no-ops correctly on a plain number, which
+// is exactly what normalized User ids are now).
 export const getBackendId = (rawId) => {
   if (typeof rawId === 'number') return rawId;
   if (!rawId || rawId === 'undefined') return null;
@@ -21,43 +23,286 @@ export const getBackendId = (rawId) => {
   return match ? parseInt(match[0], 10) : null;
 };
 
-// --- Canonical user identity helpers -------------------------------------
-// Every user in local state uses a single, stable string `id` (the seed
-// scheme, e.g. 'usr_super_admin', or 'usr_<backendId>' for a user that
-// originated on the backend). A user record may ALSO carry a `backendId`
-// (the raw numeric/string id the Go API uses for that same person) so API
-// calls can address the right row without the frontend ever having to
-// juggle two id schemes at the call site. `legacyId` is kept only for
-// backwards compatibility with any code/data that still references the
-// pre-normalization seed id.
+// --- User shape translation ------------------------------------------------
 //
-// normalizeUserKey is the single source of truth for "is this the same
-// person" — used by both the dedup merge below AND anywhere else in the
-// app that needs to match a backend record to a local one. It prefers
-// email (more reliable, less prone to formatting drift) and falls back to
-// a normalized full name only when no email is available on either side.
-const normalizeUserKey = (user) => {
-  if (!user) return null;
-  const email = (user.email || '').toLowerCase().trim();
-  if (email) return `email:${email}`;
-  const name = (user.name || '').toLowerCase().trim();
-  return name ? `name:${name}` : null;
+// The Go backend is the ONLY source of user data now — no more frontend
+// seed data to reconcile it against, so there's no more merging, no more
+// two id schemes, no more normalizeUserKey/dedup logic. What's still
+// needed is translating the backend's raw JSON shape into the shape every
+// existing view component already reads: GORM's default field casing
+// (`ID`, not `id`) and snake_case foreign keys (`admin_id`, not
+// `adminId`) don't match what TaskDetailDrawer, Sidebar,
+// ProjectDetailModal, etc. expect. This is the ONE place that translation
+// happens — every consumer of allUsers gets the already-normalized shape.
+//
+// NOTE: `lastActive` (a "5 mins ago"-style display string) existed on the
+// old frontend seed users but has no backend equivalent — the backend
+// doesn't track last-login timestamps. It's deliberately left out here
+// rather than faked with a placeholder string. If a component reads
+// user.lastActive and breaks on its absence, that component needs a
+// small update — flagging this now since I haven't reviewed every view
+// component (TeamView.jsx in particular hasn't been shown to me yet).
+const normalizeUser = (raw) => {
+  if (!raw) return null;
+  return {
+    id: raw.id ?? raw.ID,
+    name: raw.name || '',
+    email: raw.email || '',
+    avatar: raw.avatar || '',
+    role: raw.role || 'staff',
+    department: raw.department || '',
+    title: raw.title || '',
+    phone: raw.phone || '',
+    status: raw.status || 'active',
+    managerId: raw.manager_id ?? null,
+    supervisorId: raw.supervisor_id ?? null,
+    adminId: raw.admin_id ?? null,
+    createdAt: raw.created_at || raw.CreatedAt || null,
+  };
 };
 
-// Looks up a user by ANY id scheme it might be referenced by: the
-// canonical local `id`, the legacy seed id, or the raw backend id. This is
-// the one place that lookup logic lives — call sites (createTicket,
-// updateTicket, assignTicket, etc.) should use this instead of re-writing
-// the same three-way String() comparison inline, so a future id-scheme
-// change only has to happen here.
+// --- Project shape translation ----------------------------------------
+//
+// Same treatment as normalizeUser above. The previous merge-against-seed
+// approach never handled `admin_id` at all (adminId was always
+// undefined, so filterProjectsForUser's Admin branch could never match
+// ANY real project), and read a `memberIds` key that doesn't exist in
+// the API response at all — the real field is `members`, a nested array
+// of full User objects (per models.go's Members []User relation), not a
+// flat array of ids. Both bugs meant a project's actual backend
+// membership/ownership was invisible to every permission check no
+// matter how correctly it was seeded.
+const normalizeProject = (raw) => {
+  if (!raw) return null;
+  const memberIds = Array.isArray(raw.members)
+    ? raw.members.map(u => u.id ?? u.ID).filter(id => id !== undefined && id !== null)
+    : [];
+  const supervisorIds = Array.isArray(raw.supervisors)
+    ? raw.supervisors.map(u => u.id ?? u.ID).filter(id => id !== undefined && id !== null)
+    : [];
+  return {
+    id: raw.id ?? raw.ID,
+    code: raw.code || '',
+    title: raw.title || '',
+    description: raw.description || '',
+    department: raw.department || '',
+    status: raw.status || 'planning',
+    priority: raw.priority || 'normal',
+    startDate: raw.start_date || '',
+    dueDate: raw.due_date || '',
+    ownerId: raw.owner_id ?? null,
+    adminId: raw.admin_id ?? null,
+    clientId: raw.client_id ?? null,
+    clientName: raw.client?.company_name || '',
+    memberIds,
+    supervisorIds,
+    progress: raw.progress ?? 0,
+    progressOverride: !!raw.progress_override,
+    budgetHours: raw.budget_hours ?? 0,
+    spentHours: raw.spent_hours ?? 0,
+    isPinned: !!raw.is_pinned,
+    tags: typeof raw.tags === 'string'
+      ? raw.tags.split(',').map(t => t.trim()).filter(Boolean)
+      : (Array.isArray(raw.tags) ? raw.tags : []),
+    attachments: Array.isArray(raw.attachments) ? raw.attachments.map(a => ({
+      id: a.id ?? a.ID,
+      name: a.name || '',
+      size: a.size || '',
+      type: a.type || '',
+      url: a.url || '',
+      uploadedById: a.uploaded_by_id ?? null,
+      uploadedByName: a.uploaded_by?.name || '',
+      uploadedAt: a.uploaded_at || a.CreatedAt || null,
+    })) : [],
+    createdAt: raw.created_at || raw.CreatedAt || null,
+    updatedAt: raw.updated_at || raw.UpdatedAt || null,
+  };
+};
+
+// Looks up a user by id. Simplified from an earlier three-way check
+// (canonical id / legacy seed id / raw backend id) that existed only
+// because two different id schemes needed bridging — now there's exactly
+// one real id (the backend's), so this is just a String()-coerced
+// equality check, kept as a named helper so call sites (createTicket,
+// updateTicket, assignTicket, etc.) don't each repeat the coercion logic
+// inline.
 const findUserByAnyId = (users, rawId) => {
   if (!rawId && rawId !== 0) return null;
   const target = String(rawId);
-  return (users || []).find(u =>
-    String(u.id) === target ||
-    String(u.legacyId) === target ||
-    (u.backendId !== undefined && u.backendId !== null && String(u.backendId) === target)
-  ) || null;
+  return (users || []).find(u => String(u.id) === target) || null;
+};
+
+// --- Task shape translation ----------------------------------------------
+//
+// Same treatment as normalizeUser/normalizeProject. Two backend-naming
+// quirks specific to Task worth calling out: the assignee relation is
+// named "Assignee"/"assignee_id" on the backend, but every existing view
+// component (built against the original frontend convention) reads
+// task.assignedToId — so the name itself changes, not just the casing.
+// And supervisorId/adminId are deliberately NOT stored on Task at all
+// (see the comment in models.go) — they're derived here from the nested
+// Assignee relation (which GetTasks Preloads), the same "one copy of the
+// fact" principle applied at read time instead of write time.
+
+const normalizeComment = (raw) => {
+  if (!raw) return null;
+  return {
+    id: raw.id ?? raw.ID,
+    authorId: raw.user_id ?? null,
+    authorName: raw.user?.name || '',
+    authorAvatar: raw.user?.avatar || '',
+    authorRole: raw.user?.role || '',
+    content: raw.content || '',
+    isInternal: !!raw.is_internal,
+    createdAt: raw.created_at || raw.CreatedAt || null,
+  };
+};
+
+const normalizeChecklistItem = (raw) => {
+  if (!raw) return null;
+  return {
+    id: raw.id ?? raw.ID,
+    title: raw.title || '',
+    completed: !!raw.completed,
+    completedBy: raw.completed_by_id ?? null,
+    completedAt: raw.completed_at ?? null,
+  };
+};
+
+const normalizeSubTask = (raw) => {
+  if (!raw) return null;
+  return {
+    id: raw.id ?? raw.ID,
+    title: raw.title || '',
+    status: raw.status || 'todo',
+    priority: raw.priority || 'normal',
+    dueDate: raw.deadline || '',
+    assignedToId: raw.assignee_id ?? null,
+    estimatedHours: raw.estimated_hours ?? 0,
+    actualHours: raw.actual_hours ?? 0,
+  };
+};
+
+const normalizeTask = (raw) => {
+  if (!raw) return null;
+  const labels = typeof raw.labels === 'string'
+    ? raw.labels.split(',').map(l => l.trim()).filter(Boolean)
+    : (Array.isArray(raw.labels) ? raw.labels : []);
+  return {
+    id: raw.id ?? raw.ID,
+    taskNumber: raw.task_number || '',
+    title: raw.title || '',
+    description: raw.description || '',
+    department: raw.department || '',
+    status: raw.status || 'todo',
+    priority: raw.priority || 'normal',
+    labels,
+    projectId: raw.project_id ?? null,
+    assignedToId: raw.assignee_id ?? null,
+    creatorId: raw.creator_id ?? null,
+    supervisorId: raw.assignee?.supervisor_id ?? null,
+    adminId: raw.assignee?.admin_id ?? null,
+    progress: raw.progress ?? 0,
+    startDate: raw.start_date || '',
+    dueDate: raw.due_date || '',
+    estimatedHours: raw.estimated_hours ?? 0,
+    actualHours: raw.actual_hours ?? 0,
+    isPinned: !!raw.is_pinned,
+    reviewStatus: raw.review_status || 'none',
+    reviewNotes: raw.review_notes || '',
+    checklists: Array.isArray(raw.checklists) ? raw.checklists.map(normalizeChecklistItem).filter(Boolean) : [],
+    subTasks: Array.isArray(raw.sub_tasks) ? raw.sub_tasks.map(normalizeSubTask).filter(Boolean) : [],
+    comments: Array.isArray(raw.comments) ? raw.comments.map(normalizeComment).filter(Boolean) : [],
+    createdAt: raw.created_at || raw.CreatedAt || null,
+    updatedAt: raw.updated_at || raw.UpdatedAt || null,
+  };
+};
+
+// --- Ticket shape translation ----------------------------------------
+//
+// Same treatment again. Two things specific to Ticket worth calling out:
+// severity/SLA/escalation/requester fields were entirely unmapped before
+// this (the raw snake_case key sat unused while the UI's camelCase key
+// stayed stale or empty), and the frontend historically split comments
+// into THREE separate concepts — public comments, staff-only
+// internalNotes, and a "unified responses" thread used by one specific
+// drawer. The backend Comment model correctly consolidated all of that
+// into one list with an IsInternal flag (see models.go) — so all three
+// legacy shapes are derived here from that single source, covering
+// whichever of the three a given view component still expects without
+// needing to know which one for certain.
+const normalizeTicket = (raw) => {
+  if (!raw) return null;
+  const labels = typeof raw.labels === 'string'
+    ? raw.labels.split(',').map(l => l.trim()).filter(Boolean)
+    : (Array.isArray(raw.labels) ? raw.labels : []);
+
+  const allComments = Array.isArray(raw.comments) ? raw.comments.map(normalizeComment).filter(Boolean) : [];
+  const publicComments = allComments.filter(c => !c.isInternal);
+  const internalNotes = allComments.filter(c => c.isInternal);
+
+  return {
+    id: raw.id ?? raw.ID,
+    ticketNumber: raw.ticket_number || '',
+    title: raw.title || '',
+    description: raw.description || '',
+    department: raw.department || '',
+    category: raw.category || '',
+    priority: raw.priority || 'normal',
+    severity: raw.severity || 'normal',
+    status: raw.status || 'open',
+    requesterName: raw.requester_name || '',
+    requesterEmail: raw.requester_email || '',
+    requesterCompany: raw.requester_company || '',
+    projectId: raw.project_id ?? null,
+    assignedToId: raw.assigned_to_id ?? null,
+    supervisorId: raw.assigned_to?.supervisor_id ?? null,
+    adminId: raw.assigned_to?.admin_id ?? null,
+    dueDate: raw.due_date || '',
+    responseSlaMinutes: raw.response_sla_minutes ?? 0,
+    resolutionSlaMinutes: raw.resolution_sla_minutes ?? 0,
+    firstResponseAt: raw.first_response_at || null,
+    resolvedAt: raw.resolved_at || null,
+    closedAt: raw.closed_at || null,
+    escalationLevel: raw.escalation_level || 'none',
+    escalationReason: raw.escalation_reason || '',
+    resolutionSummary: raw.resolution_summary || '',
+    labels,
+    isPinned: !!raw.is_pinned,
+    // Three shapes, one source — see comment above.
+    comments: publicComments,
+    internalNotes,
+    responses: allComments,
+    attachments: Array.isArray(raw.attachments) ? raw.attachments.map(a => ({
+      id: a.id ?? a.ID,
+      name: a.name || '',
+      size: a.size || '',
+      type: a.type || '',
+      url: a.url || '',
+      uploadedById: a.uploaded_by_id ?? null,
+      uploadedByName: a.uploaded_by?.name || '',
+      uploadedAt: a.uploaded_at || a.CreatedAt || null,
+    })) : [],
+    createdAt: raw.created_at || raw.CreatedAt || null,
+    updatedAt: raw.updated_at || raw.UpdatedAt || null,
+  };
+};
+
+// --- Client shape translation -------------------------------------------
+const normalizeClient = (raw) => {
+  if (!raw) return null;
+  return {
+    id: raw.id ?? raw.ID,
+    companyName: raw.company_name || '',
+    contactPerson: raw.contact_person || '',
+    email: raw.email || '',
+    phone: raw.phone || '',
+    website: raw.website || '',
+    industry: raw.industry || '',
+    address: raw.address || '',
+    createdAt: raw.created_at || raw.CreatedAt || null,
+    updatedAt: raw.updated_at || raw.UpdatedAt || null,
+  };
 };
 
 const AppContext = createContext(undefined);
@@ -72,13 +317,22 @@ const STORAGE_KEYS = {
   CURRENT_USER_ID: 'pm_system_active_user_id_v1',
   DARK_MODE: 'pm_system_theme_dark_v1',
   PERMISSION_MATRIX: 'pm_system_permission_matrix_v1',
-  CUSTOM_ROLES: 'pm_system_custom_roles_v1'
+  CUSTOM_ROLES: 'pm_system_custom_roles_v1',
+  AUTH_TOKEN: 'pm_system_auth_token_v1',
+  CLIENTS: 'pm_system_clients_v1'
 };
 
 export const AppProvider = ({ children }) => {
   const [allUsers, setAllUsers] = useState(() => {
+    // Cache-then-refresh, not a fallback dataset: this is just the last
+    // known-good response from the backend, shown instantly on load while
+    // fetchInitialData below fetches a fresh copy. Unlike the old
+    // SEED_USERS fallback, there's no scenario where this diverges from
+    // the backend on its own — it's the same single source of truth,
+    // just cached for a faster first paint. An empty array (not a seed
+    // array) is the correct "nothing cached yet" state.
     const saved = localStorage.getItem(STORAGE_KEYS.USERS);
-    return saved ? JSON.parse(saved) : SEED_USERS;
+    return saved ? JSON.parse(saved) : [];
   });
 
   const [currentUserId, setCurrentUserIdState] = useState(() => {
@@ -87,18 +341,35 @@ export const AppProvider = ({ children }) => {
   });
 
   const [projects, setProjects] = useState(() => {
+    // Cache-then-refresh, not a fallback dataset — same reasoning as
+    // allUsers above. Projects now come from the backend exclusively;
+    // this is just the last known-good response shown instantly on load
+    // while fetchInitialData below fetches a fresh copy.
     const saved = localStorage.getItem(STORAGE_KEYS.PROJECTS);
-    return saved ? JSON.parse(saved) : SEED_PROJECTS;
+    return saved ? JSON.parse(saved) : [];
   });
 
+  const [clients, setClients] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.CLIENTS);
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(clients));
+  }, [clients]);
+
   const [tasks, setTasks] = useState(() => {
+    // Cache-then-refresh, not a fallback dataset — same reasoning as
+    // allUsers/projects above.
     const saved = localStorage.getItem(STORAGE_KEYS.TASKS);
-    return saved ? JSON.parse(saved) : SEED_TASKS;
+    return saved ? JSON.parse(saved) : [];
   });
 
   const [tickets, setTickets] = useState(() => {
+    // Cache-then-refresh, not a fallback dataset — same reasoning as
+    // allUsers/projects/tasks above.
     const saved = localStorage.getItem(STORAGE_KEYS.TICKETS);
-    return saved ? JSON.parse(saved) : SEED_TICKETS;
+    return saved ? JSON.parse(saved) : [];
   });
 
   const [auditLogs, setAuditLogs] = useState(() => {
@@ -122,6 +393,39 @@ export const AppProvider = ({ children }) => {
     return saved ? JSON.parse(saved) : DEFAULT_PERMISSION_MATRIX;
   });
 
+  // The JWT issued by the backend on successful login (see handlers.Login
+  // / middleware.GenerateToken). Every authenticated backend request needs
+  // this attached as "Authorization: Bearer <token>" — see apiFetch below.
+  const [authToken, setAuthTokenState] = useState(() => {
+    return localStorage.getItem(STORAGE_KEYS.AUTH_TOKEN) || null;
+  });
+
+  const setAuthToken = (token) => {
+    setAuthTokenState(token);
+    if (token) {
+      localStorage.setItem(STORAGE_KEYS.AUTH_TOKEN, token);
+    } else {
+      localStorage.removeItem(STORAGE_KEYS.AUTH_TOKEN);
+    }
+  };
+
+  // Single point every backend call goes through. Merges in
+  // "Authorization: Bearer <token>" whenever a token is present, without
+  // clobbering any headers the caller already set (e.g. Content-Type).
+  // Replaces 21 previously-separate bare fetch() calls scattered through
+  // this file, none of which sent any authentication at all — the backend
+  // now requires a verified token on its protected routes (see
+  // middleware.AuthenticateJWT), so every one of those call sites needed
+  // this in order to keep working, not just the ones that were already
+  // hitting a protected route today.
+  const apiFetch = (url, options = {}) => {
+    const headers = { ...(options.headers || {}) };
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    return fetch(url, { ...options, headers });
+  };
+
   const [customRoles, setCustomRoles] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.CUSTOM_ROLES);
     return saved ? JSON.parse(saved) : ['super_admin', 'admin', 'supervisor', 'staff', 'client'];
@@ -144,217 +448,37 @@ export const AppProvider = ({ children }) => {
 
     const fetchInitialData = async () => {
       try {
-        const [usersRes, projectsRes, tasksRes, ticketsRes] = await Promise.allSettled([
-          fetch('/api/users'),
-          fetch('/api/projects'),
-          fetch('/api/tasks'),
-          fetch('/api/tickets')
+        const [usersRes, projectsRes, tasksRes, ticketsRes, clientsRes] = await Promise.allSettled([
+          apiFetch('/api/users'),
+          apiFetch('/api/projects'),
+          apiFetch('/api/tasks'),
+          apiFetch('/api/tickets'),
+          apiFetch('/api/clients')
         ]);
 
         if (usersRes.status === 'fulfilled' && usersRes.value.ok) {
           const data = await usersRes.value.json();
-          if (data.users && data.users.length > 0) {
-            setAllUsers(prev => {
-              // Backend records arrive with { id/ID, email, name, ... } and
-              // integer ids; local records use the string seed-id scheme.
-              // Give every backend record a normalized shape up front so
-              // the rest of this function never has to special-case
-              // `u.id || u.ID` again.
-              const apiUsers = data.users.map(u => ({
-                ...u,
-                backendId: u.id ?? u.ID,
-              }));
-
-              // Single map, keyed by normalizeUserKey (email, falling back
-              // to full name), built from the CURRENT local state. This is
-              // the one lookup used for every backend record — no separate
-              // id-based map, since local seed ids and backend ids are
-              // different schemes and will essentially never collide on
-              // their own (that mismatch was the root cause of matches
-              // silently failing and backend records being treated as new
-              // people).
-              const localByKey = new Map();
-              prev.forEach(u => {
-                const key = normalizeUserKey(u);
-                if (key) localByKey.set(key, u);
-              });
-
-              const newLocalUsers = [];
-
-              apiUsers.forEach(apiUser => {
-                const key = normalizeUserKey(apiUser);
-                const existingLocal = key ? localByKey.get(key) : null;
-
-                if (existingLocal) {
-                  // Matched an existing local user — update that SAME
-                  // object in place (by merging into a new object that
-                  // keeps the local canonical id) rather than appending a
-                  // clone. Re-store it in the map under its own key so a
-                  // later backend record that also resolves to this key
-                  // (shouldn't normally happen, but defensive) merges into
-                  // this updated version instead of re-matching the stale
-                  // one.
-                  const merged = {
-                    ...existingLocal,
-                    ...apiUser,
-                    id: existingLocal.id,
-                    legacyId: existingLocal.legacyId || existingLocal.id,
-                    backendId: apiUser.backendId,
-                  };
-                  localByKey.set(key, merged);
-                } else {
-                  // Genuinely new person the backend knows about that
-                  // local state doesn't. Normalize its id into the local
-                  // string scheme (`usr_<backendId>`) so every other part
-                  // of the app — which assumes string ids — keeps working,
-                  // while backendId is preserved for API calls.
-                  const normalized = {
-                    ...apiUser,
-                    id: `usr_${apiUser.backendId}`,
-                  };
-                  if (key) localByKey.set(key, normalized);
-                  else newLocalUsers.push(normalized);
-                }
-              });
-
-              // Rebuild the array from the de-duplicated map (covers every
-              // local user, whether or not a backend match updated it)
-              // plus any keyless stragglers, then run one final strict
-              // safeguard pass: no two entries may share a normalized
-              // email or name, no matter how they got into the array.
-              const merged = [...localByKey.values(), ...newLocalUsers];
-              const seen = new Set();
-              return merged.filter(u => {
-                const key = normalizeUserKey(u) || `id:${u.id}`;
-                if (seen.has(key)) return false;
-                seen.add(key);
-                return true;
-              });
-            });
-          }
+          setAllUsers((data.users || []).map(normalizeUser).filter(Boolean));
         }
 
         if (projectsRes.status === 'fulfilled' && projectsRes.value.ok) {
           const data = await projectsRes.value.json();
-          if (data.projects && data.projects.length > 0) {
-            setProjects(prev => {
-              const apiMap = new Map(data.projects.map(p => [String(p.id || p.ID), p]));
-              const updated = prev.map(seed => {
-                const idStr = String(seed.id);
-                const numId = idStr.match(/\d+/)?.[0];
-                const api = apiMap.get(idStr) || (numId ? apiMap.get(numId) : null);
-                if (api) {
-                  apiMap.delete(String(api.id || api.ID));
-                  return {
-                    ...seed,
-                    ...api,
-                    id: seed.id,
-                    title: api.title || seed.title,
-                    status: api.status || seed.status,
-                    priority: api.priority || seed.priority,
-                    department: api.department || seed.department,
-                    budgetHours: api.budget_hours || api.budgetHours || seed.budgetHours,
-                    startDate: api.start_date || api.startDate || seed.startDate,
-                    endDate: api.end_date || api.endDate || seed.endDate,
-                    memberIds: seed.memberIds || api.memberIds || [],
-                    attachments: seed.attachments || api.attachments || []
-                  };
-                }
-                return seed;
-              });
-              const remainingNew = Array.from(apiMap.values()).map(p => ({
-                ...p,
-                id: p.id || p.ID,
-                memberIds: p.memberIds || [],
-                attachments: p.attachments || []
-              }));
-              return [...updated, ...remainingNew];
-            });
-          }
+          setProjects((data.projects || []).map(normalizeProject).filter(Boolean));
+        }
+
+        if (clientsRes.status === 'fulfilled' && clientsRes.value.ok) {
+          const data = await clientsRes.value.json();
+          setClients((data.clients || []).map(normalizeClient).filter(Boolean));
         }
 
         if (tasksRes.status === 'fulfilled' && tasksRes.value.ok) {
           const data = await tasksRes.value.json();
-          if (data.tasks && data.tasks.length > 0) {
-            setTasks(prev => {
-              const apiMap = new Map(data.tasks.map(t => [String(t.id || t.ID), t]));
-              const updated = (prev || []).map(seed => {
-                const idStr = String(seed.id);
-                const numId = idStr.match(/\d+/)?.[0];
-                const api = apiMap.get(idStr) || (numId ? apiMap.get(numId) : null);
-                if (api) {
-                  apiMap.delete(String(api.id || api.ID));
-                  return {
-                    ...seed,
-                    ...api,
-                    id: seed.id,
-                    title: api.title || seed.title,
-                    status: api.status || seed.status,
-                    priority: api.priority || seed.priority,
-                    labels: Array.isArray(api.labels) ? api.labels : (typeof api.labels === 'string' && api.labels ? api.labels.split(',') : seed.labels || []),
-                    checklists: seed.checklists || api.checklists || [],
-                    comments: seed.comments || api.comments || [],
-                    subTasks: seed.subTasks || api.subTasks || []
-                  };
-                }
-                return seed;
-              });
-              const remainingNew = Array.from(apiMap.values()).map(t => ({
-                ...t,
-                id: t.id || t.ID,
-                taskNumber: t.taskNumber || t.TaskNumber || `TSK-${t.id || t.ID}`,
-                labels: Array.isArray(t.labels) ? t.labels : (typeof t.labels === 'string' && t.labels ? t.labels.split(',') : []),
-                checklists: t.checklists || [],
-                comments: t.comments || [],
-                subTasks: t.subTasks || []
-              }));
-              return [...updated, ...remainingNew];
-            });
-          }
+          setTasks((data.tasks || []).map(normalizeTask).filter(Boolean));
         }
 
         if (ticketsRes.status === 'fulfilled' && ticketsRes.value.ok) {
           const data = await ticketsRes.value.json();
-          if (data.tickets && data.tickets.length > 0) {
-            setTickets(prev => {
-              const apiMap = new Map(data.tickets.map(t => [String(t.id || t.ID), t]));
-              const updated = (prev || []).map(seed => {
-                const idStr = String(seed.id);
-                const numId = idStr.match(/\d+/)?.[0];
-                const api = apiMap.get(idStr) || (numId ? apiMap.get(numId) : null);
-                if (api) {
-                  apiMap.delete(String(api.id || api.ID));
-                  return {
-                    ...seed,
-                    ...api,
-                    id: seed.id,
-                    title: api.title || seed.title,
-                    status: api.status || seed.status,
-                    priority: api.priority || seed.priority,
-                    assignedToId: api.assigned_to_id || api.assignedToId || seed.assignedToId,
-                    labels: Array.isArray(api.labels) ? api.labels : (typeof api.labels === 'string' && api.labels ? api.labels.split(',') : seed.labels || []),
-                    internalNotes: seed.internalNotes || api.internalNotes || [],
-                    comments: seed.comments || api.comments || [],
-                    responses: seed.responses || api.responses || [],
-                    attachments: seed.attachments || api.attachments || []
-                  };
-                }
-                return seed;
-              });
-              const remainingNew = Array.from(apiMap.values()).map(t => ({
-                ...t,
-                id: t.id || t.ID,
-                ticketNumber: t.ticketNumber || t.TicketNumber || `TCK-${t.id || t.ID}`,
-                assignedToId: t.assigned_to_id || t.assignedToId,
-                labels: Array.isArray(t.labels) ? t.labels : (typeof t.labels === 'string' && t.labels ? t.labels.split(',') : []),
-                internalNotes: t.internalNotes || [],
-                comments: t.comments || [],
-                responses: t.responses || [],
-                attachments: t.attachments || []
-              }));
-              return [...updated, ...remainingNew];
-            });
-          }
+          setTickets((data.tickets || []).map(normalizeTicket).filter(Boolean));
         }
       } catch (err) {
         console.warn('Backend API offline, operating on local cache/seed data:', err);
@@ -371,7 +495,7 @@ export const AppProvider = ({ children }) => {
 
     const fetchAuditLogs = async () => {
       try {
-        const res = await fetch('/api/audit-logs', {
+        const res = await apiFetch('/api/audit-logs', {
           headers: {
             'x-user-role': activeUser.role === 'super_admin' ? 'Super Admin' : 'Admin'
           }
@@ -470,7 +594,22 @@ export const AppProvider = ({ children }) => {
 
   const setCurrentUserId = (id) => {
     setCurrentUserIdState(id);
-    localStorage.setItem(STORAGE_KEYS.CURRENT_USER_ID, String(id));
+
+    // Logout passes null — write an actual absence to localStorage rather
+    // than the string "null" (which String(id) would otherwise produce).
+    // The stringified "null" happened to still behave correctly by
+    // coincidence (no real user id equals the string "null"), but relying
+    // on that coincidence is fragile.
+    if (id === null || id === undefined) {
+      localStorage.removeItem(STORAGE_KEYS.CURRENT_USER_ID);
+      // Logging out should also drop the auth token — an empty
+      // currentUserId with a still-valid token would leave the app in an
+      // inconsistent state (no active user, but api calls still
+      // authenticated as whoever was last logged in).
+      setAuthToken(null);
+    } else {
+      localStorage.setItem(STORAGE_KEYS.CURRENT_USER_ID, String(id));
+    }
 
     const switchedUser = findUserByAnyId(allUsers, id);
     if (switchedUser) {
@@ -537,7 +676,7 @@ export const AppProvider = ({ children }) => {
     formData.append('avatar', file);
 
     try {
-      const res = await fetch('/api/upload', {
+      const res = await apiFetch('/api/upload', {
         method: 'POST',
         body: formData,
       });
@@ -559,29 +698,97 @@ export const AppProvider = ({ children }) => {
       return;
     }
 
-    const newId = `prj_${Date.now().toString(36)}`;
-    const newProject = {
+    // Guarantee the creator can actually see their own project afterward.
+    // filterProjectsForUser's Supervisor/Staff branch gates visibility
+    // ENTIRELY on memberIds.includes(user.id) — no exception for "you
+    // created this." Without explicitly adding the creator here, a
+    // Staff/Supervisor account's own new project would be created
+    // successfully on the backend and then immediately filtered out of
+    // their own visibleProjects, since nothing ever added them to
+    // memberIds. Deduped against whatever memberIds the form itself
+    // supplied, so a form that already adds the creator doesn't end up
+    // with a duplicate entry.
+    const memberIds = Array.from(new Set([
+      ...(data.memberIds || []),
+      ...(currentUser?.id ? [currentUser.id] : [])
+    ]));
+
+    // The Admin branch of filterProjectsForUser also accepts
+    // p.createdBy === user.id and p.adminId === user.id as alternate
+    // visibility paths — setting both here means an Admin creator is
+    // covered even if they're not literally in memberIds. adminId only
+    // defaults here if the form didn't already choose one explicitly:
+    // an Admin's own projects default to themselves; a Supervisor/Staff
+    // creator's project defaults to inheriting THEIR OWN adminId, so the
+    // department admin managing them can also see it.
+    const resolvedAdminId = data.adminId ?? (
+      currentUser?.role === 'admin' ? currentUser.id : currentUser?.adminId ?? null
+    );
+
+    const basePayload = {
       ...data,
-      id: newId,
+      memberIds,
+      adminId: resolvedAdminId,
+      createdBy: currentUser?.id ?? null,
       progress: 0,
       spentHours: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
     };
 
+    // Wire payload sends BOTH camelCase and snake_case spellings for the
+    // fields most likely to matter. CreateProject's Go handler binds the
+    // POST body directly into a typed struct (CreateProjectInput), unlike
+    // UpdateProject/UpdateTask/UpdateTicket which bind into a generic map
+    // and explicitly translate camelCase to snake_case. Typed-struct
+    // binding only matches an EXACT tag name, and an unrecognized key is
+    // silently dropped, not rejected — sending both spellings means
+    // whichever one the live backend struct actually expects gets
+    // through, without needing to trust that this file and the current
+    // project.go agree on casing.
+    const wirePayload = {
+      ...basePayload,
+      member_ids: memberIds,
+      admin_id: resolvedAdminId,
+      created_by: currentUser?.id ?? null,
+      owner_id: basePayload.ownerId ?? currentUser?.id ?? null,
+      client_id: getBackendId(data.clientId) || null,
+    };
+
+    let savedProject = null;
     try {
-      await fetch('/api/projects', {
+      const res = await apiFetch('/api/projects', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
           'x-user-role': currentUser?.role === 'super_admin' ? 'Super Admin' : (currentUser?.role || 'Admin'),
           'x-user-id': String(currentUser?.id || 1)
         },
-        body: JSON.stringify(newProject)
+        body: JSON.stringify(wirePayload)
       });
+      if (res.ok) {
+        const resData = await res.json();
+        // Use the REAL id and REAL stored member/admin data the backend
+        // just assigned, not a locally-fabricated one. The old version
+        // generated `prj_${Date.now().toString(36)}` here regardless of
+        // what the backend did — a fake id that could never correctly
+        // resolve back to the real row for any future update/delete, and
+        // that also meant a page reload would replace this optimistic
+        // object with the backend's version anyway, so keeping them in
+        // sync from the start avoids a visible flicker/mismatch too.
+        savedProject = normalizeProject(resData.project);
+      }
     } catch (err) {
       console.error('Failed to sync createProject to API:', err);
     }
+
+    // Falls back to a locally-fabricated object ONLY if the request
+    // genuinely failed — keeps the app usable offline/on a flaky
+    // connection rather than losing the user's input entirely.
+    const newProject = savedProject || {
+      ...basePayload,
+      id: `prj_${Date.now().toString(36)}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
 
     setProjects(prev => [newProject, ...prev]);
 
@@ -591,12 +798,12 @@ export const AppProvider = ({ children }) => {
       actorRole: currentUser?.role,
       action: 'PROJECT_CREATED',
       entityType: 'project',
-      entityId: newId,
+      entityId: newProject.id,
       entityTitle: newProject.title,
       details: `Created project [${newProject.code}] for client/company ID: ${newProject.clientId || newProject.companyId}`
     });
 
-    data.memberIds?.forEach(memId => {
+    memberIds.forEach(memId => {
       if (String(memId) !== String(currentUser?.id)) {
         pushNotification({
           recipientId: memId,
@@ -604,7 +811,7 @@ export const AppProvider = ({ children }) => {
           message: `You were assigned as a team member on project: ${newProject.title}`,
           type: 'assignment',
           entityType: 'project',
-          entityId: newId
+          entityId: newProject.id
         });
       }
     });
@@ -614,7 +821,7 @@ export const AppProvider = ({ children }) => {
     const targetId = getBackendId(id);
     if (targetId) {
       try {
-        await fetch(`/api/projects/${targetId}`, {
+        await apiFetch(`/api/projects/${targetId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updates)
@@ -654,7 +861,7 @@ export const AppProvider = ({ children }) => {
     const targetId = getBackendId(id);
     if (targetId) {
       try {
-        await fetch(`/api/projects/${targetId}`, { method: 'DELETE' });
+        await apiFetch(`/api/projects/${targetId}`, { method: 'DELETE' });
       } catch (err) {
         console.error('Failed to sync deleteProject to API:', err);
       }
@@ -672,6 +879,115 @@ export const AppProvider = ({ children }) => {
         entityId: id,
         entityTitle: prj.title,
         details: `Archived/Deleted project ${prj.title}`
+      });
+    }
+  };
+
+  // --- Client Actions -----------------------------------------------------
+  const createClient = async (data) => {
+    const wirePayload = {
+      company_name: data.companyName,
+      contact_person: data.contactPerson || '',
+      email: data.email || '',
+      phone: data.phone || '',
+      website: data.website || '',
+      industry: data.industry || '',
+      address: data.address || '',
+    };
+
+    let savedClient = null;
+    try {
+      const res = await apiFetch('/api/clients', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(wirePayload)
+      });
+      if (res.ok) {
+        const resData = await res.json();
+        savedClient = normalizeClient(resData.client);
+      }
+    } catch (err) {
+      console.error('Failed to sync createClient to API:', err);
+    }
+
+    // No locally-fabricated fallback here on purpose: unlike
+    // projects/tasks/tickets (which the user is actively mid-workflow
+    // on and shouldn't lose if the network hiccups), a client record
+    // with no real backend id isn't useful for anything — it can't be
+    // linked to a real project via a real foreign key. If the request
+    // genuinely failed, surface that rather than silently pretending it
+    // worked.
+    if (!savedClient) {
+      alert('Failed to create client. Please check your connection and try again.');
+      return null;
+    }
+
+    setClients(prev => [savedClient, ...prev]);
+
+    logAudit({
+      actorId: currentUser?.id,
+      actorName: currentUser?.name,
+      actorRole: currentUser?.role,
+      action: 'CLIENT_CREATED',
+      entityType: 'client',
+      entityId: savedClient.id,
+      entityTitle: savedClient.companyName,
+      details: `Created client profile for ${savedClient.companyName}`
+    });
+
+    return savedClient;
+  };
+
+  const updateClient = async (id, updates) => {
+    const targetId = getBackendId(id);
+    if (targetId) {
+      try {
+        await apiFetch(`/api/clients/${targetId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updates)
+        });
+      } catch (err) {
+        console.error('Failed to sync updateClient to API:', err);
+      }
+    }
+
+    setClients(prev => prev.map(c => String(c.id) === String(id) ? { ...c, ...updates } : c));
+
+    logAudit({
+      actorId: currentUser?.id,
+      actorName: currentUser?.name,
+      actorRole: currentUser?.role,
+      action: 'CLIENT_UPDATED',
+      entityType: 'client',
+      entityId: id,
+      entityTitle: updates.companyName || clients.find(c => String(c.id) === String(id))?.companyName || '',
+      details: `Updated client profile fields: ${Object.keys(updates).join(', ')}`
+    });
+  };
+
+  const deleteClient = async (id) => {
+    const targetId = getBackendId(id);
+    if (targetId) {
+      try {
+        await apiFetch(`/api/clients/${targetId}`, { method: 'DELETE' });
+      } catch (err) {
+        console.error('Failed to sync deleteClient to API:', err);
+      }
+    }
+
+    const client = clients.find(c => String(c.id) === String(id));
+    setClients(prev => prev.filter(c => String(c.id) !== String(id)));
+    if (client) {
+      logAudit({
+        actorId: currentUser?.id,
+        actorName: currentUser?.name,
+        actorRole: currentUser?.role,
+        action: 'CLIENT_DELETED',
+        entityType: 'client',
+        entityId: id,
+        entityTitle: client.companyName,
+        details: `Deleted client profile ${client.companyName}`
       });
     }
   };
@@ -713,18 +1029,13 @@ export const AppProvider = ({ children }) => {
 
   const createTask = async (data) => {
     const count = (tasks || []).length + 101;
-    const taskNumber = `TSK-${count}`;
-    const newId = `tsk_${Date.now().toString(36)}`;
+    const taskNumber = data.taskNumber || `TSK-${count}`;
 
-    const assignee = allUsers?.find(u => 
-      String(u.id) === String(data.assignedToId) ||
-      String(u.legacyId) === String(data.assignedToId) ||
-      (u.backendId && String(u.backendId) === String(data.assignedToId))
-    );
-    const supervisorId = assignee?.supervisorId || data.supervisorId;
-    const adminId = assignee?.adminId || data.adminId;
+    const assignee = findUserByAnyId(allUsers, data.assignedToId);
+    const supervisorId = assignee?.supervisorId ?? data.supervisorId ?? null;
+    const adminId = assignee?.adminId ?? data.adminId ?? null;
 
-    const newTask = {
+    const basePayload = {
       labels: [],
       subTasks: [],
       checklists: [],
@@ -734,32 +1045,63 @@ export const AppProvider = ({ children }) => {
       progress: 0,
       isPinned: false,
       ...data,
-      id: newId,
       taskNumber,
-      actualHours: 0,
+      actualHours: data.actualHours ?? 0,
       supervisorId,
       adminId,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
     };
 
+    // Explicitly null, never a hardcoded fallback id. The previous
+    // version defaulted BOTH project_id and assignee_id to 1 whenever a
+    // task had no project or no assignee — silently attaching every
+    // genuinely-unassigned task to whatever record happened to have
+    // backend id 1 (Super Admin, per this app's seed data), rather than
+    // leaving it actually unassigned. Same anti-pattern already found
+    // and removed from the Go handlers themselves.
+    const wirePayload = {
+      task_number: taskNumber,
+      title: basePayload.title,
+      description: basePayload.description,
+      department: basePayload.department || currentUser?.department || '',
+      // Lowercase, matching every other status/priority value in this
+      // system. The previous version sent literal "New"/"Normal" (Title
+      // Case) whenever status/priority were falsy — which, being
+      // non-empty strings once sent, bypassed the backend's own
+      // lowercase-default fallback entirely and got stored as-is.
+      status: basePayload.status || 'todo',
+      priority: basePayload.priority || 'normal',
+      labels: Array.isArray(basePayload.labels) ? basePayload.labels.join(',') : (basePayload.labels || ''),
+      project_id: getBackendId(basePayload.projectId) || null,
+      assignee_id: assignee?.id ?? getBackendId(basePayload.assignedToId) ?? null,
+      creator_id: currentUser?.id ?? null,
+      start_date: basePayload.startDate || '',
+      due_date: basePayload.dueDate || '',
+      estimated_hours: basePayload.estimatedHours ?? 0,
+    };
+
+    let savedTask = null;
     try {
-      await fetch('/api/tasks', {
+      const res = await apiFetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: newTask.title,
-          description: newTask.description,
-          status: newTask.status || 'New',
-          priority: newTask.priority || 'Normal',
-          labels: Array.isArray(newTask.labels) ? newTask.labels.join(',') : newTask.labels,
-          project_id: getBackendId(newTask.projectId) || 1,
-          assignee_id: assignee?.backendId || getBackendId(newTask.assignedToId) || 1
-        })
+        body: JSON.stringify(wirePayload)
       });
+      if (res.ok) {
+        const resData = await res.json();
+        // Real backend id and real stored data, not a locally-fabricated
+        // id/object — same reasoning as createProject.
+        savedTask = normalizeTask(resData.task);
+      }
     } catch (err) {
       console.error('Failed to sync createTask to API:', err);
     }
+
+    const newTask = savedTask || {
+      ...basePayload,
+      id: `tsk_${Date.now().toString(36)}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
 
     setTasks(prev => [newTask, ...(prev || [])]);
 
@@ -770,8 +1112,8 @@ export const AppProvider = ({ children }) => {
         actorRole: currentUser.role,
         action: 'TASK_CREATED',
         entityType: 'task',
-        entityId: newId,
-        entityTitle: `${taskNumber}: ${newTask.title}`,
+        entityId: newTask.id,
+        entityTitle: `${newTask.taskNumber}: ${newTask.title}`,
         details: `Created task assigned to ${assignee?.name || 'Unassigned'} with priority ${newTask.priority}`
       });
     }
@@ -780,10 +1122,10 @@ export const AppProvider = ({ children }) => {
       pushNotification({
         recipientId: newTask.assignedToId,
         title: 'New Task Assignment',
-        message: `You were assigned ${taskNumber}: ${newTask.title}`,
+        message: `You were assigned ${newTask.taskNumber}: ${newTask.title}`,
         type: 'assignment',
         entityType: 'task',
-        entityId: newId
+        entityId: newTask.id
       });
     }
   };
@@ -792,7 +1134,7 @@ export const AppProvider = ({ children }) => {
     const targetId = getBackendId(id);
     if (targetId) {
       try {
-        await fetch(`/api/tasks/${targetId}`, {
+        await apiFetch(`/api/tasks/${targetId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updates)
@@ -843,7 +1185,7 @@ export const AppProvider = ({ children }) => {
     const targetId = getBackendId(id);
     if (targetId) {
       try {
-        await fetch(`/api/tasks/${targetId}/status`, {
+        await apiFetch(`/api/tasks/${targetId}/status`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: newStatus })
@@ -1083,7 +1425,7 @@ export const AppProvider = ({ children }) => {
     const targetTaskId = getBackendId(taskId);
     if (targetTaskId) {
       try {
-        await fetch('/api/subtasks', {
+        await apiFetch('/api/subtasks', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ title, task_id: targetTaskId })
@@ -1109,7 +1451,7 @@ export const AppProvider = ({ children }) => {
     const targetSubTaskId = getBackendId(subTaskId);
     if (targetSubTaskId) {
       try {
-        await fetch(`/api/subtasks/${targetSubTaskId}/status`, {
+        await apiFetch(`/api/subtasks/${targetSubTaskId}/status`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status })
@@ -1146,7 +1488,7 @@ export const AppProvider = ({ children }) => {
     const targetTaskId = getBackendId(taskId);
     if (targetTaskId) {
       try {
-        await fetch('/api/comments', {
+        await apiFetch('/api/comments', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content, task_id: targetTaskId, author_id: currentUser?.backendId || getBackendId(currentUser?.id) || 1 })
@@ -1184,7 +1526,7 @@ export const AppProvider = ({ children }) => {
     const targetId = getBackendId(id);
     if (targetId) {
       try {
-        await fetch(`/api/tasks/${targetId}`, { method: 'DELETE' });
+        await apiFetch(`/api/tasks/${targetId}`, { method: 'DELETE' });
       } catch (err) {
         console.error('Failed to sync deleteTask to API:', err);
       }
@@ -1207,46 +1549,84 @@ export const AppProvider = ({ children }) => {
   };
 
   const createTicket = async (data) => {
-    const count = tickets.length + 1041;
-    const ticketNumber = `TCK-${count}`;
-    const newId = `tck_${Date.now().toString(36)}`;
-
     const assignee = findUserByAnyId(allUsers, data.assignedToId);
-    const supervisorId = assignee?.supervisorId || data.supervisorId;
-    const adminId = assignee?.adminId || data.adminId;
+    const supervisorId = assignee?.supervisorId ?? data.supervisorId ?? null;
+    const adminId = assignee?.adminId ?? data.adminId ?? null;
 
-    const newTicket = {
+    const basePayload = {
       ...data,
-      id: newId,
-      ticketNumber,
       supervisorId,
       adminId,
-      internalNotes: [],
-      comments: [],
-      responses: [],
-      attachments: [],
       labels: data.labels || [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
     };
 
+    // Lowercase, matching the backend's own defaults — same fix as
+    // createTask. Also: the previous version only ever sent
+    // title/description/priority/status/assigned_to_id — department,
+    // category, severity, requester info, project_id, due_date, and both
+    // SLA minute fields were never sent at all, despite CreateTicketInput
+    // accepting all of them. A ticket created through this flow could
+    // never actually record who the requester was or what its SLA was.
+    const wirePayload = {
+      ticket_number: basePayload.ticketNumber || undefined,
+      title: basePayload.title,
+      description: basePayload.description,
+      department: basePayload.department || currentUser?.department || '',
+      category: basePayload.category || '',
+      priority: basePayload.priority || 'normal',
+      severity: basePayload.severity || 'normal',
+      status: basePayload.status || 'open',
+      requester_name: basePayload.requesterName || '',
+      requester_email: basePayload.requesterEmail || '',
+      requester_company: basePayload.requesterCompany || '',
+      project_id: getBackendId(basePayload.projectId) || null,
+      assigned_to_id: assignee?.id ?? getBackendId(basePayload.assignedToId) ?? null,
+      due_date: basePayload.dueDate || '',
+      response_sla_minutes: basePayload.responseSlaMinutes ?? 0,
+      resolution_sla_minutes: basePayload.resolutionSlaMinutes ?? 0,
+      labels: Array.isArray(basePayload.labels) ? basePayload.labels.join(',') : (basePayload.labels || ''),
+    };
+
+    let savedTicket = null;
     try {
-      await fetch('/api/tickets', {
+      const res = await apiFetch('/api/tickets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ticket_number: newTicket.ticketNumber,
-          title: newTicket.title,
-          description: newTicket.description,
-          priority: newTicket.priority || 'Normal',
-          status: newTicket.status || 'New',
-          assigned_to_id: assignee?.backendId || getBackendId(newTicket.assignedToId) || null
-        })
+        body: JSON.stringify(wirePayload)
       });
+      if (res.ok) {
+        const resData = await res.json();
+        savedTicket = normalizeTicket(resData.ticket);
+      }
     } catch (err) {
       console.error('Failed to sync createTicket to API:', err);
     }
 
+    const newTicket = savedTicket || {
+      ...basePayload,
+      id: `tck_${Date.now().toString(36)}`,
+      ticketNumber: basePayload.ticketNumber || `TCK-${tickets.length + 1041}`,
+      internalNotes: [],
+      comments: [],
+      responses: [],
+      attachments: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    // NOTE: the auto-spawned linked task below is NOT sent to the
+    // backend at all — only the ticket itself is. It's built with a
+    // purely local fake id and inserted straight into local state. Since
+    // fetchInitialData now does a full setTasks(...) replace from the
+    // backend (see the Tasks normalization pass), this spawned task will
+    // silently disappear the next time tasks are refetched — on reload,
+    // definitely; possibly sooner if this app ever polls. This is a real
+    // gap in a feature that was added independently of anything I built:
+    // either it needs a real POST /api/tasks call (reusing createTask's
+    // now-fixed logic) to actually persist, or the feature should be
+    // reconsidered. Flagging rather than silently deciding — didn't want
+    // to either rip out functionality you may be relying on, or paper
+    // over its brokenness by making it LOOK persisted without being so.
     const taskCount = (tasks || []).length + 101;
     const taskNumber = `TSK-${taskCount}`;
     const newTaskId = `tsk_${Date.now().toString(36)}`;
@@ -1259,7 +1639,7 @@ export const AppProvider = ({ children }) => {
       status: 'todo',
       priority: newTicket.priority || 'normal',
       projectId: newTicket.projectId || null,
-      ticketId: newId,
+      ticketId: newTicket.id,
       assignedToId: newTicket.assignedToId,
       supervisorId,
       adminId,
@@ -1287,8 +1667,8 @@ export const AppProvider = ({ children }) => {
       actorRole: currentUser?.role,
       action: 'TICKET_CREATED',
       entityType: 'ticket',
-      entityId: newId,
-      entityTitle: `${ticketNumber}: ${newTicket.title}`,
+      entityId: newTicket.id,
+      entityTitle: `${newTicket.ticketNumber}: ${newTicket.title}`,
       details: `Created new ${newTicket.priority} ticket requested by ${newTicket.requesterName} and spawned task ${taskNumber}`
     });
 
@@ -1296,10 +1676,10 @@ export const AppProvider = ({ children }) => {
       pushNotification({
         recipientId: newTicket.assignedToId,
         title: 'New Ticket Assigned',
-        message: `You were assigned ${ticketNumber} (${newTicket.priority.toUpperCase()} priority)`,
+        message: `You were assigned ${newTicket.ticketNumber} (${(newTicket.priority || 'normal').toUpperCase()} priority)`,
         type: 'assignment',
         entityType: 'ticket',
-        entityId: newId
+        entityId: newTicket.id
       });
     }
   };
@@ -1319,7 +1699,7 @@ export const AppProvider = ({ children }) => {
 
     if (targetId) {
       try {
-        await fetch(`/api/tickets/${targetId}`, {
+        await apiFetch(`/api/tickets/${targetId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1372,7 +1752,7 @@ export const AppProvider = ({ children }) => {
     const targetId = getBackendId(id);
     if (targetId) {
       try {
-        await fetch(`/api/tickets/${targetId}/status`, {
+        await apiFetch(`/api/tickets/${targetId}/status`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status, resolution_summary: resolutionSummary })
@@ -1419,7 +1799,7 @@ export const AppProvider = ({ children }) => {
     const targetId = getBackendId(id);
     if (targetId) {
       try {
-        await fetch(`/api/tickets/${targetId}/escalate`, {
+        await apiFetch(`/api/tickets/${targetId}/escalate`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ level, reason })
@@ -1604,7 +1984,7 @@ export const AppProvider = ({ children }) => {
     const targetId = getBackendId(id);
     if (targetId) {
       try {
-        await fetch(`/api/tickets/${targetId}`, { method: 'DELETE' });
+        await apiFetch(`/api/tickets/${targetId}`, { method: 'DELETE' });
       } catch (err) {
         console.error('Failed to sync deleteTicket to API:', err);
       }
@@ -1822,11 +2202,18 @@ export const AppProvider = ({ children }) => {
 
   const resetToSeedData = () => {
     localStorage.clear();
-    setAllUsers(SEED_USERS);
-    setCurrentUserIdState('usr_super_admin');
-    setProjects(SEED_PROJECTS);
-    setTasks(SEED_TASKS);
-    setTickets(SEED_TICKETS);
+    // Users are no longer reset here — there's no local seed array to
+    // reset them TO anymore, and this button shouldn't silently wipe real
+    // backend user data. Instead, this now logs the current session out
+    // (clearing currentUserId and the auth token) so the app returns to
+    // the login screen — a real backend reseed (truncate + restart) is
+    // what actually resets user data now, matching how the rest of this
+    // migration moved seeding to the backend.
+    setCurrentUserIdState(null);
+    setAuthToken(null);
+    // Projects, Tasks, and Tickets are no longer reset here either, same
+    // reasoning as Users above — they're backend-sourced now, not a
+    // local seed array.
     setAuditLogs(SEED_AUDIT_LOGS);
     setNotifications(SEED_NOTIFICATIONS);
     setPermissionMatrix(DEFAULT_PERMISSION_MATRIX);
@@ -1840,7 +2227,10 @@ export const AppProvider = ({ children }) => {
         currentUser,
         allUsers,
         users: allUsers,
+        authToken,
+        setAuthToken,
         projects,
+        clients,
         tasks,
         tickets,
         auditLogs,
@@ -1866,6 +2256,9 @@ export const AppProvider = ({ children }) => {
         togglePinProject,
         deleteProject,
         addProjectAttachment,
+        createClient,
+        updateClient,
+        deleteClient,
         createTask,
         updateTask,
         updateTaskStatus,

@@ -9,7 +9,7 @@ import (
 
 func SeedSuperAdmin() {
 	var count int64
-	DB.Model(&models.User{}).Where("role = ?", "Super Admin").Count(&count)
+	DB.Model(&models.User{}).Where("role = ?", "super_admin").Count(&count)
 
 	if count > 0 {
 		log.Println("Super Admin already exists. Skipping seed.")
@@ -25,7 +25,7 @@ func SeedSuperAdmin() {
 		Name:     "Super Admin",
 		Email:    "superadmin@example.com",
 		Password: string(hashedPassword),
-		Role:     "Super Admin",
+		Role:     "super_admin",
 	}
 
 	if err := DB.Create(&superAdmin).Error; err != nil {
