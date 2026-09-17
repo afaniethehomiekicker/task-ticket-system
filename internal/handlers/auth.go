@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -83,6 +84,27 @@ func Register(c *gin.Context) {
 	})
 }
 
+// authenticateUser looks up a user by email and verifies the password —
+// shared by Login and AdminLogin so the actual credential-checking logic
+// (and its "one generic error for every failure mode" discipline) exists
+// in exactly one place rather than being duplicated and risking drift.
+func authenticateUser(email, password string) (*models.User, error) {
+	if strings.TrimSpace(password) == "" {
+		return nil, errors.New("invalid credentials")
+	}
+
+	var user models.User
+	if result := database.DB.Where("email = ?", email).First(&user); result.Error != nil {
+		return nil, errors.New("invalid credentials")
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password)); err != nil {
+		return nil, errors.New("invalid credentials")
+	}
+
+	return &user, nil
+}
+
 // Login user. Every invalid-credential path — unknown email, empty
 // password, wrong password — returns the SAME 401 with the SAME generic
 // message. Deliberately not distinguishing "email not found" from "wrong
@@ -99,24 +121,58 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	if strings.TrimSpace(input.Password) == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
-		return
-	}
-
-	var user models.User
-	if result := database.DB.Where("email = ?", input.Email).First(&user); result.Error != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
-		return
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
-		return
-	}
-
-	token, err := middleware.GenerateToken(user.ID, user.Role)
+	user, err := authenticateUser(input.Email, input.Password)
 	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
+		return
+	}
+
+	token, genErr := middleware.GenerateToken(user.ID, user.Role)
+	if genErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate session token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Login successful",
+		"token":   token,
+		"user": gin.H{
+			"id":    user.ID,
+			"name":  user.Name,
+			"email": user.Email,
+			"role":  user.Role,
+		},
+	})
+}
+
+// AdminLogin is the dedicated Super Admin portal's login endpoint (POST
+// /api/auth/admin-login) — a genuinely separate entry point, not just the
+// regular Login with a different label. It reuses the exact same
+// credential verification as Login (authenticateUser), with one
+// additional gate: the account must actually be super_admin.
+//
+// A correct password for a real, non-super-admin account gets the EXACT
+// SAME generic "invalid username or password" response as a wrong
+// password would on an unknown email — this portal never reveals whether
+// an email exists or what role it holds to anyone probing it. Without
+// that, a subtly different error message ("wrong password" vs "not
+// authorized") would let someone fish for which accounts are Super
+// Admins just by trying emails here.
+func AdminLogin(c *gin.Context) {
+	var input LoginInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	user, err := authenticateUser(input.Email, input.Password)
+	if err != nil || user.Role != "super_admin" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+		return
+	}
+
+	token, genErr := middleware.GenerateToken(user.ID, user.Role)
+	if genErr != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate session token"})
 		return
 	}

@@ -21,12 +21,24 @@ func RegisterRoutes(r *gin.Engine) {
 		// Auth endpoints
 		api.POST("/auth/register", handlers.Register)
 		api.POST("/auth/login", handlers.Login)
+		// Dedicated Super Admin portal login — same credential check as
+		// /auth/login, with an added role gate. See AdminLogin in auth.go
+		// for why it deliberately returns the same generic error for a
+		// wrong password AND for a correct password on a non-super-admin
+		// account.
+		api.POST("/auth/admin-login", handlers.AdminLogin)
 
 		// File Upload endpoint
 		api.POST("/upload", handlers.UploadAvatar)
 
 		// User management endpoints
 		api.GET("/users", handlers.GetUsers)
+		// AuthenticateJWT only, deliberately no AuthorizeRole — self-edit
+		// must work for ANY authenticated user, not just admins. The
+		// handler itself reads the verified caller identity/role off the
+		// context and decides which fields are actually allowed to
+		// change, rather than gating the whole route to one tier.
+		api.PUT("/users/:id", middleware.AuthenticateJWT(), handlers.UpdateUserProfile)
 
 		// Client / Company profile endpoints. GET is open (needed for the
 		// client picker when creating a project) — POST/PUT/DELETE are
@@ -44,6 +56,18 @@ func RegisterRoutes(r *gin.Engine) {
 		api.PUT("/tasks/:id", handlers.UpdateTask)
 		api.PATCH("/tasks/:id/status", handlers.UpdateTaskStatus)
 		api.DELETE("/tasks/:id", handlers.DeleteTask)
+		// Review workflow. Submit requires only AuthenticateJWT — the
+		// handler itself checks "is this the assignee" since that's not
+		// a fixed role AuthorizeRole could express. Approve/reopen are
+		// restricted to Supervisor/Admin (Super Admin bypasses via
+		// AuthorizeRole's existing rule) — a task's own assignee cannot
+		// approve their own work, enforced server-side now, not just by
+		// which buttons the frontend renders.
+		api.PATCH("/tasks/:id/submit-review", middleware.AuthenticateJWT(), handlers.SubmitTaskForReview)
+		api.PATCH("/tasks/:id/approve", middleware.AuthenticateJWT(), middleware.AuthorizeRole("Admin", "Supervisor"), handlers.ApproveTask)
+		api.PATCH("/tasks/:id/reopen", middleware.AuthenticateJWT(), middleware.AuthorizeRole("Admin", "Supervisor"), handlers.ReopenTask)
+		api.POST("/tasks/:id/dependencies", handlers.AddTaskDependency)
+		api.DELETE("/tasks/:id/dependencies/:depId", handlers.RemoveTaskDependency)
 
 		// Ticket endpoints
 		api.GET("/tickets", handlers.GetTickets)
@@ -57,6 +81,13 @@ func RegisterRoutes(r *gin.Engine) {
 		api.GET("/subtasks", handlers.GetSubTasks)
 		api.POST("/subtasks", handlers.CreateSubTask)
 		api.PATCH("/subtasks/:id/status", handlers.UpdateSubTaskStatus)
+
+		// Checklist endpoints (checklist items live under a task). Any
+		// authenticated user can add/toggle — no finer-grained role
+		// restriction exists in the current UI for these, unlike the
+		// review-workflow actions.
+		api.POST("/checklists", middleware.AuthenticateJWT(), handlers.CreateChecklistItem)
+		api.PATCH("/checklists/:id/toggle", middleware.AuthenticateJWT(), handlers.ToggleChecklistItem)
 
 		// Team Collaboration & Comments endpoints
 		api.GET("/comments", handlers.GetComments)
@@ -84,6 +115,7 @@ func RegisterRoutes(r *gin.Engine) {
 			adminGroup.POST("/clients", handlers.CreateClient)
 			adminGroup.PUT("/clients/:id", handlers.UpdateClient)
 			adminGroup.DELETE("/clients/:id", handlers.DeleteClient)
+			adminGroup.POST("/users", handlers.AdminCreateUser)
 		}
 	}
 }

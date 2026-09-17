@@ -15,9 +15,24 @@ type CreateTicketInput struct {
 	TicketNumber string `json:"ticket_number"`
 	Title        string `json:"title" binding:"required"`
 	Description  string `json:"description"`
+	Department   string `json:"department"`
+	Category     string `json:"category"`
 	Priority     string `json:"priority"`
+	Severity     string `json:"severity"`
 	Status       string `json:"status"`
-	AssignedToID *uint  `json:"assigned_to_id"`
+
+	RequesterName    string `json:"requester_name"`
+	RequesterEmail   string `json:"requester_email"`
+	RequesterCompany string `json:"requester_company"`
+
+	ProjectID    *uint `json:"project_id"`
+	AssignedToID *uint `json:"assigned_to_id"`
+
+	DueDate string `json:"due_date"`
+
+	ResponseSlaMinutes   int    `json:"response_sla_minutes"`
+	ResolutionSlaMinutes int    `json:"resolution_sla_minutes"`
+	Labels               string `json:"labels"`
 }
 
 type UpdateTicketStatusInput struct {
@@ -30,12 +45,40 @@ type EscalateTicketInput struct {
 	Reason string `json:"reason"`
 }
 
+// isTicketOpenStatus reports whether a status counts as "still needs
+// resolving" for breach purposes — resolved/closed tickets are never
+// breached regardless of how late they were, since the clock that
+// matters stopped the moment they were actually handled.
+func isTicketOpenStatus(status string) bool {
+	return status != "resolved" && status != "closed"
+}
+
+// computeBreached derives Ticket.Breached fresh from DueDate + Status —
+// see the Breached field comment in models.go for why this is virtual
+// rather than a stored, separately-updatable column. DueDate is stored as
+// a plain string (matching the frontend's ISO-string convention
+// elsewhere); an unparseable or empty DueDate is treated as "no SLA
+// deadline set" rather than crashing or defaulting to breached.
+func computeBreached(t *models.Ticket) bool {
+	if t.DueDate == "" || !isTicketOpenStatus(t.Status) {
+		return false
+	}
+	due, err := time.Parse(time.RFC3339, t.DueDate)
+	if err != nil {
+		return false
+	}
+	return time.Now().After(due)
+}
+
 // GetTickets fetches all tickets from DB
 func GetTickets(c *gin.Context) {
 	var tickets []models.Ticket
-	if result := database.DB.Find(&tickets); result.Error != nil {
+	if result := database.DB.Preload("AssignedTo").Preload("Project").Find(&tickets); result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tickets: " + result.Error.Error()})
 		return
+	}
+	for i := range tickets {
+		tickets[i].Breached = computeBreached(&tickets[i])
 	}
 	c.JSON(http.StatusOK, gin.H{"tickets": tickets})
 }
@@ -43,10 +86,7 @@ func GetTickets(c *gin.Context) {
 // CreateTicket creates a new ticket safely with a unique ticket number.
 //
 // Status/priority defaults are lowercase ("open"/"normal") to match the
-// values every other status/priority field in this system uses (the
-// frontend's <select> options, TicketStatusBadge, PriorityBadge, etc. all
-// expect lowercase). This previously defaulted to "New"/"Normal" — "New"
-// in particular isn't even a status value the frontend recognizes at all.
+// values every other status/priority field in this system uses.
 func CreateTicket(c *gin.Context) {
 	var input CreateTicketInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -60,12 +100,24 @@ func CreateTicket(c *gin.Context) {
 	}
 
 	ticket := models.Ticket{
-		TicketNumber: ticketNum,
-		Title:        input.Title,
-		Description:  input.Description,
-		Priority:     input.Priority,
-		Status:       input.Status,
-		AssignedToID: input.AssignedToID,
+		TicketNumber:         ticketNum,
+		Title:                input.Title,
+		Description:          input.Description,
+		Department:           input.Department,
+		Category:             input.Category,
+		Priority:             input.Priority,
+		Severity:             input.Severity,
+		Status:               input.Status,
+		RequesterName:        input.RequesterName,
+		RequesterEmail:       input.RequesterEmail,
+		RequesterCompany:     input.RequesterCompany,
+		ProjectID:            input.ProjectID,
+		AssignedToID:         input.AssignedToID,
+		DueDate:              input.DueDate,
+		ResponseSlaMinutes:   input.ResponseSlaMinutes,
+		ResolutionSlaMinutes: input.ResolutionSlaMinutes,
+		Labels:               input.Labels,
+		EscalationLevel:      "none",
 	}
 
 	if ticket.Priority == "" {
@@ -75,30 +127,22 @@ func CreateTicket(c *gin.Context) {
 		ticket.Status = "open"
 	}
 
-	if result := database.DB.Omit("Assignee", "Project").Create(&ticket); result.Error != nil {
+	if result := database.DB.Omit("AssignedTo", "Project").Create(&ticket); result.Error != nil {
 		// Fallback to timestamp-based unique ticket number if conflict occurs
 		ticket.TicketNumber = fmt.Sprintf("TCK-%d", time.Now().UnixNano()%1000000)
-		if retryErr := database.DB.Omit("Assignee", "Project").Create(&ticket).Error; retryErr != nil {
+		if retryErr := database.DB.Omit("AssignedTo", "Project").Create(&ticket).Error; retryErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": retryErr.Error()})
 			return
 		}
 	}
 
+	ticket.Breached = computeBreached(&ticket)
 	c.JSON(http.StatusCreated, gin.H{"message": "Ticket created successfully", "ticket": ticket})
 }
 
-// UpdateTicket updates an existing ticket.
-//
-// This used to silently fabricate a brand-new placeholder ticket — with a
-// generic "Ticket <id>" title and the caller-supplied id forced onto it as
-// the primary key — whenever the requested id didn't match an existing
-// row. That's how "Ticket 1041" / "Ticket 18" style rows ended up in the
-// database: the frontend computes a numeric id from its own local ticket
-// id scheme, which frequently doesn't correspond to any real row's
-// auto-increment primary key, so nearly every update to a ticket that
-// only ever existed in frontend seed data quietly created a garbage
-// duplicate instead of updating (or correctly failing to find) the real
-// one. A PUT to a nonexistent resource should 404, not invent one.
+// UpdateTicket updates an existing ticket. Returns 404 if the id doesn't
+// exist rather than fabricating a placeholder row — see the git history
+// on this file for why that used to be a serious bug.
 func UpdateTicket(c *gin.Context) {
 	idParam := c.Param("id")
 
@@ -108,18 +152,34 @@ func UpdateTicket(c *gin.Context) {
 		return
 	}
 
-	// Normalize frontend camelCase JSON keys to database snake_case columns
-	if val, ok := input["assignedToId"]; ok {
-		input["assigned_to_id"] = val
-		delete(input, "assignedToId")
+	// Normalize every frontend camelCase JSON key this model now has to
+	// its database snake_case column name. GORM's map-based Updates()
+	// needs the actual column name — passing the camelCase key silently
+	// no-ops on that field instead of erroring, so a growing list of
+	// unnormalized fields is a growing list of silent no-ops.
+	camelToSnake := map[string]string{
+		"assignedToId":         "assigned_to_id",
+		"ticketNumber":         "ticket_number",
+		"resolutionSummary":    "resolution_summary",
+		"requesterName":        "requester_name",
+		"requesterEmail":       "requester_email",
+		"requesterCompany":     "requester_company",
+		"projectId":            "project_id",
+		"dueDate":              "due_date",
+		"responseSlaMinutes":   "response_sla_minutes",
+		"resolutionSlaMinutes": "resolution_sla_minutes",
+		"firstResponseAt":      "first_response_at",
+		"escalationLevel":      "escalation_level",
+		"escalationReason":     "escalation_reason",
+		"resolvedAt":           "resolved_at",
+		"closedAt":             "closed_at",
+		"isPinned":             "is_pinned",
 	}
-	if val, ok := input["ticketNumber"]; ok {
-		input["ticket_number"] = val
-		delete(input, "ticketNumber")
-	}
-	if val, ok := input["resolutionSummary"]; ok {
-		input["resolution_summary"] = val
-		delete(input, "resolutionSummary")
+	for camelKey, snakeKey := range camelToSnake {
+		if val, ok := input[camelKey]; ok {
+			input[snakeKey] = val
+			delete(input, camelKey)
+		}
 	}
 
 	var ticket models.Ticket
@@ -128,17 +188,18 @@ func UpdateTicket(c *gin.Context) {
 		return
 	}
 
-	database.DB.Model(&ticket).Omit("Assignee", "Project").Updates(input)
+	database.DB.Model(&ticket).Omit("AssignedTo", "Project").Updates(input)
 
 	// Fetch fresh updated record from database
-	database.DB.First(&ticket, idParam)
+	database.DB.Preload("AssignedTo").Preload("Project").First(&ticket, idParam)
 
+	ticket.Breached = computeBreached(&ticket)
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket updated successfully", "ticket": ticket})
 }
 
-// UpdateTicketStatus updates the status of an existing ticket. See
-// UpdateTicket above for why this no longer auto-creates a placeholder
-// row when the id isn't found.
+// UpdateTicketStatus updates the status of an existing ticket, and — to
+// match the frontend's own updateTicketStatus logic — stamps
+// ResolvedAt/ClosedAt the first time a ticket reaches that status.
 func UpdateTicketStatus(c *gin.Context) {
 	idParam := c.Param("id")
 
@@ -154,15 +215,33 @@ func UpdateTicketStatus(c *gin.Context) {
 		return
 	}
 
-	ticket.Status = input.Status
-	database.DB.Model(&ticket).Update("status", input.Status)
+	now := time.Now()
+	updates := map[string]interface{}{
+		"status": input.Status,
+	}
 
+	if input.ResolutionSummary != "" {
+		updates["resolution_summary"] = input.ResolutionSummary
+	}
+
+	if (input.Status == "resolved" || input.Status == "closed") && ticket.ResolvedAt == nil {
+		updates["resolved_at"] = now
+	}
+	if input.Status == "closed" && ticket.ClosedAt == nil {
+		updates["closed_at"] = now
+	}
+
+	database.DB.Model(&ticket).Updates(updates)
+	database.DB.First(&ticket, idParam)
+
+	ticket.Breached = computeBreached(&ticket)
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket status updated successfully", "ticket": ticket})
 }
 
-// EscalateTicket escalates an existing ticket. See UpdateTicket above for
-// why this no longer auto-creates a placeholder row when the id isn't
-// found.
+// EscalateTicket escalates an existing ticket, now persisting
+// EscalationLevel/EscalationReason for real — those fields didn't exist
+// on the model before, so this endpoint previously could only change
+// Status/Priority and silently discarded the level/reason it was given.
 func EscalateTicket(c *gin.Context) {
 	idParam := c.Param("id")
 
@@ -175,12 +254,16 @@ func EscalateTicket(c *gin.Context) {
 		return
 	}
 
-	ticket.Status = "escalated"
-	database.DB.Model(&ticket).Updates(map[string]interface{}{
-		"status":   "escalated",
-		"priority": "critical",
-	})
+	updates := map[string]interface{}{
+		"status":            "escalated",
+		"priority":          "critical",
+		"escalation_level":  input.Level,
+		"escalation_reason": input.Reason,
+	}
+	database.DB.Model(&ticket).Updates(updates)
+	database.DB.First(&ticket, idParam)
 
+	ticket.Breached = computeBreached(&ticket)
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket escalated successfully", "ticket": ticket})
 }
 

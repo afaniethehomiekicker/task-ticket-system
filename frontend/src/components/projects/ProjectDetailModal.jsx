@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
   X, Pin, Calendar, Users, Clock, CheckSquare, LifeBuoy, FileText, 
-  Paperclip, Plus, ArrowRight, TrendingUp, AlertCircle, Edit, Trash2, Upload, ShieldAlert, UserPlus, UserMinus
+  Paperclip, Plus, ArrowRight, TrendingUp, AlertCircle, Edit, Trash2, Upload, ShieldAlert, UserPlus, UserMinus, Check
 } from 'lucide-react';
 import { PriorityBadge, ProjectStatusBadge, TaskStatusBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
 import { canCreateTask } from '../../utils/permissions';
@@ -67,6 +67,9 @@ export const ProjectDetailModal = () => {
   const [editStartDate, setEditStartDate] = useState('');
   const [editDueDate, setEditDueDate] = useState('');
   const [editBudgetHours, setEditBudgetHours] = useState(0);
+  const [isQuickEditingBudget, setIsQuickEditingBudget] = useState(false);
+  const [quickBudgetValue, setQuickBudgetValue] = useState(0);
+  const [isSavingQuickBudget, setIsSavingQuickBudget] = useState(false);
 
   if (!selectedProjectDetailId) return null;
 
@@ -150,13 +153,24 @@ export const ProjectDetailModal = () => {
     e.preventDefault();
     if (!selectedMemberToAdd) return;
 
-    const nextMemberIds = [...(project.memberIds || []), selectedMemberToAdd];
+    // selectedMemberToAdd comes from a native <select> — e.target.value
+    // is ALWAYS a string, even for a numeric <option value={u.id}>. The
+    // existing project.memberIds are real numbers (from normalizeProject),
+    // so without this coercion the array going to the backend was mixed
+    // — numbers plus one string. The backend's toUintSlice does a
+    // type assertion to float64 per element and SILENTLY DROPS any
+    // element that isn't one, rather than erroring — so the newly added
+    // member was filtered out before ever reaching the database, while
+    // the existing members (already numbers) stayed. That's exactly why
+    // adding a member looked like it worked (no error, form closed) but
+    // never actually attached them.
+    const nextMemberIds = [...(project.memberIds || []).map(Number), Number(selectedMemberToAdd)];
     updateProject(project.id, { memberIds: nextMemberIds });
     setSelectedMemberToAdd('');
   };
 
   const handleRemoveMember = (userId) => {
-    const nextMemberIds = (project.memberIds || []).filter(id => id !== userId);
+    const nextMemberIds = (project.memberIds || []).filter(id => Number(id) !== Number(userId));
     updateProject(project.id, { memberIds: nextMemberIds });
   };
 
@@ -325,7 +339,59 @@ export const ProjectDetailModal = () => {
                   </div>
                   <div>
                     <span className="text-slate-500 dark:text-zinc-400 block">Budget Hours</span>
-                    <span className="font-medium text-slate-900 dark:text-zinc-100">{project.spentHours}h / {project.budgetHours}h</span>
+                    {isQuickEditingBudget ? (
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <input
+                          type="number"
+                          min={0}
+                          autoFocus
+                          value={quickBudgetValue}
+                          onChange={(e) => setQuickBudgetValue(e.target.value)}
+                          disabled={isSavingQuickBudget}
+                          className="w-16 px-1.5 py-0.5 text-xs rounded border border-indigo-400 dark:border-indigo-600 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden disabled:opacity-60"
+                        />
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setIsSavingQuickBudget(true);
+                            await updateProject(project.id, { budgetHours: Number(quickBudgetValue) || 0 });
+                            setIsSavingQuickBudget(false);
+                            setIsQuickEditingBudget(false);
+                          }}
+                          disabled={isSavingQuickBudget}
+                          className="p-0.5 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-950/40 rounded cursor-pointer disabled:opacity-50"
+                          title="Save"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsQuickEditingBudget(false)}
+                          disabled={isSavingQuickBudget}
+                          className="p-0.5 text-slate-500 dark:text-zinc-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded cursor-pointer disabled:opacity-50"
+                          title="Cancel"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="font-medium text-slate-900 dark:text-zinc-100 flex items-center gap-1.5">
+                        {project.spentHours}h / {project.budgetHours}h
+                        {canManageTeam && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setQuickBudgetValue(project.budgetHours || 0);
+                              setIsQuickEditingBudget(true);
+                            }}
+                            className="p-0.5 text-slate-400 dark:text-zinc-500 hover:text-indigo-600 dark:hover:text-indigo-400 rounded cursor-pointer"
+                            title="Quick-edit budget hours"
+                          >
+                            <Edit className="w-3 h-3" />
+                          </button>
+                        )}
+                      </span>
+                    )}
                   </div>
                   <div>
                     <span className="text-slate-500 dark:text-zinc-400 block">Department Admin</span>

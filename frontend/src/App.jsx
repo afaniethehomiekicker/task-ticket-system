@@ -13,14 +13,35 @@ import { AuditLogsView } from './components/audit/AuditLogsView';
 import { SettingsView } from './components/settings/SettingsView';
 import { GlobalSearchModal } from './components/common/GlobalSearchModal';
 import { QuickCreateModal } from './components/common/QuickCreateModal';
+import { QuickCreateTypePicker } from './components/common/QuickCreateTypePicker';
 import { Login } from './components/auth/login';
+import { AdminLogin } from './components/auth/Adminlogin';
 import { Profile } from './components/profile/profile';
 import { TaskEditModal } from './components/tasks/TaskEditModal';
 import { ProjectEditModal } from './components/projects/ProjectEditModal';
 import { TicketEditModal } from './components/tickets/TicketEditModal';
+import { ClientsView } from './components/clients/ClientsView';
 
 const AppContent = () => {
   const { activeTab, quickCreateOpen, setQuickCreateOpen, currentUser } = useApp();
+
+  // Dedicated Super Admin portal — a real, separate URL path
+  // (/admin-login), checked directly against window.location.pathname
+  // since this app has no router at all (App.jsx does state-based tab
+  // switching only). This is the minimal way to get a genuinely distinct
+  // URL without adding a full routing dependency for one static route —
+  // worth revisiting with real routing (e.g. react-router) if more paths
+  // like this are needed later.
+  if (window.location.pathname === '/admin-login') {
+    if (currentUser) {
+      // Already authenticated — no reason to show the login form again;
+      // a full navigation (not SPA state) keeps the URL bar and app
+      // state from disagreeing with each other.
+      window.location.href = '/';
+      return null;
+    }
+    return <AdminLogin />;
+  }
 
   // If the user is not authenticated, render only the Login page
   if (!currentUser) {
@@ -39,6 +60,8 @@ const AppContent = () => {
         return <TasksView />;
       case 'tickets':
         return <TicketsView />;
+      case 'clients':
+        return <ClientsView />;
       case 'team':
         return <TeamView />;
       case 'reports':
@@ -72,6 +95,7 @@ const AppContent = () => {
 
       {/* Global Modals */}
       <GlobalSearchModal />
+      <QuickCreateTypePicker />
       <QuickCreateModal 
         isOpen={quickCreateOpen} 
         onClose={() => setQuickCreateOpen(false)} 

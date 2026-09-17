@@ -210,6 +210,20 @@ const normalizeTask = (raw) => {
     isPinned: !!raw.is_pinned,
     reviewStatus: raw.review_status || 'none',
     reviewNotes: raw.review_notes || '',
+    // Richer than the original seed data's bare ['TSK-103'] strings —
+    // this is a genuinely new feature (no dependency UI/handler existed
+    // at all before), so the shape is designed fresh rather than
+    // constrained to match old mock data. Real task ids are kept
+    // alongside the display number specifically so a "remove" action has
+    // something real to call DELETE .../dependencies/:depId with.
+    dependencies: Array.isArray(raw.depends_on)
+      ? raw.depends_on.map(d => ({
+          id: d.id ?? d.ID,
+          taskNumber: d.task_number || '',
+          title: d.title || '',
+          status: d.status || '',
+        })).filter(d => d.id)
+      : [],
     checklists: Array.isArray(raw.checklists) ? raw.checklists.map(normalizeChecklistItem).filter(Boolean) : [],
     subTasks: Array.isArray(raw.sub_tasks) ? raw.sub_tasks.map(normalizeSubTask).filter(Boolean) : [],
     comments: Array.isArray(raw.comments) ? raw.comments.map(normalizeComment).filter(Boolean) : [],
@@ -265,6 +279,16 @@ const normalizeTicket = (raw) => {
     resolvedAt: raw.resolved_at || null,
     closedAt: raw.closed_at || null,
     escalationLevel: raw.escalation_level || 'none',
+    // Computed server-side, fresh, every response — see the Breached
+    // field comment in models.go for why this is never stored.
+    breached: !!raw.breached,
+    // TicketsView.jsx already had SLA-breach UI built in, expecting these
+    // exact names — it was silently dead (badge never lit, due date
+    // never shown) purely because this function didn't produce them.
+    // Aliased rather than renamed, since `breached`/`dueDate` are also
+    // used/expected elsewhere.
+    slaBreached: !!raw.breached,
+    slaDueTime: raw.due_date || null,
     escalationReason: raw.escalation_reason || '',
     resolutionSummary: raw.resolution_summary || '',
     labels,
@@ -527,6 +551,14 @@ export const AppProvider = ({ children }) => {
   const [selectedProjectEditId, setSelectedProjectEditId] = useState(null);
   const [quickCreateOpen, setQuickCreateOpenState] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  // Controls the small Project/Task/Ticket/Client type-picker that opens
+  // when the generic "Quick Create" button (Navbar or Sidebar) is
+  // clicked — deliberately separate from quickCreateOpen itself. Picking
+  // a type here calls openQuickCreate({tab, restrictToTab: true}), which
+  // opens the actual create modal already locked to that tab — this
+  // never lets someone switch tabs on an already-open modal, same
+  // discipline as every other entry point into QuickCreateModal.
+  const [quickCreatePickerOpen, setQuickCreatePickerOpen] = useState(false);
 
   const [quickCreateConfig, setQuickCreateConfig] = useState({
     tab: 'project',
@@ -1132,21 +1164,49 @@ export const AppProvider = ({ children }) => {
 
   const updateTask = async (id, updates) => {
     const targetId = getBackendId(id);
+
+    // Normalize known reference-id fields before sending. A native
+    // <select>'s e.target.value is ALWAYS a string — including an empty
+    // string for "Unassigned" — but these columns are *uint on the
+    // backend. Sending a raw string (even a numeric-looking one like
+    // "7") for one of these was very likely failing the SQL UPDATE
+    // outright, and until the matching task.go fix, that failure was
+    // completely invisible: the handler returned 200 OK regardless.
+    const wireUpdates = { ...updates };
+    ['assignedToId', 'projectId', 'creatorId'].forEach(key => {
+      if (key in wireUpdates) {
+        const val = wireUpdates[key];
+        wireUpdates[key] = (val === '' || val === null || val === undefined) ? null : getBackendId(val);
+      }
+    });
+    if ('estimatedHours' in wireUpdates) {
+      wireUpdates.estimatedHours = Number(wireUpdates.estimatedHours) || 0;
+    }
+
+    let savedTask = null;
     if (targetId) {
       try {
-        await apiFetch(`/api/tasks/${targetId}`, {
+        const res = await apiFetch(`/api/tasks/${targetId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updates)
+          body: JSON.stringify(wireUpdates)
         });
+        const resData = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          alert(resData.error || 'Failed to update task.');
+          return null;
+        }
+        savedTask = normalizeTask(resData.task);
       } catch (err) {
         console.error('Failed to sync updateTask to API:', err);
+        alert('Failed to update task. Please check your connection and try again.');
+        return null;
       }
     }
 
     setTasks(prev => (prev || []).map(t => {
       if (String(t.id) === String(id)) {
-        return { ...t, ...updates, updatedAt: new Date().toISOString() };
+        return savedTask || { ...t, ...updates, updatedAt: new Date().toISOString() };
       }
       return t;
     }));
@@ -1164,6 +1224,8 @@ export const AppProvider = ({ children }) => {
         details: `Updated task properties: ${Object.keys(updates).join(', ')}`
       });
     }
+
+    return savedTask || true;
   };
 
   const updateTaskStatus = async (id, newStatus) => {
@@ -1232,22 +1294,31 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  const submitTaskForReview = (id, notes) => {
+  const submitTaskForReview = async (id, notes) => {
     const task = (tasks || []).find(t => String(t.id) === String(id));
     if (!task) return;
 
-    setTasks(prev => (prev || []).map(t => {
-      if (String(t.id) === String(id)) {
-        return {
-          ...t,
-          status: 'under_review',
-          reviewStatus: 'submitted_for_review',
-          reviewNotes: notes || 'Work finished, ready for supervisor validation.',
-          updatedAt: new Date().toISOString()
-        };
+    const targetId = getBackendId(id);
+    let savedTask = null;
+    try {
+      const res = await apiFetch(`/api/tasks/${targetId}/submit-review`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes: notes || '' })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to submit task for review.');
+        return;
       }
-      return t;
-    }));
+      savedTask = normalizeTask(resData.task);
+    } catch (err) {
+      console.error('Failed to sync submitTaskForReview to API:', err);
+      alert('Failed to submit task for review. Please check your connection and try again.');
+      return;
+    }
+
+    setTasks(prev => (prev || []).map(t => String(t.id) === String(id) ? savedTask : t));
 
     if (currentUser) {
       logAudit({
@@ -1274,27 +1345,31 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  const approveTask = (id, notes) => {
+  const approveTask = async (id, notes) => {
     const task = (tasks || []).find(t => String(t.id) === String(id));
     if (!task || !currentUser) return;
 
-    const isSupervisor = currentUser.role === 'supervisor';
-    const newReviewStatus = isSupervisor ? 'supervisor_approved' : 'admin_approved';
-    const newStatus = 'completed';
-
-    setTasks(prev => (prev || []).map(t => {
-      if (String(t.id) === String(id)) {
-        return {
-          ...t,
-          status: newStatus,
-          progress: 100,
-          reviewStatus: newReviewStatus,
-          reviewNotes: notes || `Approved by ${currentUser.name}`,
-          updatedAt: new Date().toISOString()
-        };
+    const targetId = getBackendId(id);
+    let savedTask = null;
+    try {
+      const res = await apiFetch(`/api/tasks/${targetId}/approve`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes: notes || '' })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to approve task.');
+        return;
       }
-      return t;
-    }));
+      savedTask = normalizeTask(resData.task);
+    } catch (err) {
+      console.error('Failed to sync approveTask to API:', err);
+      alert('Failed to approve task. Please check your connection and try again.');
+      return;
+    }
+
+    setTasks(prev => (prev || []).map(t => String(t.id) === String(id) ? savedTask : t));
 
     if (typeof confetti === 'function') {
       confetti({ particleCount: 70, spread: 80, origin: { y: 0.6 } });
@@ -1321,22 +1396,31 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const reopenTask = (id, notes) => {
+  const reopenTask = async (id, notes) => {
     const task = (tasks || []).find(t => String(t.id) === String(id));
     if (!task || !currentUser) return;
 
-    setTasks(prev => (prev || []).map(t => {
-      if (String(t.id) === String(id)) {
-        return {
-          ...t,
-          status: 'in_progress',
-          reviewStatus: 'reopened',
-          reviewNotes: notes || `Reopened by ${currentUser.name}. Additional changes needed.`,
-          updatedAt: new Date().toISOString()
-        };
+    const targetId = getBackendId(id);
+    let savedTask = null;
+    try {
+      const res = await apiFetch(`/api/tasks/${targetId}/reopen`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes: notes || '' })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to reopen task.');
+        return;
       }
-      return t;
-    }));
+      savedTask = normalizeTask(resData.task);
+    } catch (err) {
+      console.error('Failed to sync reopenTask to API:', err);
+      alert('Failed to reopen task. Please check your connection and try again.');
+      return;
+    }
+
+    setTasks(prev => (prev || []).map(t => String(t.id) === String(id) ? savedTask : t));
 
     logAudit({
       actorId: currentUser.id,
@@ -1359,17 +1443,35 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const toggleChecklistItem = (taskId, checklistId) => {
+  const toggleChecklistItem = async (taskId, checklistId) => {
+    const targetId = getBackendId(checklistId);
+    let savedItem = null;
+    try {
+      const res = await apiFetch(`/api/checklists/${targetId}/toggle`, { method: 'PATCH' });
+      if (res.ok) {
+        const resData = await res.json();
+        savedItem = normalizeChecklistItem(resData.checklist);
+      }
+    } catch (err) {
+      console.error('Failed to sync toggleChecklistItem to API:', err);
+    }
+    // Unlike addChecklistItem below, this still falls back to an
+    // optimistic local toggle on failure — a checkbox that doesn't
+    // persist is a much lower-stakes failure than a phantom item that
+    // only ever existed locally, so it's fine to keep the UI responsive
+    // here rather than block on the network.
+
     setTasks(prev => prev.map(t => {
       if (String(t.id) === String(taskId)) {
         const updatedChecklists = (t.checklists || []).map(c => {
           if (String(c.id) === String(checklistId)) {
+            if (savedItem) return savedItem;
             const nextCompleted = !c.completed;
             return {
               ...c,
               completed: nextCompleted,
-              completedBy: nextCompleted ? currentUser?.id : undefined,
-              completedAt: nextCompleted ? new Date().toISOString() : undefined
+              completedBy: nextCompleted ? currentUser?.id : null,
+              completedAt: nextCompleted ? new Date().toISOString() : null
             };
           }
           return c;
@@ -1390,17 +1492,32 @@ export const AppProvider = ({ children }) => {
     }));
   };
 
-  const addChecklistItem = (taskId, title) => {
-    const newItem = {
-      id: `chk_${Date.now()}`,
-      title,
-      completed: false
-    };
+  const addChecklistItem = async (taskId, title) => {
+    const targetTaskId = getBackendId(taskId);
+    let savedItem = null;
+    try {
+      const res = await apiFetch('/api/checklists', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: targetTaskId, title })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to add checklist item.');
+        return;
+      }
+      savedItem = normalizeChecklistItem(resData.checklist);
+    } catch (err) {
+      console.error('Failed to sync addChecklistItem to API:', err);
+      alert('Failed to add checklist item. Please check your connection and try again.');
+      return;
+    }
+
     setTasks(prev => prev.map(t => {
       if (String(t.id) === String(taskId)) {
         return {
           ...t,
-          checklists: [...(t.checklists || []), newItem],
+          checklists: [...(t.checklists || []), savedItem],
           updatedAt: new Date().toISOString()
         };
       }
@@ -1409,37 +1526,47 @@ export const AppProvider = ({ children }) => {
   };
 
   const addSubTask = async (taskId, title, assignedToId, priority = 'normal', dueDate = new Date().toISOString().split('T')[0], type = 'flowchart') => {
-    const newSub = {
-      id: `sub_${Date.now()}`,
-      title,
-      assignedToId: assignedToId || currentUser?.id,
-      status: 'todo',
-      priority,
-      dueDate,
-      type,
-      completed: false,
-      estimatedHours: 4,
-      actualHours: 0
-    };
-
     const targetTaskId = getBackendId(taskId);
-    if (targetTaskId) {
-      try {
-        await apiFetch('/api/subtasks', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title, task_id: targetTaskId })
-        });
-      } catch (err) {
-        console.error('Failed to sync subtask to API:', err);
+    const resolvedAssigneeId = getBackendId(assignedToId) || getBackendId(currentUser?.id) || null;
+
+    let savedSub = null;
+    try {
+      const res = await apiFetch('/api/subtasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          task_id: targetTaskId,
+          assignee_id: resolvedAssigneeId,
+          priority,
+          // Backend field is "deadline", not "due_date" — SubTask uses a
+          // different name than Task/Ticket do for the same concept.
+          deadline: dueDate,
+          estimated_hours: 4,
+        })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to add subtask.');
+        return;
       }
+      // Real backend id and stored data, not the fake sub_${Date.now()}
+      // id this used to fabricate — which meant a status update on a
+      // just-created subtask, in the same session, would silently PATCH
+      // a garbage id that could never match a real row (its
+      // digit-extraction fallback had no real backend id to find).
+      savedSub = normalizeSubTask(resData.subtask);
+    } catch (err) {
+      console.error('Failed to sync addSubTask to API:', err);
+      alert('Failed to add subtask. Please check your connection and try again.');
+      return;
     }
 
     setTasks(prev => prev.map(t => {
       if (String(t.id) === String(taskId)) {
         return {
           ...t,
-          subTasks: [...(t.subTasks || []), newSub],
+          subTasks: [...(t.subTasks || []), savedSub],
           updatedAt: new Date().toISOString()
         };
       }
@@ -1449,23 +1576,35 @@ export const AppProvider = ({ children }) => {
 
   const updateSubTaskStatus = async (taskId, subTaskId, status) => {
     const targetSubTaskId = getBackendId(subTaskId);
-    if (targetSubTaskId) {
-      try {
-        await apiFetch(`/api/subtasks/${targetSubTaskId}/status`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status })
-        });
-      } catch (err) {
-        console.error('Failed to sync subtask status to API:', err);
+    let savedSub = null;
+    try {
+      const res = await apiFetch(`/api/subtasks/${targetSubTaskId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status })
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        console.error('updateSubTaskStatus failed:', errData.error);
+        // Falls through to the optimistic local update below rather than
+        // alerting — a subtask status flip is lower-stakes than creating
+        // one, same reasoning as toggleChecklistItem.
+      } else {
+        const resData = await res.json();
+        savedSub = normalizeSubTask(resData.subtask);
       }
+    } catch (err) {
+      console.error('Failed to sync subtask status to API:', err);
     }
 
     setTasks(prev => prev.map(t => {
       if (String(t.id) === String(taskId)) {
         return {
           ...t,
-          subTasks: (t.subTasks || []).map(st => String(st.id) === String(subTaskId) ? { ...st, status } : st),
+          subTasks: (t.subTasks || []).map(st => {
+            if (String(st.id) !== String(subTaskId)) return st;
+            return savedSub || { ...st, status };
+          }),
           updatedAt: new Date().toISOString()
         };
       }
@@ -1474,35 +1613,41 @@ export const AppProvider = ({ children }) => {
   };
 
   const addTaskComment = async (taskId, content, isInternal = false) => {
-    const newComment = {
-      id: `com_${Date.now()}`,
-      authorId: currentUser?.id,
-      authorName: currentUser?.name,
-      authorAvatar: currentUser?.avatar,
-      authorRole: currentUser?.role,
-      content,
-      isInternal,
-      createdAt: new Date().toISOString()
-    };
-
     const targetTaskId = getBackendId(taskId);
-    if (targetTaskId) {
-      try {
-        await apiFetch('/api/comments', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content, task_id: targetTaskId, author_id: currentUser?.backendId || getBackendId(currentUser?.id) || 1 })
-        });
-      } catch (err) {
-        console.error('Failed to sync comment to API:', err);
+    let savedComment = null;
+    try {
+      const res = await apiFetch('/api/comments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content,
+          task_id: targetTaskId,
+          // Was "author_id" — CreateCommentInput's actual field is
+          // "user_id". Since an unrecognized JSON key is silently
+          // dropped rather than erroring, this was sending UserID as its
+          // zero value every time, which binding:"required" correctly
+          // rejected with a 400.
+          user_id: getBackendId(currentUser?.id) || null,
+          is_internal: isInternal,
+        })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to post comment.');
+        return;
       }
+      savedComment = normalizeComment(resData.comment);
+    } catch (err) {
+      console.error('Failed to sync comment to API:', err);
+      alert('Failed to post comment. Please check your connection and try again.');
+      return;
     }
 
     setTasks(prev => prev.map(t => {
       if (String(t.id) === String(taskId)) {
         return {
           ...t,
-          comments: [...(t.comments || []), newComment],
+          comments: [...(t.comments || []), savedComment],
           updatedAt: new Date().toISOString()
         };
       }
@@ -1546,6 +1691,54 @@ export const AppProvider = ({ children }) => {
         details: `Deleted task ${task.taskNumber}`
       });
     }
+  };
+
+  const addTaskDependency = async (taskId, dependsOnTaskId) => {
+    const targetId = getBackendId(taskId);
+    const dependsOnId = getBackendId(dependsOnTaskId);
+    let savedTask = null;
+    try {
+      const res = await apiFetch(`/api/tasks/${targetId}/dependencies`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ depends_on_task_id: dependsOnId })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to add dependency.');
+        return;
+      }
+      savedTask = normalizeTask(resData.task);
+    } catch (err) {
+      console.error('Failed to sync addTaskDependency to API:', err);
+      alert('Failed to add dependency. Please check your connection and try again.');
+      return;
+    }
+
+    setTasks(prev => prev.map(t => String(t.id) === String(taskId) ? savedTask : t));
+  };
+
+  const removeTaskDependency = async (taskId, dependsOnTaskId) => {
+    const targetId = getBackendId(taskId);
+    const dependsOnId = getBackendId(dependsOnTaskId);
+    let savedTask = null;
+    try {
+      const res = await apiFetch(`/api/tasks/${targetId}/dependencies/${dependsOnId}`, { method: 'DELETE' });
+      if (res.ok) {
+        const resData = await res.json();
+        savedTask = normalizeTask(resData.task);
+      }
+    } catch (err) {
+      console.error('Failed to sync removeTaskDependency to API:', err);
+    }
+
+    setTasks(prev => prev.map(t => {
+      if (String(t.id) !== String(taskId)) return t;
+      if (savedTask) return savedTask;
+      // Optimistic fallback on failure — removing a dependency link is
+      // low-stakes, same reasoning as checklist toggling.
+      return { ...t, dependencies: (t.dependencies || []).filter(d => String(d.id) !== String(dependsOnTaskId)) };
+    }));
   };
 
   const createTicket = async (data) => {
@@ -1846,84 +2039,78 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  const addTicketComment = (ticketId, content) => {
-    const newComment = {
-      id: `tcom_${Date.now()}`,
-      authorId: currentUser?.id,
-      authorName: currentUser?.name,
-      authorAvatar: currentUser?.avatar,
-      authorRole: currentUser?.role,
-      content,
-      isInternal: false,
-      createdAt: new Date().toISOString()
-    };
+  // Shared by addTicketComment/addTicketInternalNote/addTicketResponse
+  // below — all three ultimately POST the same Comment record, differing
+  // only in the isInternal value. Updates all three locally-cached views
+  // (comments/internalNotes/responses) consistently with how
+  // normalizeTicket derives them from one underlying list on fetch, so
+  // this-session state and post-reload state agree.
+  const postTicketComment = async (ticketId, content, isInternal) => {
+    const targetTicketId = getBackendId(ticketId);
+    let savedComment = null;
+    try {
+      const res = await apiFetch('/api/comments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content,
+          ticket_id: targetTicketId,
+          user_id: getBackendId(currentUser?.id) || null,
+          is_internal: isInternal,
+        })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to post comment.');
+        return null;
+      }
+      savedComment = normalizeComment(resData.comment);
+    } catch (err) {
+      console.error('Failed to sync ticket comment to API:', err);
+      alert('Failed to post comment. Please check your connection and try again.');
+      return null;
+    }
+
     setTickets(prev => prev.map(t => {
       if (String(t.id) === String(ticketId)) {
         return {
           ...t,
-          comments: [...(t.comments || []), newComment],
+          comments: savedComment.isInternal ? (t.comments || []) : [...(t.comments || []), savedComment],
+          internalNotes: savedComment.isInternal ? [...(t.internalNotes || []), savedComment] : (t.internalNotes || []),
+          responses: [...(t.responses || []), savedComment],
           firstResponseAt: t.firstResponseAt || new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
       }
       return t;
     }));
+
+    return savedComment;
   };
 
-  const addTicketInternalNote = (ticketId, content) => {
-    const newNote = {
-      id: `note_${Date.now()}`,
-      authorId: currentUser?.id,
-      authorName: currentUser?.name,
-      authorAvatar: currentUser?.avatar,
-      content,
-      createdAt: new Date().toISOString()
-    };
-    setTickets(prev => prev.map(t => {
-      if (String(t.id) === String(ticketId)) {
-        return {
-          ...t,
-          internalNotes: [...(t.internalNotes || []), newNote],
-          updatedAt: new Date().toISOString()
-        };
-      }
-      return t;
-    }));
-
-    logAudit({
-      actorId: currentUser?.id,
-      actorName: currentUser?.name,
-      actorRole: currentUser?.role,
-      action: 'TICKET_INTERNAL_NOTE_ADDED',
-      entityType: 'ticket',
-      entityId: ticketId,
-      entityTitle: `Ticket ${ticketId}`,
-      details: `Added internal staff note by ${currentUser?.name}`
-    });
+  const addTicketComment = async (ticketId, content) => {
+    await postTicketComment(ticketId, content, false);
   };
 
-  const addTicketResponse = (ticketId, content, isInternalNote = false) => {
-    const newResponse = {
-      id: `resp_${Date.now()}`,
-      authorId: currentUser?.id,
-      authorName: currentUser?.name,
-      authorAvatar: currentUser?.avatar,
-      authorRole: currentUser?.role,
-      content,
-      isInternalNote,
-      createdAt: new Date().toISOString()
-    };
-    setTickets(prev => prev.map(t => {
-      if (String(t.id) === String(ticketId)) {
-        return {
-          ...t,
-          responses: [...(t.responses || []), newResponse],
-          firstResponseAt: t.firstResponseAt || new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        };
-      }
-      return t;
-    }));
+  const addTicketInternalNote = async (ticketId, content) => {
+    const saved = await postTicketComment(ticketId, content, true);
+    if (saved) {
+      logAudit({
+        actorId: currentUser?.id,
+        actorName: currentUser?.name,
+        actorRole: currentUser?.role,
+        action: 'TICKET_INTERNAL_NOTE_ADDED',
+        entityType: 'ticket',
+        entityId: ticketId,
+        entityTitle: `Ticket ${ticketId}`,
+        details: `Added internal staff note by ${currentUser?.name}`
+      });
+    }
+  };
+
+  const addTicketResponse = async (ticketId, content, isInternalNote = false) => {
+    const saved = await postTicketComment(ticketId, content, isInternalNote);
+    if (!saved) return;
 
     const ticket = tickets.find(t => String(t.id) === String(ticketId));
     if (ticket && !isInternalNote && ticket.assignedToId && String(ticket.assignedToId) !== String(currentUser?.id)) {
@@ -2006,15 +2193,46 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  const createUser = (userData) => {
-    const newId = `usr_${Date.now().toString(36)}`;
-    const newUser = {
-      ...userData,
-      id: newId,
-      createdAt: new Date().toISOString(),
-      lastActive: 'Active now'
+  const createUser = async (userData) => {
+    // Wire payload — admin-only endpoint, so this only actually succeeds
+    // when currentUser is Admin/Super Admin (enforced server-side via
+    // AuthorizeRole, not just by this function existing).
+    const wirePayload = {
+      name: userData.name,
+      email: userData.email,
+      password: userData.password || undefined, // omitted -> backend generates a temp password
+      role: userData.role,
+      department: userData.department || '',
+      title: userData.title || '',
+      phone: userData.phone || '',
+      avatar: userData.avatar || '',
+      supervisor_id: getBackendId(userData.supervisorId) || null,
+      admin_id: getBackendId(userData.adminId) || null,
     };
-    setAllUsers(prev => [...prev, newUser]);
+
+    let created = null;
+    let temporaryPassword = null;
+    try {
+      const res = await apiFetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(wirePayload)
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (res.ok) {
+        created = normalizeUser(resData.user);
+        temporaryPassword = resData.temporary_password || null;
+      } else {
+        alert(resData.error || 'Failed to create user.');
+        return null;
+      }
+    } catch (err) {
+      console.error('Failed to sync createUser to API:', err);
+      alert('Failed to create user. Please check your connection and try again.');
+      return null;
+    }
+
+    setAllUsers(prev => [...prev, created]);
 
     logAudit({
       actorId: currentUser?.id,
@@ -2022,14 +2240,62 @@ export const AppProvider = ({ children }) => {
       actorRole: currentUser?.role,
       action: 'USER_CREATED',
       entityType: 'user',
-      entityId: newId,
-      entityTitle: newUser.name,
-      details: `Created new user account with role ${newUser.role.toUpperCase()} in ${newUser.department}`
+      entityId: created.id,
+      entityTitle: created.name,
+      details: `Created new user account with role ${(created.role || '').toUpperCase()} in ${created.department}`
     });
+
+    // Returned so the calling UI can show the temp password ONCE, if one
+    // was generated — there is no way to retrieve it again afterward.
+    return { user: created, temporaryPassword };
   };
 
-  const updateUser = (userId, updates) => {
-    setAllUsers(prev => prev.map(u => String(u.id) === String(userId) ? { ...u, ...updates } : u));
+  const updateUser = async (userId, updates) => {
+    const targetId = getBackendId(userId);
+
+    // camelCase -> snake_case, matching UpdateUserProfileInput's json
+    // tags. Role and email are deliberately never sent here — the
+    // backend endpoint doesn't accept them from this path at all, by
+    // design (see user.go).
+    const wirePayload = {};
+    if (updates.name !== undefined) wirePayload.name = updates.name;
+    if (updates.title !== undefined) wirePayload.title = updates.title;
+    if (updates.phone !== undefined) wirePayload.phone = updates.phone;
+    if (updates.avatar !== undefined) wirePayload.avatar = updates.avatar;
+    if (updates.password) wirePayload.password = updates.password;
+    if (updates.department !== undefined) wirePayload.department = updates.department;
+    if (updates.supervisorId !== undefined) wirePayload.supervisor_id = getBackendId(updates.supervisorId);
+    if (updates.adminId !== undefined) wirePayload.admin_id = getBackendId(updates.adminId);
+    if (updates.status !== undefined) wirePayload.status = updates.status;
+
+    let savedUser = null;
+    if (targetId) {
+      try {
+        const res = await apiFetch(`/api/users/${targetId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(wirePayload)
+        });
+        if (res.ok) {
+          const resData = await res.json();
+          savedUser = normalizeUser(resData.user);
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          console.error('updateUser failed:', errData.error);
+        }
+      } catch (err) {
+        console.error('Failed to sync updateUser to API:', err);
+      }
+    }
+
+    // Optimistic local update either way — if the request failed, this
+    // keeps the UI responsive but the change won't survive a reload,
+    // same tradeoff used throughout this app for other entities.
+    setAllUsers(prev => prev.map(u => String(u.id) === String(userId)
+      ? (savedUser || { ...u, ...updates })
+      : u
+    ));
+
     logAudit({
       actorId: currentUser?.id,
       actorName: currentUser?.name,
@@ -2037,7 +2303,7 @@ export const AppProvider = ({ children }) => {
       action: 'USER_UPDATED',
       entityType: 'user',
       entityId: userId,
-      entityTitle: `User ${userId}`,
+      entityTitle: savedUser?.name || `User ${userId}`,
       details: `Updated user profile attributes: ${Object.keys(updates).join(', ')}`
     });
   };
@@ -2271,6 +2537,8 @@ export const AppProvider = ({ children }) => {
         updateSubTaskStatus,
         addTaskComment,
         deleteTask,
+        addTaskDependency,
+        removeTaskDependency,
         createTicket,
         updateTicket,
         updateTicketStatus,
@@ -2306,6 +2574,8 @@ export const AppProvider = ({ children }) => {
         selectedProjectDetailId,
         setSelectedProjectDetailId,
         quickCreateOpen,
+        quickCreatePickerOpen,
+        setQuickCreatePickerOpen,
         setQuickCreateOpen,
         quickCreateConfig,
         openQuickCreate,

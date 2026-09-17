@@ -6,13 +6,13 @@ import {
 import { RoleBadge } from '../common/Badge';
 import { NotificationDrawer } from '../common/NotificationDrawer';
 
-export const Navbar = ({ onOpenQuickCreate }) => {
+export const Navbar = () => {
   const { 
     currentUser, 
     setCurrentUserId, 
     darkMode, 
     setDarkMode, 
-    setQuickCreateOpen, 
+    setQuickCreatePickerOpen, 
     setGlobalSearchOpen,
     unreadNotificationCount,
     setActiveTab
@@ -20,12 +20,13 @@ export const Navbar = ({ onOpenQuickCreate }) => {
 
   const [notifDrawerOpen, setNotifDrawerOpen] = useState(false);
 
+  // Was: falls through to setQuickCreateOpen(true) whenever
+  // onOpenQuickCreate wasn't passed as a prop — which App.jsx never
+  // actually did, so this always opened the modal hardcoded to the
+  // Project tab regardless of what the user might actually want to
+  // create. Now opens the type picker instead, same as Sidebar's button.
   const handleQuickCreateClick = () => {
-    if (onOpenQuickCreate) {
-      onOpenQuickCreate();
-    } else {
-      setQuickCreateOpen(true);
-    }
+    setQuickCreatePickerOpen(true);
   };
 
   const handleLogout = () => {

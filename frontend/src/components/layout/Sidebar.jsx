@@ -13,12 +13,13 @@ import {
   Pin,
   Layers,
   Plus,
-  UserCircle
+  UserCircle,
+  Building2
 } from 'lucide-react';
 import { canViewAuditLogs, canManageMatrixPermissions } from '../../utils/permissions';
 import { RoleBadge } from '../common/Badge';
 
-export const Sidebar = ({ onOpenQuickCreate }) => {
+export const Sidebar = () => {
   const { 
     activeTab, 
     setActiveTab, 
@@ -27,7 +28,8 @@ export const Sidebar = ({ onOpenQuickCreate }) => {
     setSelectedProjectDetailId,
     visibleTasks,
     visibleTickets,
-    permissionMatrix
+    permissionMatrix,
+    setQuickCreatePickerOpen
   } = useApp();
 
   const pinnedProjects = visibleProjects.filter(p => p.isPinned);
@@ -42,6 +44,7 @@ export const Sidebar = ({ onOpenQuickCreate }) => {
     { id: 'kanban', label: 'Kanban Board', icon: Columns3 },
     { id: 'tasks', label: 'Task Management', icon: CheckSquare, badge: pendingTasksCount },
     { id: 'tickets', label: 'Tickets Desk', icon: LifeBuoy, badge: openTicketsCount },
+    { id: 'clients', label: 'Clients', icon: Building2 },
     { id: 'team', label: 'Team & Workload', icon: Users },
     { id: 'reports', label: 'Reports & SLA', icon: BarChart3 },
     { id: 'audit', label: 'System Audit Logs', icon: ScrollText, restricted: !canViewAuditLogs(currentUser, permissionMatrix) },
@@ -69,9 +72,12 @@ export const Sidebar = ({ onOpenQuickCreate }) => {
             </span>
           </div>
         </div>
-        {/* Quick Create Action Button */}
+        {/* Quick Create Action Button — was silently a no-op: it called
+            onOpenQuickCreate, a prop App.jsx never actually passed to
+            this component. Now uses the same context-driven type picker
+            Navbar's button opens, no prop plumbing needed. */}
         <button
-          onClick={onOpenQuickCreate}
+          onClick={() => setQuickCreatePickerOpen(true)}
           className="p-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition shadow-sm cursor-pointer"
           title="Quick Create"
         >

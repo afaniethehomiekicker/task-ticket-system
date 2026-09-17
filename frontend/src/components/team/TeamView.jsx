@@ -24,8 +24,9 @@ export const TeamView = () => {
   const [editingUser, setEditingUser] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedMemberDetailId, setSelectedMemberDetailId] = useState(null);
+  const [isSavingUser, setIsSavingUser] = useState(false);
+  const [tempPasswordBanner, setTempPasswordBanner] = useState(null);
 
-  // New user form state
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -53,28 +54,43 @@ export const TeamView = () => {
   const memberTasks = tasks.filter(t => t.assignedToId === selectedMemberDetailId);
   const memberTickets = tickets.filter(t => t.assignedToId === selectedMemberDetailId);
 
-  const handleSaveUser = (e) => {
+  const handleSaveUser = async (e) => {
     e.preventDefault();
     if (!formData.name || !formData.email) return;
 
-    if (editingUser) {
-      updateUser(editingUser.id, formData);
-      setEditingUser(null);
-    } else {
-      createUser(formData);
-      setShowAddModal(false);
-    }
+    setIsSavingUser(true);
+    try {
+      if (editingUser) {
+        const { role, email, id, createdAt, updatedAt, ...editableFields } = formData;
+        await updateUser(editingUser.id, editableFields);
+        setEditingUser(null);
+        setShowAddModal(false);
+      } else {
+        const result = await createUser(formData);
+        if (result) {
+          setShowAddModal(false);
+          if (result.temporaryPassword) {
+            setTempPasswordBanner({ name: result.user?.name || formData.name, password: result.temporaryPassword });
+          }
+        } else {
+          setIsSavingUser(false);
+          return;
+        }
+      }
 
-    setFormData({
-      name: '',
-      email: '',
-      role: 'staff',
-      department: 'Engineering',
-      title: '',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-      adminId: '',
-      supervisorId: ''
-    });
+      setFormData({
+        name: '',
+        email: '',
+        role: 'staff',
+        department: 'Engineering',
+        title: '',
+        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+        adminId: '',
+        supervisorId: ''
+      });
+    } finally {
+      setIsSavingUser(false);
+    }
   };
 
   const openEditModal = (u, e) => {
@@ -86,7 +102,6 @@ export const TeamView = () => {
 
   return (
     <div id="team-view" className="space-y-6 max-w-7xl mx-auto pb-12">
-      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold text-slate-900 dark:text-zinc-100 flex items-center gap-2">
@@ -113,7 +128,6 @@ export const TeamView = () => {
         )}
       </div>
 
-      {/* Filter Bar */}
       <div className="flex flex-wrap items-center gap-2.5 p-3 rounded-xl bg-slate-200/70 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-800 text-xs">
         <div className="relative min-w-[200px] max-w-xs flex-1">
           <Search className="w-4 h-4 absolute left-3 top-2 text-slate-500 dark:text-zinc-400" />
@@ -154,7 +168,6 @@ export const TeamView = () => {
         </select>
       </div>
 
-      {/* User Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
         {filteredUsers.map(user => {
           const userTasks = tasks.filter(t => t.assignedToId === user.id && t.status !== 'completed' && t.status !== 'closed');
@@ -169,13 +182,12 @@ export const TeamView = () => {
               id={`user-card-${user.id}`}
               onClick={() => setSelectedMemberDetailId(user.id)}
               className={`rounded-xl border p-5 bg-slate-200/60 dark:bg-zinc-900 shadow-2xs flex flex-col justify-between transition cursor-pointer hover:border-indigo-400 dark:hover:border-indigo-500 ${
-                user.isActive
+                user.status === 'active'
                   ? 'border-slate-300 dark:border-zinc-800'
                   : 'border-slate-300 dark:border-zinc-800 opacity-60 bg-slate-200/30 dark:bg-zinc-950/50'
               }`}
             >
               <div>
-                {/* Header Profile */}
                 <div className="flex items-start justify-between gap-3 mb-4">
                   <div className="flex items-center gap-3">
                     <img
@@ -194,7 +206,6 @@ export const TeamView = () => {
                   <RoleBadge role={user.role} size="xs" />
                 </div>
 
-                {/* Info Details */}
                 <div className="space-y-2 text-xs py-3 border-y border-slate-300/60 dark:border-zinc-800/80">
                   <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
                     <span className="flex items-center gap-1.5"><Mail className="w-3.5 h-3.5" /> Email:</span>
@@ -218,7 +229,6 @@ export const TeamView = () => {
                   )}
                 </div>
 
-                {/* Workload Indicator */}
                 <div className="py-3">
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-slate-500 dark:text-zinc-400">Active Workload:</span>
@@ -237,7 +247,6 @@ export const TeamView = () => {
                 </div>
               </div>
 
-              {/* Card Actions */}
               {canManageUsers(currentUser) && (
                 <div 
                   className="pt-3 border-t border-slate-300/60 dark:border-zinc-800/80 flex items-center justify-between text-xs"
@@ -246,10 +255,10 @@ export const TeamView = () => {
                   <button
                     onClick={() => toggleUserActiveStatus(user.id)}
                     className={`flex items-center gap-1 font-medium transition cursor-pointer ${
-                      user.isActive ? 'text-emerald-600 dark:text-emerald-400 hover:text-emerald-700' : 'text-slate-500 hover:text-slate-700 dark:text-zinc-500 dark:hover:text-zinc-300'
+                      user.status === 'active' ? 'text-emerald-600 dark:text-emerald-400 hover:text-emerald-700' : 'text-slate-500 hover:text-slate-700 dark:text-zinc-500 dark:hover:text-zinc-300'
                     }`}
                   >
-                    {user.isActive ? (
+                    {user.status === 'active' ? (
                       <>
                         <CheckCircle className="w-3.5 h-3.5" /> Active Account
                       </>
@@ -273,7 +282,6 @@ export const TeamView = () => {
         })}
       </div>
 
-      {/* Full Team Member Details Modal */}
       {selectedMember && (
         <div 
           className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
@@ -306,7 +314,7 @@ export const TeamView = () => {
               </div>
               <div>
                 <span className="text-slate-500 dark:text-zinc-400 block">Account Status</span>
-                <span className="font-medium text-slate-800 dark:text-zinc-200 capitalize">{selectedMember.isActive ? 'Active' : 'Inactive'}</span>
+                <span className="font-medium text-slate-800 dark:text-zinc-200 capitalize">{selectedMember.status === 'active' ? 'Active' : 'Inactive'}</span>
               </div>
             </div>
 
@@ -356,7 +364,6 @@ export const TeamView = () => {
         </div>
       )}
 
-      {/* Add / Edit User Modal */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-lg shadow-2xl space-y-4">
@@ -406,17 +413,28 @@ export const TeamView = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="font-semibold text-slate-700 dark:text-zinc-300 block mb-1">Role</label>
+                  <label className="font-semibold text-slate-700 dark:text-zinc-300 block mb-1">
+                    Role
+                    {editingUser && (
+                      <span className="font-normal text-slate-500 dark:text-zinc-500 normal-case"> (not editable here)</span>
+                    )}
+                  </label>
                   <select
                     value={formData.role || 'staff'}
                     onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-                    className="w-full p-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                    disabled={!!editingUser}
+                    className="w-full p-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <option value="super_admin">Super Admin</option>
                     <option value="admin">Admin</option>
                     <option value="supervisor">Supervisor</option>
                     <option value="staff">Staff</option>
                   </select>
+                  {editingUser && (
+                    <p className="text-[10px] text-slate-500 dark:text-zinc-500 mt-1">
+                      Role changes are a separate, deliberate action — not available from this form.
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="font-semibold text-slate-700 dark:text-zinc-300 block mb-1">Department</label>
@@ -468,12 +486,47 @@ export const TeamView = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-lg font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs cursor-pointer"
+                  disabled={isSavingUser}
+                  className="px-4 py-2 rounded-lg font-semibold bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white shadow-xs cursor-pointer"
                 >
-                  {editingUser ? 'Save Changes' : 'Create User'}
+                  {isSavingUser ? 'Saving...' : (editingUser ? 'Save Changes' : 'Create User')}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {tempPasswordBanner && (
+        <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-md shadow-2xl space-y-4">
+            <div className="flex items-center gap-2">
+              <CheckCircle className="w-5 h-5 text-emerald-500" />
+              <h3 className="text-base font-bold text-slate-900 dark:text-zinc-100">
+                {tempPasswordBanner.name} was created
+              </h3>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-zinc-400">
+              Share this temporary password with them directly — it will not be shown again.
+            </p>
+            <div className="flex items-center justify-between gap-2 p-3 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 font-mono text-sm text-slate-900 dark:text-zinc-100">
+              <span className="select-all">{tempPasswordBanner.password}</span>
+              <button
+                type="button"
+                onClick={() => navigator.clipboard?.writeText(tempPasswordBanner.password)}
+                className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline shrink-0"
+              >
+                Copy
+              </button>
+            </div>
+            <div className="flex justify-end pt-2 border-t border-slate-300 dark:border-zinc-800">
+              <button
+                onClick={() => setTempPasswordBanner(null)}
+                className="px-4 py-2 text-xs font-semibold bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
           </div>
         </div>
       )}

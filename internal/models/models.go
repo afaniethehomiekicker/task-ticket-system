@@ -276,6 +276,18 @@ type Ticket struct {
 
 	DueDate string `json:"due_date"`
 
+	// Breached is deliberately a VIRTUAL field — gorm:"-" means it's never
+	// written to or read from the database column-wise; it's computed
+	// fresh every time a ticket is serialized (see computeBreached in
+	// ticket.go), from DueDate + Status. Same principle as not storing
+	// SupervisorID/AdminID on Task/Ticket: "is this ticket overdue" is
+	// fully determined by two facts that already exist elsewhere, so
+	// storing a THIRD, separately-updatable copy would just be another
+	// way for the truth to drift — a ticket resolved five minutes before
+	// its deadline should never show as breached, and a stored flag that
+	// nobody remembered to clear on resolution would risk exactly that.
+	Breached bool `json:"breached" gorm:"-"`
+
 	ResponseSlaMinutes   int        `json:"response_sla_minutes"`
 	ResolutionSlaMinutes int        `json:"resolution_sla_minutes"`
 	FirstResponseAt      *time.Time `json:"first_response_at,omitempty"`

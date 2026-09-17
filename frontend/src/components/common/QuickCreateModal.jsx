@@ -59,6 +59,20 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   const [ticketPriority, setTicketPriority] = useState('normal');
   const [ticketProjectId, setTicketProjectId] = useState('');
 
+  // Form states — standalone Client tab. Deliberately separate state
+  // (not reusing newClientName/newClientContact/newClientEmail above) —
+  // those belong to the inline quick-add nested inside the Project tab,
+  // which only collects 3 of the 7 fields as a fast-path. This tab is
+  // the full form.
+  const [clientCompanyName, setClientCompanyName] = useState('');
+  const [clientContactPerson, setClientContactPerson] = useState('');
+  const [clientEmail, setClientEmail] = useState('');
+  const [clientPhone, setClientPhone] = useState('');
+  const [clientWebsite, setClientWebsite] = useState('');
+  const [clientIndustry, setClientIndustry] = useState('');
+  const [clientAddress, setClientAddress] = useState('');
+  const [isSubmittingClient, setIsSubmittingClient] = useState(false);
+
   if (!isOpen) return null;
 
   // Server-side User Search for Client Select
@@ -209,9 +223,16 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     setTicketCategory(TICKET_CATEGORIES[0]);
     setTicketPriority('normal');
     setTicketProjectId('');
+    setClientCompanyName('');
+    setClientContactPerson('');
+    setClientEmail('');
+    setClientPhone('');
+    setClientWebsite('');
+    setClientIndustry('');
+    setClientAddress('');
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
     if (localTab === 'project') {
@@ -278,6 +299,26 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
       if (typeof createTicket === 'function') {
         createTicket(newTicket);
       }
+    } else if (localTab === 'client') {
+      if (!clientCompanyName.trim()) return;
+      if (typeof createClient !== 'function') return;
+
+      setIsSubmittingClient(true);
+      const created = await createClient({
+        companyName: clientCompanyName.trim(),
+        contactPerson: clientContactPerson.trim(),
+        email: clientEmail.trim(),
+        phone: clientPhone.trim(),
+        website: clientWebsite.trim(),
+        industry: clientIndustry.trim(),
+        address: clientAddress.trim(),
+      });
+      setIsSubmittingClient(false);
+
+      // createClient already alerts on failure and returns null — don't
+      // close/reset on top of that, so the admin doesn't lose what they
+      // typed.
+      if (!created) return;
     }
 
     resetAllFields();
@@ -287,7 +328,8 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   const tabLabel = {
     project: 'New Project',
     task: 'New Task',
-    ticket: 'New Ticket'
+    ticket: 'New Ticket',
+    client: 'New Client'
   }[localTab];
 
   return (
@@ -629,6 +671,121 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                   className="px-5 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg shadow-xs cursor-pointer"
                 >
                   Create Ticket
+                </button>
+              </div>
+            </form>
+          )}
+
+          {localTab === 'client' && (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Company Name *
+                </label>
+                <input
+                  type="text"
+                  placeholder="Acme Corporation"
+                  value={clientCompanyName}
+                  onChange={(e) => setClientCompanyName(e.target.value)}
+                  required
+                  className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                    Contact Person
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Jane Doe"
+                    value={clientContactPerson}
+                    onChange={(e) => setClientContactPerson(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                    Email
+                  </label>
+                  <input
+                    type="email"
+                    placeholder="jane@acme.com"
+                    value={clientEmail}
+                    onChange={(e) => setClientEmail(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                    Phone Number
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="+1 (555) 000-0000"
+                    value={clientPhone}
+                    onChange={(e) => setClientPhone(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                    Website URL
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="https://acme.com"
+                    value={clientWebsite}
+                    onChange={(e) => setClientWebsite(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Industry
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Financial Services, Manufacturing..."
+                  value={clientIndustry}
+                  onChange={(e) => setClientIndustry(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Address
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="Street, city, state, postal code..."
+                  value={clientAddress}
+                  onChange={(e) => setClientAddress(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden resize-none"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-300 dark:border-zinc-800">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-4 py-2 text-sm font-medium text-slate-700 dark:text-zinc-300 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingClient}
+                  className="px-5 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-60 disabled:cursor-not-allowed rounded-lg shadow-xs cursor-pointer"
+                >
+                  {isSubmittingClient ? 'Creating...' : 'Create Client'}
                 </button>
               </div>
             </form>

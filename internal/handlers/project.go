@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"task-ticket-backend/internal/database"
 	"task-ticket-backend/internal/models"
@@ -196,16 +197,32 @@ func UpdateProject(c *gin.Context) {
 	}
 
 	if len(input) > 0 {
-		database.DB.Model(&project).Omit("Owner", "Admin", "Members", "Supervisors").Updates(input)
+		// Same fix as UpdateTask in task.go: this used to call .Updates()
+		// without checking its error at all, returning 200 OK regardless
+		// of whether anything actually saved.
+		if err := database.DB.Model(&project).Omit("Owner", "Admin", "Members", "Supervisors").Updates(input).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update project: " + err.Error()})
+			return
+		}
 	}
 
 	database.DB.Preload("Owner").Preload("Admin").Preload("Members").Preload("Supervisors").Preload("Attachments").First(&project, idParam)
 	c.JSON(http.StatusOK, gin.H{"message": "Project updated successfully", "project": project})
 }
 
-// toUintSlice converts a JSON-decoded []interface{} (of float64s, since
-// encoding/json decodes all JSON numbers as float64) into a []uint.
-// Returns nil if the input isn't a slice at all.
+// toUintSlice converts a JSON-decoded []interface{} into a []uint.
+// Handles both float64 (the normal case — encoding/json decodes every
+// JSON number as float64) and string-encoded numbers, converting either
+// into a valid uint rather than silently skipping the entry. That
+// leniency matters here specifically: the frontend's Add Member flow was
+// briefly sending a mixed array (existing member ids as real numbers,
+// the newly-picked one as a string, from a native <select>'s
+// e.target.value). Before this, an element that failed the float64 type
+// assertion was just dropped with no error — so Association.Replace ran
+// successfully with a list that was silently missing entries, and the
+// add looked like it worked while never actually attaching anyone.
+// Fixed at the source on the frontend too, but this makes the endpoint
+// itself robust against the same class of mistake from any caller.
 func toUintSlice(raw interface{}) []uint {
 	rawSlice, ok := raw.([]interface{})
 	if !ok {
@@ -213,8 +230,13 @@ func toUintSlice(raw interface{}) []uint {
 	}
 	ids := make([]uint, 0, len(rawSlice))
 	for _, v := range rawSlice {
-		if f, ok := v.(float64); ok {
-			ids = append(ids, uint(f))
+		switch val := v.(type) {
+		case float64:
+			ids = append(ids, uint(val))
+		case string:
+			if n, err := strconv.ParseUint(val, 10, 64); err == nil {
+				ids = append(ids, uint(n))
+			}
 		}
 	}
 	return ids

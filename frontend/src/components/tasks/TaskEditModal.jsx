@@ -12,6 +12,7 @@ export const TaskEditModal = () => {
   } = useApp();
 
   const task = (tasks || []).find(t => t.id === selectedTaskEditId);
+  const [isSaving, setIsSaving] = useState(false);
 
   const [formData, setFormData] = useState({
     title: '',
@@ -43,10 +44,18 @@ export const TaskEditModal = () => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    updateTask(selectedTaskEditId, formData);
-    setSelectedTaskEditId(null);
+    setIsSaving(true);
+    // updateTask now returns null/undefined on failure (and already
+    // alerts with the real error) — only close the modal on genuine
+    // success, so a failed save doesn't look like it worked AND doesn't
+    // silently discard what was typed.
+    const result = await updateTask(selectedTaskEditId, formData);
+    setIsSaving(false);
+    if (result) {
+      setSelectedTaskEditId(null);
+    }
   };
 
   return (
@@ -172,9 +181,10 @@ export const TaskEditModal = () => {
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs transition shadow-xs cursor-pointer"
+              disabled={isSaving}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-lg text-xs transition shadow-xs cursor-pointer"
             >
-              Save Changes
+              {isSaving ? 'Saving...' : 'Save Changes'}
             </button>
           </div>
         </form>

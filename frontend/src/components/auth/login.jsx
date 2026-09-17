@@ -75,7 +75,7 @@ export const Login = () => {
           </div>
           <h2 className="text-xl font-bold text-white">Ticket System Login</h2>
           <p className="text-xs text-slate-400 mt-1">
-            Sign in with your email and password
+            Staff Portal (Login via Email)
           </p>
         </div>
 
@@ -121,6 +121,18 @@ export const Login = () => {
               />
             </div>
           </div>
+
+          {/* Navigates to the dedicated Super Admin portal (/admin-login)
+              — a real page navigation, not SPA state, since that portal
+              is a genuinely separate entry point with its own backend
+              gate (see AdminLogin in auth.go). */}
+          <button
+            type="button"
+            onClick={() => { window.location.href = '/admin-login'; }}
+            className="text-xs text-indigo-400 hover:text-indigo-300 transition cursor-pointer"
+          >
+            Login as Super Admin?
+          </button>
 
           <button
             type="submit"

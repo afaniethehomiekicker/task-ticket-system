@@ -42,6 +42,7 @@ func GetTasks(c *gin.Context) {
 		Preload("SubTasks").
 		Preload("Comments").
 		Preload("Attachments").
+		Preload("DependsOn").
 		Find(&tasks); result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tasks"})
 		return
@@ -153,7 +154,19 @@ func UpdateTask(c *gin.Context) {
 	}
 
 	if len(input) > 0 {
-		database.DB.Model(&task).Omit("Assignee", "Creator", "Project", "Checklists", "SubTasks", "Comments", "Attachments", "DependsOn").Updates(input)
+		// Previously called without checking the error at all — a failed
+		// UPDATE (e.g. a string value like "" or "7" sent for a *uint
+		// column, which Postgres won't implicitly cast) would silently do
+		// nothing while this handler still returned 200 OK with the
+		// task's UNCHANGED data. That's exactly how "assignee doesn't
+		// save" could happen with no visible error anywhere — the save
+		// looked successful in the Network tab every single time.
+		if err := database.DB.Model(&task).
+			Omit("Assignee", "Creator", "Project", "Checklists", "SubTasks", "Comments", "Attachments", "DependsOn").
+			Updates(input).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update task: " + err.Error()})
+			return
+		}
 	}
 
 	database.DB.Preload("Assignee").Preload("Creator").Preload("Checklists").Preload("SubTasks").Preload("Comments").First(&task, idParam)
@@ -218,4 +231,207 @@ func DeleteTask(c *gin.Context) {
 
 	database.DB.Delete(&task)
 	c.JSON(http.StatusOK, gin.H{"message": "Task deleted successfully"})
+}
+
+// --- Task Review Workflow ------------------------------------------------
+//
+// These three actions used to exist only as local frontend state changes
+// — nothing on the backend enforced who was allowed to submit, approve,
+// or reopen a task's work. That meant the "only a supervisor can approve"
+// rule was cosmetic: anyone could have hit the generic PUT /tasks/:id and
+// set review_status to admin_approved on their own task directly. All
+// three read caller identity from the verified JWT claims AuthenticateJWT
+// already sets on the context (c.Get("userID")/c.Get("userRole")) — same
+// principle as UpdateUserProfile and the rbac.go fix earlier: never trust
+// what the client claims about itself.
+
+type TaskReviewActionInput struct {
+	Notes string `json:"notes"`
+}
+
+// SubmitTaskForReview lets the task's own assignee — or an admin-tier
+// user acting on their behalf — move a task into review. Requires
+// AuthenticateJWT only (see routes.go); the in-handler check below is
+// what actually restricts who can call it, since "must be the assignee"
+// isn't a fixed role AuthorizeRole could express.
+func SubmitTaskForReview(c *gin.Context) {
+	idParam := c.Param("id")
+
+	var input TaskReviewActionInput
+	_ = c.ShouldBindJSON(&input)
+
+	callerIDRaw, _ := c.Get("userID")
+	callerRoleRaw, _ := c.Get("userRole")
+	callerID, _ := callerIDRaw.(uint)
+	callerRole, _ := callerRoleRaw.(string)
+
+	var task models.Task
+	if err := database.DB.First(&task, idParam).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+		return
+	}
+
+	isAssignee := task.AssigneeID != nil && *task.AssigneeID == callerID
+	isAdminTier := callerRole == "admin" || callerRole == "super_admin"
+	if !isAssignee && !isAdminTier {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the assignee can submit this task for review"})
+		return
+	}
+
+	notes := input.Notes
+	if notes == "" {
+		notes = "Work finished, ready for supervisor validation."
+	}
+
+	database.DB.Model(&task).Updates(map[string]interface{}{
+		"status":        "under_review",
+		"review_status": "submitted_for_review",
+		"review_notes":  notes,
+	})
+	database.DB.Preload("Assignee").Preload("Creator").First(&task, idParam)
+
+	c.JSON(http.StatusOK, gin.H{"message": "Task submitted for review", "task": task})
+}
+
+// ApproveTask marks a task's submitted work as approved and completed.
+// Restricted to Supervisor/Admin/Super Admin via AuthorizeRole in
+// routes.go — a task's own assignee cannot approve their own work; that
+// restriction is now enforced server-side, not just by which buttons the
+// frontend happens to render.
+func ApproveTask(c *gin.Context) {
+	idParam := c.Param("id")
+
+	var input TaskReviewActionInput
+	_ = c.ShouldBindJSON(&input)
+
+	callerRoleRaw, _ := c.Get("userRole")
+	callerRole, _ := callerRoleRaw.(string)
+
+	var task models.Task
+	if err := database.DB.First(&task, idParam).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+		return
+	}
+
+	reviewStatus := "admin_approved"
+	if callerRole == "supervisor" {
+		reviewStatus = "supervisor_approved"
+	}
+
+	notes := input.Notes
+	if notes == "" {
+		notes = "Approved."
+	}
+
+	database.DB.Model(&task).Updates(map[string]interface{}{
+		"status":        "completed",
+		"progress":      100,
+		"review_status": reviewStatus,
+		"review_notes":  notes,
+	})
+	database.DB.Preload("Assignee").Preload("Creator").First(&task, idParam)
+
+	c.JSON(http.StatusOK, gin.H{"message": "Task approved", "task": task})
+}
+
+// ReopenTask sends a submitted task back to the assignee with notes on
+// what still needs to change. Same restriction as ApproveTask.
+func ReopenTask(c *gin.Context) {
+	idParam := c.Param("id")
+
+	var input TaskReviewActionInput
+	_ = c.ShouldBindJSON(&input)
+
+	var task models.Task
+	if err := database.DB.First(&task, idParam).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+		return
+	}
+
+	notes := input.Notes
+	if notes == "" {
+		notes = "Reopened. Additional changes needed."
+	}
+
+	database.DB.Model(&task).Updates(map[string]interface{}{
+		"status":        "in_progress",
+		"review_status": "reopened",
+		"review_notes":  notes,
+	})
+	database.DB.Preload("Assignee").Preload("Creator").First(&task, idParam)
+
+	c.JSON(http.StatusOK, gin.H{"message": "Task reopened", "task": task})
+}
+
+// --- Task Dependencies ---------------------------------------------------
+//
+// DependsOn is a real self-referential many2many on Task (see models.go)
+// rather than a comma-separated list of task numbers — a dependency
+// references another task's actual row, so deleting that task shouldn't
+// leave a dangling, silently-wrong reference behind.
+
+type AddTaskDependencyInput struct {
+	DependsOnTaskID uint `json:"depends_on_task_id" binding:"required"`
+}
+
+// AddTaskDependency records that :id depends on another task. Rejects a
+// task depending on itself, and rejects (400) if the target task doesn't
+// exist — same "don't silently paper over a bad reference" discipline as
+// everywhere else in this codebase.
+func AddTaskDependency(c *gin.Context) {
+	idParam := c.Param("id")
+
+	var input AddTaskDependencyInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var task models.Task
+	if err := database.DB.First(&task, idParam).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+		return
+	}
+
+	if input.DependsOnTaskID == task.ID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "A task cannot depend on itself"})
+		return
+	}
+
+	var dependsOnTask models.Task
+	if err := database.DB.First(&dependsOnTask, input.DependsOnTaskID).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "The task you're trying to depend on doesn't exist"})
+		return
+	}
+
+	if err := database.DB.Model(&task).Association("DependsOn").Append(&dependsOnTask); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add dependency: " + err.Error()})
+		return
+	}
+
+	database.DB.Preload("DependsOn").First(&task, idParam)
+	c.JSON(http.StatusOK, gin.H{"message": "Dependency added successfully", "task": task})
+}
+
+// RemoveTaskDependency removes a previously-added dependency link. Not
+// finding the link isn't treated as an error — removing something already
+// absent is a no-op, not a failure, same as DeleteTask/DeleteTicket
+// elsewhere in this codebase.
+func RemoveTaskDependency(c *gin.Context) {
+	idParam := c.Param("id")
+	depIDParam := c.Param("depId")
+
+	var task models.Task
+	if err := database.DB.First(&task, idParam).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
+		return
+	}
+
+	var dependsOnTask models.Task
+	if err := database.DB.First(&dependsOnTask, depIDParam).Error; err == nil {
+		database.DB.Model(&task).Association("DependsOn").Delete(&dependsOnTask)
+	}
+
+	database.DB.Preload("DependsOn").First(&task, idParam)
+	c.JSON(http.StatusOK, gin.H{"message": "Dependency removed successfully", "task": task})
 }
