@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
-import { SEED_USERS } from '../../data/seedData';
+
 import AsyncSelect from 'react-select/async';
 
 const TICKET_CATEGORIES = [

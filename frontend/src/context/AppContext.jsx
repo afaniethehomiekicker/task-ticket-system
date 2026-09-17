@@ -1,7 +1,3 @@
-import { 
-  SEED_AUDIT_LOGS, 
-  SEED_NOTIFICATIONS 
-} from '../data/seedData';
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import {
   filterProjectsForUser, filterTasksForUser, filterTicketsForUser,
@@ -348,13 +344,6 @@ const STORAGE_KEYS = {
 
 export const AppProvider = ({ children }) => {
   const [allUsers, setAllUsers] = useState(() => {
-    // Cache-then-refresh, not a fallback dataset: this is just the last
-    // known-good response from the backend, shown instantly on load while
-    // fetchInitialData below fetches a fresh copy. Unlike the old
-    // SEED_USERS fallback, there's no scenario where this diverges from
-    // the backend on its own — it's the same single source of truth,
-    // just cached for a faster first paint. An empty array (not a seed
-    // array) is the correct "nothing cached yet" state.
     const saved = localStorage.getItem(STORAGE_KEYS.USERS);
     return saved ? JSON.parse(saved) : [];
   });
@@ -365,10 +354,6 @@ export const AppProvider = ({ children }) => {
   });
 
   const [projects, setProjects] = useState(() => {
-    // Cache-then-refresh, not a fallback dataset — same reasoning as
-    // allUsers above. Projects now come from the backend exclusively;
-    // this is just the last known-good response shown instantly on load
-    // while fetchInitialData below fetches a fresh copy.
     const saved = localStorage.getItem(STORAGE_KEYS.PROJECTS);
     return saved ? JSON.parse(saved) : [];
   });
@@ -383,27 +368,23 @@ export const AppProvider = ({ children }) => {
   }, [clients]);
 
   const [tasks, setTasks] = useState(() => {
-    // Cache-then-refresh, not a fallback dataset — same reasoning as
-    // allUsers/projects above.
     const saved = localStorage.getItem(STORAGE_KEYS.TASKS);
     return saved ? JSON.parse(saved) : [];
   });
 
   const [tickets, setTickets] = useState(() => {
-    // Cache-then-refresh, not a fallback dataset — same reasoning as
-    // allUsers/projects/tasks above.
     const saved = localStorage.getItem(STORAGE_KEYS.TICKETS);
     return saved ? JSON.parse(saved) : [];
   });
 
   const [auditLogs, setAuditLogs] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.AUDIT_LOGS);
-    return saved ? JSON.parse(saved) : SEED_AUDIT_LOGS;
+    return saved ? JSON.parse(saved) : [];
   });
 
   const [notifications, setNotifications] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.NOTIFICATIONS);
-    return saved ? JSON.parse(saved) : SEED_NOTIFICATIONS;
+    return saved ? JSON.parse(saved) : [];
   });
 
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -417,9 +398,6 @@ export const AppProvider = ({ children }) => {
     return saved ? JSON.parse(saved) : DEFAULT_PERMISSION_MATRIX;
   });
 
-  // The JWT issued by the backend on successful login (see handlers.Login
-  // / middleware.GenerateToken). Every authenticated backend request needs
-  // this attached as "Authorization: Bearer <token>" — see apiFetch below.
   const [authToken, setAuthTokenState] = useState(() => {
     return localStorage.getItem(STORAGE_KEYS.AUTH_TOKEN) || null;
   });
@@ -433,15 +411,6 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  // Single point every backend call goes through. Merges in
-  // "Authorization: Bearer <token>" whenever a token is present, without
-  // clobbering any headers the caller already set (e.g. Content-Type).
-  // Replaces 21 previously-separate bare fetch() calls scattered through
-  // this file, none of which sent any authentication at all — the backend
-  // now requires a verified token on its protected routes (see
-  // middleware.AuthenticateJWT), so every one of those call sites needed
-  // this in order to keep working, not just the ones that were already
-  // hitting a protected route today.
   const apiFetch = (url, options = {}) => {
     const headers = { ...(options.headers || {}) };
     if (authToken) {
@@ -459,13 +428,8 @@ export const AppProvider = ({ children }) => {
     localStorage.setItem(STORAGE_KEYS.CUSTOM_ROLES, JSON.stringify(customRoles));
   }, [customRoles]);
 
-  // Guards against React 18 StrictMode's dev-only double-invoke of
-  // mount effects. Without this, fetchInitialData would run twice on
-  // first mount; the merge logic above is idempotent against that on its
-  // own, but there's no reason to hit four API endpoints twice every load.
   const didFetchInitialDataRef = useRef(false);
 
-  // --- Strict Email & Identity Fetch from Go Backend API ---
   useEffect(() => {
     if (didFetchInitialDataRef.current) return;
     didFetchInitialDataRef.current = true;
@@ -505,7 +469,7 @@ export const AppProvider = ({ children }) => {
           setTickets((data.tickets || []).map(normalizeTicket).filter(Boolean));
         }
       } catch (err) {
-        console.warn('Backend API offline, operating on local cache/seed data:', err);
+        console.warn('Backend API offline, operating on local cache:', err);
       }
     };
 
@@ -551,13 +515,6 @@ export const AppProvider = ({ children }) => {
   const [selectedProjectEditId, setSelectedProjectEditId] = useState(null);
   const [quickCreateOpen, setQuickCreateOpenState] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
-  // Controls the small Project/Task/Ticket/Client type-picker that opens
-  // when the generic "Quick Create" button (Navbar or Sidebar) is
-  // clicked — deliberately separate from quickCreateOpen itself. Picking
-  // a type here calls openQuickCreate({tab, restrictToTab: true}), which
-  // opens the actual create modal already locked to that tab — this
-  // never lets someone switch tabs on an already-open modal, same
-  // discipline as every other entry point into QuickCreateModal.
   const [quickCreatePickerOpen, setQuickCreatePickerOpen] = useState(false);
 
   const [quickCreateConfig, setQuickCreateConfig] = useState({
@@ -627,17 +584,8 @@ export const AppProvider = ({ children }) => {
   const setCurrentUserId = (id) => {
     setCurrentUserIdState(id);
 
-    // Logout passes null — write an actual absence to localStorage rather
-    // than the string "null" (which String(id) would otherwise produce).
-    // The stringified "null" happened to still behave correctly by
-    // coincidence (no real user id equals the string "null"), but relying
-    // on that coincidence is fragile.
     if (id === null || id === undefined) {
       localStorage.removeItem(STORAGE_KEYS.CURRENT_USER_ID);
-      // Logging out should also drop the auth token — an empty
-      // currentUserId with a still-valid token would leave the app in an
-      // inconsistent state (no active user, but api calls still
-      // authenticated as whoever was last logged in).
       setAuthToken(null);
     } else {
       localStorage.setItem(STORAGE_KEYS.CURRENT_USER_ID, String(id));
@@ -730,29 +678,11 @@ export const AppProvider = ({ children }) => {
       return;
     }
 
-    // Guarantee the creator can actually see their own project afterward.
-    // filterProjectsForUser's Supervisor/Staff branch gates visibility
-    // ENTIRELY on memberIds.includes(user.id) — no exception for "you
-    // created this." Without explicitly adding the creator here, a
-    // Staff/Supervisor account's own new project would be created
-    // successfully on the backend and then immediately filtered out of
-    // their own visibleProjects, since nothing ever added them to
-    // memberIds. Deduped against whatever memberIds the form itself
-    // supplied, so a form that already adds the creator doesn't end up
-    // with a duplicate entry.
     const memberIds = Array.from(new Set([
       ...(data.memberIds || []),
       ...(currentUser?.id ? [currentUser.id] : [])
     ]));
 
-    // The Admin branch of filterProjectsForUser also accepts
-    // p.createdBy === user.id and p.adminId === user.id as alternate
-    // visibility paths — setting both here means an Admin creator is
-    // covered even if they're not literally in memberIds. adminId only
-    // defaults here if the form didn't already choose one explicitly:
-    // an Admin's own projects default to themselves; a Supervisor/Staff
-    // creator's project defaults to inheriting THEIR OWN adminId, so the
-    // department admin managing them can also see it.
     const resolvedAdminId = data.adminId ?? (
       currentUser?.role === 'admin' ? currentUser.id : currentUser?.adminId ?? null
     );
@@ -766,16 +696,6 @@ export const AppProvider = ({ children }) => {
       spentHours: 0,
     };
 
-    // Wire payload sends BOTH camelCase and snake_case spellings for the
-    // fields most likely to matter. CreateProject's Go handler binds the
-    // POST body directly into a typed struct (CreateProjectInput), unlike
-    // UpdateProject/UpdateTask/UpdateTicket which bind into a generic map
-    // and explicitly translate camelCase to snake_case. Typed-struct
-    // binding only matches an EXACT tag name, and an unrecognized key is
-    // silently dropped, not rejected — sending both spellings means
-    // whichever one the live backend struct actually expects gets
-    // through, without needing to trust that this file and the current
-    // project.go agree on casing.
     const wirePayload = {
       ...basePayload,
       member_ids: memberIds,
@@ -798,23 +718,12 @@ export const AppProvider = ({ children }) => {
       });
       if (res.ok) {
         const resData = await res.json();
-        // Use the REAL id and REAL stored member/admin data the backend
-        // just assigned, not a locally-fabricated one. The old version
-        // generated `prj_${Date.now().toString(36)}` here regardless of
-        // what the backend did — a fake id that could never correctly
-        // resolve back to the real row for any future update/delete, and
-        // that also meant a page reload would replace this optimistic
-        // object with the backend's version anyway, so keeping them in
-        // sync from the start avoids a visible flicker/mismatch too.
         savedProject = normalizeProject(resData.project);
       }
     } catch (err) {
       console.error('Failed to sync createProject to API:', err);
     }
 
-    // Falls back to a locally-fabricated object ONLY if the request
-    // genuinely failed — keeps the app usable offline/on a flaky
-    // connection rather than losing the user's input entirely.
     const newProject = savedProject || {
       ...basePayload,
       id: `prj_${Date.now().toString(36)}`,
@@ -915,7 +824,6 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  // --- Client Actions -----------------------------------------------------
   const createClient = async (data) => {
     const wirePayload = {
       company_name: data.companyName,
@@ -942,13 +850,6 @@ export const AppProvider = ({ children }) => {
       console.error('Failed to sync createClient to API:', err);
     }
 
-    // No locally-fabricated fallback here on purpose: unlike
-    // projects/tasks/tickets (which the user is actively mid-workflow
-    // on and shouldn't lose if the network hiccups), a client record
-    // with no real backend id isn't useful for anything — it can't be
-    // linked to a real project via a real foreign key. If the request
-    // genuinely failed, surface that rather than silently pretending it
-    // worked.
     if (!savedClient) {
       alert('Failed to create client. Please check your connection and try again.');
       return null;
@@ -1083,23 +984,11 @@ export const AppProvider = ({ children }) => {
       adminId,
     };
 
-    // Explicitly null, never a hardcoded fallback id. The previous
-    // version defaulted BOTH project_id and assignee_id to 1 whenever a
-    // task had no project or no assignee — silently attaching every
-    // genuinely-unassigned task to whatever record happened to have
-    // backend id 1 (Super Admin, per this app's seed data), rather than
-    // leaving it actually unassigned. Same anti-pattern already found
-    // and removed from the Go handlers themselves.
     const wirePayload = {
       task_number: taskNumber,
       title: basePayload.title,
       description: basePayload.description,
       department: basePayload.department || currentUser?.department || '',
-      // Lowercase, matching every other status/priority value in this
-      // system. The previous version sent literal "New"/"Normal" (Title
-      // Case) whenever status/priority were falsy — which, being
-      // non-empty strings once sent, bypassed the backend's own
-      // lowercase-default fallback entirely and got stored as-is.
       status: basePayload.status || 'todo',
       priority: basePayload.priority || 'normal',
       labels: Array.isArray(basePayload.labels) ? basePayload.labels.join(',') : (basePayload.labels || ''),
@@ -1120,8 +1009,6 @@ export const AppProvider = ({ children }) => {
       });
       if (res.ok) {
         const resData = await res.json();
-        // Real backend id and real stored data, not a locally-fabricated
-        // id/object — same reasoning as createProject.
         savedTask = normalizeTask(resData.task);
       }
     } catch (err) {
@@ -1165,13 +1052,6 @@ export const AppProvider = ({ children }) => {
   const updateTask = async (id, updates) => {
     const targetId = getBackendId(id);
 
-    // Normalize known reference-id fields before sending. A native
-    // <select>'s e.target.value is ALWAYS a string — including an empty
-    // string for "Unassigned" — but these columns are *uint on the
-    // backend. Sending a raw string (even a numeric-looking one like
-    // "7") for one of these was very likely failing the SQL UPDATE
-    // outright, and until the matching task.go fix, that failure was
-    // completely invisible: the handler returned 200 OK regardless.
     const wireUpdates = { ...updates };
     ['assignedToId', 'projectId', 'creatorId'].forEach(key => {
       if (key in wireUpdates) {
@@ -1455,11 +1335,6 @@ export const AppProvider = ({ children }) => {
     } catch (err) {
       console.error('Failed to sync toggleChecklistItem to API:', err);
     }
-    // Unlike addChecklistItem below, this still falls back to an
-    // optimistic local toggle on failure — a checkbox that doesn't
-    // persist is a much lower-stakes failure than a phantom item that
-    // only ever existed locally, so it's fine to keep the UI responsive
-    // here rather than block on the network.
 
     setTasks(prev => prev.map(t => {
       if (String(t.id) === String(taskId)) {
@@ -1539,8 +1414,6 @@ export const AppProvider = ({ children }) => {
           task_id: targetTaskId,
           assignee_id: resolvedAssigneeId,
           priority,
-          // Backend field is "deadline", not "due_date" — SubTask uses a
-          // different name than Task/Ticket do for the same concept.
           deadline: dueDate,
           estimated_hours: 4,
         })
@@ -1550,11 +1423,6 @@ export const AppProvider = ({ children }) => {
         alert(resData.error || 'Failed to add subtask.');
         return;
       }
-      // Real backend id and stored data, not the fake sub_${Date.now()}
-      // id this used to fabricate — which meant a status update on a
-      // just-created subtask, in the same session, would silently PATCH
-      // a garbage id that could never match a real row (its
-      // digit-extraction fallback had no real backend id to find).
       savedSub = normalizeSubTask(resData.subtask);
     } catch (err) {
       console.error('Failed to sync addSubTask to API:', err);
@@ -1583,13 +1451,7 @@ export const AppProvider = ({ children }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status })
       });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        console.error('updateSubTaskStatus failed:', errData.error);
-        // Falls through to the optimistic local update below rather than
-        // alerting — a subtask status flip is lower-stakes than creating
-        // one, same reasoning as toggleChecklistItem.
-      } else {
+      if (res.ok) {
         const resData = await res.json();
         savedSub = normalizeSubTask(resData.subtask);
       }
@@ -1622,11 +1484,6 @@ export const AppProvider = ({ children }) => {
         body: JSON.stringify({
           content,
           task_id: targetTaskId,
-          // Was "author_id" — CreateCommentInput's actual field is
-          // "user_id". Since an unrecognized JSON key is silently
-          // dropped rather than erroring, this was sending UserID as its
-          // zero value every time, which binding:"required" correctly
-          // rejected with a 400.
           user_id: getBackendId(currentUser?.id) || null,
           is_internal: isInternal,
         })
@@ -1735,8 +1592,6 @@ export const AppProvider = ({ children }) => {
     setTasks(prev => prev.map(t => {
       if (String(t.id) !== String(taskId)) return t;
       if (savedTask) return savedTask;
-      // Optimistic fallback on failure — removing a dependency link is
-      // low-stakes, same reasoning as checklist toggling.
       return { ...t, dependencies: (t.dependencies || []).filter(d => String(d.id) !== String(dependsOnTaskId)) };
     }));
   };
@@ -1753,13 +1608,6 @@ export const AppProvider = ({ children }) => {
       labels: data.labels || [],
     };
 
-    // Lowercase, matching the backend's own defaults — same fix as
-    // createTask. Also: the previous version only ever sent
-    // title/description/priority/status/assigned_to_id — department,
-    // category, severity, requester info, project_id, due_date, and both
-    // SLA minute fields were never sent at all, despite CreateTicketInput
-    // accepting all of them. A ticket created through this flow could
-    // never actually record who the requester was or what its SLA was.
     const wirePayload = {
       ticket_number: basePayload.ticketNumber || undefined,
       title: basePayload.title,
@@ -1807,19 +1655,6 @@ export const AppProvider = ({ children }) => {
       updatedAt: new Date().toISOString()
     };
 
-    // NOTE: the auto-spawned linked task below is NOT sent to the
-    // backend at all — only the ticket itself is. It's built with a
-    // purely local fake id and inserted straight into local state. Since
-    // fetchInitialData now does a full setTasks(...) replace from the
-    // backend (see the Tasks normalization pass), this spawned task will
-    // silently disappear the next time tasks are refetched — on reload,
-    // definitely; possibly sooner if this app ever polls. This is a real
-    // gap in a feature that was added independently of anything I built:
-    // either it needs a real POST /api/tasks call (reusing createTask's
-    // now-fixed logic) to actually persist, or the feature should be
-    // reconsidered. Flagging rather than silently deciding — didn't want
-    // to either rip out functionality you may be relying on, or paper
-    // over its brokenness by making it LOOK persisted without being so.
     const taskCount = (tasks || []).length + 101;
     const taskNumber = `TSK-${taskCount}`;
     const newTaskId = `tsk_${Date.now().toString(36)}`;
@@ -1882,9 +1717,6 @@ export const AppProvider = ({ children }) => {
     const hasAssignedProp = 'assignedToId' in updates || 'assigned_to_id' in updates;
     const rawAssignedId = updates.assignedToId !== undefined ? updates.assignedToId : updates.assigned_to_id;
 
-    // Find the actual user object from allUsers via the shared canonical
-    // lookup — matches on local id, legacyId, or backendId so this
-    // resolves correctly regardless of which id scheme the caller passed.
     const targetUser = findUserByAnyId(allUsers, rawAssignedId);
 
     const canonicalAssignedId = targetUser ? targetUser.id : (rawAssignedId && rawAssignedId !== 'unassigned' ? rawAssignedId : null);
@@ -2039,12 +1871,6 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  // Shared by addTicketComment/addTicketInternalNote/addTicketResponse
-  // below — all three ultimately POST the same Comment record, differing
-  // only in the isInternal value. Updates all three locally-cached views
-  // (comments/internalNotes/responses) consistently with how
-  // normalizeTicket derives them from one underlying list on fetch, so
-  // this-session state and post-reload state agree.
   const postTicketComment = async (ticketId, content, isInternal) => {
     const targetTicketId = getBackendId(ticketId);
     let savedComment = null;
@@ -2194,13 +2020,10 @@ export const AppProvider = ({ children }) => {
   };
 
   const createUser = async (userData) => {
-    // Wire payload — admin-only endpoint, so this only actually succeeds
-    // when currentUser is Admin/Super Admin (enforced server-side via
-    // AuthorizeRole, not just by this function existing).
     const wirePayload = {
       name: userData.name,
       email: userData.email,
-      password: userData.password || undefined, // omitted -> backend generates a temp password
+      password: userData.password || undefined,
       role: userData.role,
       department: userData.department || '',
       title: userData.title || '',
@@ -2245,18 +2068,12 @@ export const AppProvider = ({ children }) => {
       details: `Created new user account with role ${(created.role || '').toUpperCase()} in ${created.department}`
     });
 
-    // Returned so the calling UI can show the temp password ONCE, if one
-    // was generated — there is no way to retrieve it again afterward.
     return { user: created, temporaryPassword };
   };
 
   const updateUser = async (userId, updates) => {
     const targetId = getBackendId(userId);
 
-    // camelCase -> snake_case, matching UpdateUserProfileInput's json
-    // tags. Role and email are deliberately never sent here — the
-    // backend endpoint doesn't accept them from this path at all, by
-    // design (see user.go).
     const wirePayload = {};
     if (updates.name !== undefined) wirePayload.name = updates.name;
     if (updates.title !== undefined) wirePayload.title = updates.title;
@@ -2288,9 +2105,6 @@ export const AppProvider = ({ children }) => {
       }
     }
 
-    // Optimistic local update either way — if the request failed, this
-    // keeps the UI responsive but the change won't survive a reload,
-    // same tradeoff used throughout this app for other entities.
     setAllUsers(prev => prev.map(u => String(u.id) === String(userId)
       ? (savedUser || { ...u, ...updates })
       : u
@@ -2468,20 +2282,10 @@ export const AppProvider = ({ children }) => {
 
   const resetToSeedData = () => {
     localStorage.clear();
-    // Users are no longer reset here — there's no local seed array to
-    // reset them TO anymore, and this button shouldn't silently wipe real
-    // backend user data. Instead, this now logs the current session out
-    // (clearing currentUserId and the auth token) so the app returns to
-    // the login screen — a real backend reseed (truncate + restart) is
-    // what actually resets user data now, matching how the rest of this
-    // migration moved seeding to the backend.
     setCurrentUserIdState(null);
     setAuthToken(null);
-    // Projects, Tasks, and Tickets are no longer reset here either, same
-    // reasoning as Users above — they're backend-sourced now, not a
-    // local seed array.
-    setAuditLogs(SEED_AUDIT_LOGS);
-    setNotifications(SEED_NOTIFICATIONS);
+    setAuditLogs([]);
+    setNotifications([]);
     setPermissionMatrix(DEFAULT_PERMISSION_MATRIX);
     setCustomRoles(['super_admin', 'admin', 'supervisor', 'staff', 'client']);
     setActiveTab('dashboard');
