@@ -40,7 +40,7 @@ export const Sidebar = () => {
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'projects', label: 'Projects', icon: FolderKanban, badge: visibleProjects.length },
+    { id: 'projects', label: 'Projects', icon: FolderKanban, badge: visibleProjects.length, restricted: currentUser.role === 'staff' },
     { id: 'kanban', label: 'Kanban Board', icon: Columns3 },
     { id: 'tasks', label: 'Task Management', icon: CheckSquare, badge: pendingTasksCount },
     { id: 'tickets', label: 'Tickets Desk', icon: LifeBuoy, badge: openTicketsCount },
@@ -93,7 +93,7 @@ export const Sidebar = () => {
       >
         <div className="flex items-center gap-2.5">
           <img
-            src={currentUser.avatar || 'https://via.placeholder.com/150'}
+            src={currentUser.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"}
             alt={currentUser.name}
             className="w-8 h-8 rounded-full object-cover ring-1 ring-indigo-500/50 group-hover:ring-indigo-400 transition"
           />

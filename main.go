@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"task-ticket-backend/internal/database"
+	"task-ticket-backend/internal/handlers"
 	"task-ticket-backend/internal/routes"
 
 	"github.com/gin-contrib/cors"
@@ -69,6 +70,11 @@ func main() {
 	}
 
 	database.ConnectDB()
+
+	// Seeds the four built-in Role rows (idempotent) so GET /api/roles
+	// has real data from first boot, before anyone creates a custom
+	// role. See EnsureBuiltInRolesExist in role.go for why this exists.
+	handlers.EnsureBuiltInRolesExist()
 
 	r := gin.Default()
 

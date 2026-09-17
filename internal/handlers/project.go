@@ -109,6 +109,26 @@ func CreateProject(c *gin.Context) {
 
 // GetProjects fetches all projects from DB
 func GetProjects(c *gin.Context) {
+	// Staff cannot see the overall Projects list at all — returns an
+	// empty result rather than a 403, since "nothing to show" is a
+	// normal, expected state for this role, not an error condition.
+	// Requires AuthenticateJWT on the route (added in routes.go) to know
+	// the caller's role at all — this endpoint had no auth requirement
+	// whatsoever before.
+	//
+	// NOTE: this is a hardcoded role check, not a dynamic permission —
+	// inconsistent with the manage_users/create_projects/etc. capabilities
+	// that now route through the permission matrix (see role.go,
+	// permissions_middleware.go). Implemented this way because that's
+	// literally what was asked for; flagging the inconsistency rather
+	// than silently deciding to convert it into "view_projects" as a
+	// matrix capability instead.
+	roleRaw, _ := c.Get("userRole")
+	if role, _ := roleRaw.(string); role == "staff" {
+		c.JSON(http.StatusOK, gin.H{"projects": []models.Project{}})
+		return
+	}
+
 	var projects []models.Project
 	if result := database.DB.
 		Preload("Owner").

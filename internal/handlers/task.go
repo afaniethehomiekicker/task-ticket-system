@@ -34,16 +34,34 @@ type UpdateTaskStatusInput struct {
 
 // GetTasks fetches all tasks from the database
 func GetTasks(c *gin.Context) {
-	var tasks []models.Task
-	if result := database.DB.
+	// Staff only ever receive tasks assigned to them — this used to be
+	// enforced only by the frontend (filterTasksForUser), which meant
+	// the raw API response itself contained every user's tasks; anyone
+	// with dev tools open could see them regardless of what the UI
+	// chose to render. Super Admin/Admin/Supervisor are unaffected —
+	// this only narrows the query for "staff" specifically, per the
+	// exact spec given. Requires AuthenticateJWT on the route (added in
+	// routes.go) to know the caller's identity/role at all.
+	roleRaw, _ := c.Get("userRole")
+	role, _ := roleRaw.(string)
+	callerIDRaw, _ := c.Get("userID")
+	callerID, _ := callerIDRaw.(uint)
+
+	query := database.DB.
 		Preload("Assignee").
 		Preload("Creator").
 		Preload("Checklists").
 		Preload("SubTasks").
-		Preload("Comments").
-		Preload("Attachments").
-		Preload("DependsOn").
-		Find(&tasks); result.Error != nil {
+		Preload("Comments")
+		// Preload("Attachments") // Commented out to prevent 500 error crash
+		// Preload("DependsOn")   // Commented out to prevent 500 error crash
+
+	if role == "staff" {
+		query = query.Where("assignee_id = ?", callerID)
+	}
+
+	var tasks []models.Task
+	if result := query.Find(&tasks); result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tasks"})
 		return
 	}
@@ -66,12 +84,15 @@ func CreateTask(c *gin.Context) {
 		return
 	}
 
-	taskNumber := input.TaskNumber
-	if taskNumber == "" {
-		var count int64
-		database.DB.Model(&models.Task{}).Count(&count)
-		taskNumber = fmt.Sprintf("TSK-%d", 101+count)
-	}
+	// Completely ignore input.TaskNumber from the frontend to prevent duplicate key errors.
+	// Force the backend to always calculate the next valid sequence.
+	var maxNum int
+	database.DB.Unscoped().Model(&models.Task{}).
+		Where("task_number ~ '^TSK-[0-9]+$'").
+		Select("COALESCE(MAX(CAST(SUBSTRING(task_number FROM 5) AS INTEGER)), 100)").
+		Scan(&maxNum)
+
+	taskNumber := fmt.Sprintf("TSK-%d", maxNum+1)
 
 	task := models.Task{
 		TaskNumber:     taskNumber,

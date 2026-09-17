@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
-
 import AsyncSelect from 'react-select/async';
 
 const TICKET_CATEGORIES = [
@@ -13,7 +12,7 @@ const TICKET_CATEGORIES = [
 ];
 
 export const QuickCreateModal = ({ isOpen, onClose }) => {
-  const { createProject, createTask, createTicket, createClient, quickCreateConfig, visibleProjects, currentUser, allUsers } = useApp() || {};
+  const { createProject, createTask, createTicket, createClient, quickCreateConfig, visibleProjects, currentUser, allUsers, apiFetch } = useApp() || {};
 
   const [localTab, setLocalTab] = useState(quickCreateConfig?.tab || 'project');
   const [openNonce, setOpenNonce] = useState(0);
@@ -52,6 +51,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   const [taskTitle, setTaskTitle] = useState('');
   const [taskProjectId, setTaskProjectId] = useState('');
   const [taskPriority, setTaskPriority] = useState('normal');
+  const [taskAssignedToId, setTaskAssignedToId] = useState('');
 
   // Form states — Ticket
   const [ticketSubject, setTicketSubject] = useState('');
@@ -74,30 +74,6 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   const [isSubmittingClient, setIsSubmittingClient] = useState(false);
 
   if (!isOpen) return null;
-
-  // Server-side User Search for Client Select
-  const loadUserOptions = async (inputValue) => {
-    try {
-      const res = await fetch(`/api/users?search=${encodeURIComponent(inputValue)}`);
-      if (!res.ok) throw new Error('Search failed');
-      const data = await res.json();
-      const users = data.users || [];
-      return users.map(u => ({
-        value: u.id || u.ID,
-        label: `${u.name} (${u.role ? u.role.toUpperCase() : 'USER'}) ${u.companyName ? `— ${u.companyName}` : ''}`
-      }));
-    } catch (err) {
-      const availableUsers = (allUsers && allUsers.length > 0) ? allUsers : SEED_USERS;
-      const filtered = availableUsers.filter(u => 
-        u.name?.toLowerCase().includes(inputValue.toLowerCase()) ||
-        u.email?.toLowerCase().includes(inputValue.toLowerCase())
-      );
-      return filtered.map(u => ({
-        value: u.id,
-        label: `${u.name} (${u.role ? u.role.toUpperCase() : 'USER'}) ${u.companyName ? `— ${u.companyName}` : ''}`
-      }));
-    }
-  };
 
   // Server-side Client/Company search — hits the real /api/clients
   // endpoint, not /api/users. This replaces a previous stub that searched
@@ -154,7 +130,13 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   // Server-side Project Search
   const loadProjectOptions = async (inputValue) => {
     try {
-      const res = await fetch(`/api/projects?search=${encodeURIComponent(inputValue)}`);
+      // Was a raw fetch() with no Authorization header — worked only
+      // because GET /api/projects had no auth requirement at all.
+      // Broke the moment that route required a valid JWT (added
+      // specifically so staff users could be restricted to an empty
+      // project list) — every caller of this endpoint needed to be
+      // going through apiFetch, and this one wasn't.
+      const res = await apiFetch(`/api/projects?search=${encodeURIComponent(inputValue)}`);
       if (!res.ok) throw new Error('Search failed');
       const data = await res.json();
       const prjs = data.projects || [];
@@ -218,6 +200,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     setNewClientEmail('');
     setTaskTitle('');
     setTaskProjectId('');
+    setTaskAssignedToId('');
     setTaskPriority('normal');
     setTicketSubject('');
     setTicketCategory(TICKET_CATEGORIES[0]);
@@ -270,7 +253,11 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
         checklists: [],
         comments: [],
         dueDate: new Date().toISOString().split('T')[0],
-        assignedToId: null,
+        // Was hardcoded to null unconditionally — this form never had
+        // an assignee field at all, so a task created here could never
+        // actually be assigned to anyone at creation time, regardless
+        // of who created it or what role they had.
+        assignedToId: taskAssignedToId || null,
         projectId: resolvedProjectId,
         progress: 0,
       };
@@ -572,6 +559,22 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                   <option value="high">High</option>
                   <option value="urgent">Urgent</option>
                   <option value="critical">Critical</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Assignee
+                </label>
+                <select
+                  value={taskAssignedToId}
+                  onChange={(e) => setTaskAssignedToId(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                >
+                  <option value="">Unassigned</option>
+                  {(allUsers || []).map(u => (
+                    <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
+                  ))}
                 </select>
               </div>
 

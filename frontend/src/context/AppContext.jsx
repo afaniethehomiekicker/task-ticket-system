@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import {
   filterProjectsForUser, filterTasksForUser, filterTicketsForUser,
-  DEFAULT_PERMISSION_MATRIX, getRoleDisplayName
+  DEFAULT_PERMISSION_MATRIX, getRoleDisplayName, PERMISSION_KEYS
 } from '../utils/permissions';
 import confetti from 'canvas-confetti';
 
@@ -439,12 +439,13 @@ export const AppProvider = ({ children }) => {
 
     const fetchInitialData = async () => {
       try {
-        const [usersRes, projectsRes, tasksRes, ticketsRes, clientsRes] = await Promise.allSettled([
+        const [usersRes, projectsRes, tasksRes, ticketsRes, clientsRes, permissionsRes] = await Promise.allSettled([
           apiFetch('/api/users'),
           apiFetch('/api/projects'),
           apiFetch('/api/tasks'),
           apiFetch('/api/tickets'),
-          apiFetch('/api/clients')
+          apiFetch('/api/clients'),
+          apiFetch('/api/permissions')
         ]);
 
         if (usersRes.status === 'fulfilled' && usersRes.value.ok) {
@@ -460,6 +461,17 @@ export const AppProvider = ({ children }) => {
         if (clientsRes.status === 'fulfilled' && clientsRes.value.ok) {
           const data = await clientsRes.value.json();
           setClients((data.clients || []).map(normalizeClient).filter(Boolean));
+        }
+
+        if (permissionsRes.status === 'fulfilled' && permissionsRes.value.ok) {
+          const data = await permissionsRes.value.json();
+          // data.matrix is already shaped exactly as permissions.js and
+          // SettingsView.jsx expect — {[roleKey]: {[permissionKey]: bool}}
+          // — no transformation needed. data.roles includes super_admin
+          // too (seeded at startup); existing UI logic already filters
+          // it out of the editable columns, so no special-casing here.
+          if (data.matrix) setPermissionMatrix(data.matrix);
+          if (Array.isArray(data.roles)) setCustomRoles(data.roles.map(r => r.key));
         }
 
         if (tasksRes.status === 'fulfilled' && tasksRes.value.ok) {
@@ -2229,7 +2241,7 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const createCustomRole = (roleKey, roleDisplayName, initialPermissions = {}) => {
+  const createCustomRole = async (roleKey, roleDisplayName, initialPermissions = {}) => {
     if (currentUser?.role !== 'super_admin') return;
 
     const normalizedKey = roleKey.toLowerCase().trim().replace(/\s+/g, '_');
@@ -2240,11 +2252,50 @@ export const AppProvider = ({ children }) => {
       return;
     }
 
-    setCustomRoles(prev => [...prev, normalizedKey]);
+    let created = null;
+    try {
+      const res = await apiFetch('/api/roles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: normalizedKey, label: roleDisplayName || roleKey })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to create role.');
+        return;
+      }
+      created = resData.role;
+    } catch (err) {
+      console.error('Failed to sync createCustomRole to API:', err);
+      alert('Failed to create role. Please check your connection and try again.');
+      return;
+    }
 
+    // CreateRole always seeds every permission as false server-side —
+    // each granted checkbox in the "Create Custom Role" modal needs its
+    // own follow-up call to actually grant it. Sequential, not
+    // parallel: this is a rare, admin-only action, and sequential calls
+    // are simpler to reason about than a batch endpoint that doesn't
+    // exist yet.
+    const grantedKeys = Object.keys(initialPermissions).filter(k => initialPermissions[k]);
+    for (const key of grantedKeys) {
+      try {
+        await apiFetch(`/api/permissions/${created.key}/${key}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ granted: true })
+        });
+      } catch (err) {
+        console.error(`Failed to grant initial permission ${key} for new role:`, err);
+      }
+    }
+
+    setCustomRoles(prev => [...prev, created.key]);
     setPermissionMatrix(prev => ({
       ...prev,
-      [normalizedKey]: initialPermissions
+      [created.key]: Object.fromEntries(
+        Object.values(PERMISSION_KEYS).map(k => [k, !!initialPermissions[k]])
+      )
     }));
 
     logAudit({
@@ -2259,22 +2310,29 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const deleteCustomRole = (roleKey) => {
+  const deleteCustomRole = async (roleKey) => {
     if (currentUser?.role !== 'super_admin') return;
 
     const builtInRoles = ['super_admin', 'admin', 'supervisor', 'staff', 'client'];
     if (builtInRoles.includes(roleKey)) return;
 
-    setCustomRoles(prev => {
-      const updated = prev.filter(r => r !== roleKey);
-      localStorage.setItem(STORAGE_KEYS.CUSTOM_ROLES, JSON.stringify(updated));
-      return updated;
-    });
+    try {
+      const res = await apiFetch(`/api/roles/${roleKey}`, { method: 'DELETE' });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to delete role.');
+        return;
+      }
+    } catch (err) {
+      console.error('Failed to sync deleteCustomRole to API:', err);
+      alert('Failed to delete role. Please check your connection and try again.');
+      return;
+    }
 
+    setCustomRoles(prev => prev.filter(r => r !== roleKey));
     setPermissionMatrix(prev => {
       const updated = { ...prev };
       delete updated[roleKey];
-      localStorage.setItem(STORAGE_KEYS.PERMISSION_MATRIX, JSON.stringify(updated));
       return updated;
     });
 
@@ -2290,17 +2348,43 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const updateRolePermission = (role, permissionKey, value) => {
+  const updateRolePermission = async (role, permissionKey, value) => {
     if (currentUser?.role !== 'super_admin') return;
     if (role === 'super_admin') return;
 
+    // Optimistic, with rollback on failure — a single-cell toggle should
+    // feel instant, but silently keeping a change that never actually
+    // persisted is exactly the class of bug this whole feature exists to
+    // avoid, so a failure reverts the cell rather than leaving it wrong.
     setPermissionMatrix(prev => ({
       ...prev,
-      [role]: {
-        ...(prev[role] || {}),
-        [permissionKey]: value
-      }
+      [role]: { ...(prev[role] || {}), [permissionKey]: value }
     }));
+
+    try {
+      const res = await apiFetch(`/api/permissions/${role}/${permissionKey}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ granted: value })
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to update permission.');
+        setPermissionMatrix(prev => ({
+          ...prev,
+          [role]: { ...(prev[role] || {}), [permissionKey]: !value }
+        }));
+        return;
+      }
+    } catch (err) {
+      console.error('Failed to sync updateRolePermission to API:', err);
+      alert('Failed to update permission. Please check your connection and try again.');
+      setPermissionMatrix(prev => ({
+        ...prev,
+        [role]: { ...(prev[role] || {}), [permissionKey]: !value }
+      }));
+      return;
+    }
 
     logAudit({
       actorId: currentUser?.id,
@@ -2341,8 +2425,11 @@ export const AppProvider = ({ children }) => {
     setAuthToken(null);
     setAuditLogs([]);
     setNotifications([]);
-    setPermissionMatrix(DEFAULT_PERMISSION_MATRIX);
-    setCustomRoles(['super_admin', 'admin', 'supervisor', 'staff', 'client']);
+    // Roles/permissionMatrix are no longer reset here — they're
+    // backend-sourced now (GET /api/permissions), same reasoning as
+    // Users/Projects/Tasks/Tickets above. A real reset means truncating
+    // the roles/role_permissions tables server-side, not overwriting
+    // local state with DEFAULT_PERMISSION_MATRIX.
     setActiveTab('dashboard');
   };
 
@@ -2354,6 +2441,7 @@ export const AppProvider = ({ children }) => {
         users: allUsers,
         authToken,
         setAuthToken,
+        apiFetch,
         projects,
         clients,
         tasks,
