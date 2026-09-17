@@ -20,6 +20,9 @@ type User struct {
 	Title      string `json:"title"` // job title, e.g. "VP of Engineering"
 	Phone      string `json:"phone"`
 	Status     string `json:"status"` // active, deactivated
+	Address    string `json:"address"`
+	Stack      string `json:"stack"`  // free-text tech stack, e.g. "React, Go, PostgreSQL"
+	Skills     string `json:"skills"` // free-text skills/specializations
 
 	// ManagerID is kept for backward compatibility with the existing
 	// Register endpoint, which already binds it. It's superseded by the

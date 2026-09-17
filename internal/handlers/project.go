@@ -243,6 +243,23 @@ func toUintSlice(raw interface{}) []uint {
 }
 
 // DeleteProject removes a project by ID gracefully
+// DeleteProject removes a project. Soft-deletes the project itself
+// (Project embeds gorm.Model, so this sets deleted_at rather than
+// issuing a hard DELETE) — which is also why this never risked an actual
+// foreign-key violation: a soft delete doesn't touch rows that reference
+// this one at the database level.
+//
+// What WAS missing: linked records were left in a silently broken state.
+// Fixed here, all in one transaction so a failure partway through can't
+// leave the project deleted while its tasks still point at it:
+//   - Tasks and Tickets referencing this project have their ProjectID
+//     cleared (set to NULL) rather than being deleted themselves — the
+//     work they represent isn't erased just because the project it was
+//     organized under is gone. They become "unassigned to any project",
+//     a state this app already supports normally.
+//   - Members/Supervisors join-table rows are explicitly cleared via
+//     Association.Clear(), rather than left dangling against a project
+//     that's now invisible to every other query.
 func DeleteProject(c *gin.Context) {
 	idParam := c.Param("id")
 	var project models.Project
@@ -251,8 +268,24 @@ func DeleteProject(c *gin.Context) {
 		return
 	}
 
-	if result := database.DB.Delete(&project); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete project"})
+	txErr := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.Task{}).Where("project_id = ?", project.ID).Update("project_id", nil).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&models.Ticket{}).Where("project_id = ?", project.ID).Update("project_id", nil).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&project).Association("Members").Clear(); err != nil {
+			return err
+		}
+		if err := tx.Model(&project).Association("Supervisors").Clear(); err != nil {
+			return err
+		}
+		return tx.Delete(&project).Error
+	})
+
+	if txErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete project: " + txErr.Error()})
 		return
 	}
 

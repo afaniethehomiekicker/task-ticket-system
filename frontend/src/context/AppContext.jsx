@@ -50,6 +50,9 @@ const normalizeUser = (raw) => {
     title: raw.title || '',
     phone: raw.phone || '',
     status: raw.status || 'active',
+    address: raw.address || '',
+    stack: raw.stack || '',
+    skills: raw.skills || '',
     managerId: raw.manager_id ?? null,
     supervisorId: raw.supervisor_id ?? null,
     adminId: raw.admin_id ?? null,
@@ -2080,6 +2083,10 @@ export const AppProvider = ({ children }) => {
     if (updates.phone !== undefined) wirePayload.phone = updates.phone;
     if (updates.avatar !== undefined) wirePayload.avatar = updates.avatar;
     if (updates.password) wirePayload.password = updates.password;
+    if (updates.currentPassword) wirePayload.current_password = updates.currentPassword;
+    if (updates.address !== undefined) wirePayload.address = updates.address;
+    if (updates.stack !== undefined) wirePayload.stack = updates.stack;
+    if (updates.skills !== undefined) wirePayload.skills = updates.skills;
     if (updates.department !== undefined) wirePayload.department = updates.department;
     if (updates.supervisorId !== undefined) wirePayload.supervisor_id = getBackendId(updates.supervisorId);
     if (updates.adminId !== undefined) wirePayload.admin_id = getBackendId(updates.adminId);
@@ -2093,15 +2100,20 @@ export const AppProvider = ({ children }) => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(wirePayload)
         });
-        if (res.ok) {
-          const resData = await res.json();
-          savedUser = normalizeUser(resData.user);
-        } else {
-          const errData = await res.json().catch(() => ({}));
-          console.error('updateUser failed:', errData.error);
+        const resData = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          // Previously fell through to an optimistic local update even
+          // on failure, which is exactly why a rejected/failed save
+          // looked identical to a successful one until the next reload
+          // re-fetched the real, unchanged DB state.
+          alert(resData.error || 'Failed to update user.');
+          return null;
         }
+        savedUser = normalizeUser(resData.user);
       } catch (err) {
         console.error('Failed to sync updateUser to API:', err);
+        alert('Failed to update user. Please check your connection and try again.');
+        return null;
       }
     }
 
@@ -2120,13 +2132,21 @@ export const AppProvider = ({ children }) => {
       entityTitle: savedUser?.name || `User ${userId}`,
       details: `Updated user profile attributes: ${Object.keys(updates).join(', ')}`
     });
+
+    return savedUser || true;
   };
 
-  const toggleUserStatus = (userId) => {
+  const toggleUserStatus = async (userId) => {
     const user = allUsers.find(u => String(u.id) === String(userId));
     if (!user) return;
-    const nextStatus = user.status === 'active' ? 'deactivated' : 'active';
-    setAllUsers(prev => prev.map(u => String(u.id) === String(userId) ? { ...u, status: nextStatus } : u));
+    // Was 'deactivated' — standardizing on 'active'/'inactive' since the
+    // backend's login check specifically tests for 'inactive'.
+    const nextStatus = user.status === 'active' ? 'inactive' : 'active';
+
+    // Delegates to updateUser for the real backend call — this used to
+    // be purely local state with no backend call at all.
+    const result = await updateUser(userId, { status: nextStatus });
+    if (!result) return; // updateUser already alerted with the real error
 
     logAudit({
       actorId: currentUser?.id,
@@ -2138,6 +2158,41 @@ export const AppProvider = ({ children }) => {
       entityTitle: user.name,
       details: `User status changed to ${nextStatus.toUpperCase()}`
     });
+  };
+
+  const deleteUser = async (userId) => {
+    const targetId = getBackendId(userId);
+    const user = allUsers.find(u => String(u.id) === String(userId));
+
+    if (targetId) {
+      try {
+        const res = await apiFetch(`/api/users/${targetId}`, { method: 'DELETE' });
+        const resData = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          alert(resData.error || 'Failed to delete user.');
+          return;
+        }
+      } catch (err) {
+        console.error('Failed to sync deleteUser to API:', err);
+        alert('Failed to delete user. Please check your connection and try again.');
+        return;
+      }
+    }
+
+    setAllUsers(prev => prev.filter(u => String(u.id) !== String(userId)));
+
+    if (user) {
+      logAudit({
+        actorId: currentUser?.id,
+        actorName: currentUser?.name,
+        actorRole: currentUser?.role,
+        action: 'USER_DELETED',
+        entityType: 'user',
+        entityId: userId,
+        entityTitle: user.name,
+        details: `Deleted user account ${user.name}`
+      });
+    }
   };
 
   const toggleUserPermission = (userId, permissionKey) => {
@@ -2354,6 +2409,7 @@ export const AppProvider = ({ children }) => {
         deleteTicket,
         createUser,
         updateUser,
+        deleteUser,
         toggleUserStatus,
         toggleUserActiveStatus: toggleUserStatus,
         toggleUserPermission,

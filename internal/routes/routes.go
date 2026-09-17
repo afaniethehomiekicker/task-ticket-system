@@ -116,6 +116,7 @@ func RegisterRoutes(r *gin.Engine) {
 			adminGroup.PUT("/clients/:id", handlers.UpdateClient)
 			adminGroup.DELETE("/clients/:id", handlers.DeleteClient)
 			adminGroup.POST("/users", handlers.AdminCreateUser)
+			adminGroup.DELETE("/users/:id", handlers.DeleteUser)
 		}
 	}
 }

@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
@@ -48,6 +47,7 @@ export const ProjectDetailModal = () => {
     permissionMatrix,
     togglePinProject, 
     updateProject,
+    deleteProject,
     addProjectAttachment,
     setSelectedTaskId,
     setSelectedTicketId,
@@ -477,7 +477,7 @@ export const ProjectDetailModal = () => {
                           <TaskStatusBadge status={t.status} />
                           <PriorityBadge priority={t.priority} />
                           {assignee && (
-                            <img src={assignee.avatar} alt={assignee.name} className="w-6 h-6 rounded-full object-cover" />
+                            <img src={assignee.avatar || 'https://via.placeholder.com/150'} alt={assignee.name} className="w-6 h-6 rounded-full object-cover" />
                           )}
                         </div>
                       </div>
@@ -585,7 +585,7 @@ export const ProjectDetailModal = () => {
                       title="Click to view workload"
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        <img src={m.avatar} alt={m.name} className="w-8 h-8 rounded-full object-cover shrink-0" />
+                        <img src={m.avatar || 'https://via.placeholder.com/150'} alt={m.name} className="w-8 h-8 rounded-full object-cover shrink-0" />
                         <div className="min-w-0">
                           <span className="text-xs font-semibold text-slate-900 dark:text-zinc-100 block truncate">{m.name}</span>
                           <span className="text-[11px] text-slate-500 dark:text-zinc-400 block truncate">{m.title}</span>
@@ -772,20 +772,41 @@ export const ProjectDetailModal = () => {
                 />
               </div>
 
-              <div className="flex gap-2 justify-end pt-2">
+              <div className="flex items-center justify-between pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowEditModal(false)}
-                  className="px-3 py-1.5 text-xs text-slate-700 dark:text-zinc-300 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
+                  onClick={async () => {
+                    if (!window.confirm('Are you sure you want to delete this project? This action cannot be undone.')) {
+                      return;
+                    }
+                    await deleteProject(project.id);
+                    // Close both the edit sub-modal and the whole detail
+                    // view — the project it was showing no longer
+                    // exists, so there's nothing left to display.
+                    setShowEditModal(false);
+                    setSelectedProjectDetailId(null);
+                  }}
+                  className="px-3 py-1.5 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-950/40 rounded-lg cursor-pointer flex items-center gap-1.5"
                 >
-                  Cancel
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete Project
                 </button>
-                <button
-                  type="submit"
-                  className="px-3 py-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg cursor-pointer"
-                >
-                  Save Changes
-                </button>
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowEditModal(false)}
+                    className="px-3 py-1.5 text-xs text-slate-700 dark:text-zinc-300 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-3 py-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg cursor-pointer"
+                  >
+                    Save Changes
+                  </button>
+                </div>
               </div>
             </form>
           </div>

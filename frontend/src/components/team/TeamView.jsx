@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
   Users, Plus, Search, Shield, UserCheck, Mail, Building, 
-  CheckCircle, AlertCircle, Edit, ToggleLeft, ToggleRight, X, Phone
+  CheckCircle, AlertCircle, Edit, ToggleLeft, ToggleRight, X, Phone, Trash2
 } from 'lucide-react';
 import { RoleBadge } from '../common/Badge';
 import { canManageUsers } from '../../utils/permissions';
@@ -15,7 +15,8 @@ export const TeamView = () => {
     tickets, 
     toggleUserActiveStatus, 
     createUser, 
-    updateUser 
+    updateUser,
+    deleteUser
   } = useApp();
 
   const [search, setSearch] = useState('');
@@ -25,8 +26,9 @@ export const TeamView = () => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [selectedMemberDetailId, setSelectedMemberDetailId] = useState(null);
   const [isSavingUser, setIsSavingUser] = useState(false);
-  const [tempPasswordBanner, setTempPasswordBanner] = useState(null);
+  const [tempPasswordBanner, setTempPasswordBanner] = useState(null); // { name, password } | null
 
+  // New user form state
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -61,6 +63,12 @@ export const TeamView = () => {
     setIsSavingUser(true);
     try {
       if (editingUser) {
+        // Role is deliberately excluded here even though formData.role
+        // is present (it's the full user object) — the backend endpoint
+        // this hits doesn't accept role changes at all, by design, so
+        // sending it would be misleading (looks editable, silently does
+        // nothing). The Role field is disabled in the form below when
+        // editing, for the same reason.
         const { role, email, id, createdAt, updatedAt, ...editableFields } = formData;
         await updateUser(editingUser.id, editableFields);
         setEditingUser(null);
@@ -73,6 +81,8 @@ export const TeamView = () => {
             setTempPasswordBanner({ name: result.user?.name || formData.name, password: result.temporaryPassword });
           }
         } else {
+          // createUser already alerted on failure — keep the modal open
+          // so the admin doesn't lose what they typed.
           setIsSavingUser(false);
           return;
         }
@@ -102,6 +112,7 @@ export const TeamView = () => {
 
   return (
     <div id="team-view" className="space-y-6 max-w-7xl mx-auto pb-12">
+      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-bold text-slate-900 dark:text-zinc-100 flex items-center gap-2">
@@ -128,6 +139,7 @@ export const TeamView = () => {
         )}
       </div>
 
+      {/* Filter Bar */}
       <div className="flex flex-wrap items-center gap-2.5 p-3 rounded-xl bg-slate-200/70 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-800 text-xs">
         <div className="relative min-w-[200px] max-w-xs flex-1">
           <Search className="w-4 h-4 absolute left-3 top-2 text-slate-500 dark:text-zinc-400" />
@@ -168,6 +180,7 @@ export const TeamView = () => {
         </select>
       </div>
 
+      {/* User Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
         {filteredUsers.map(user => {
           const userTasks = tasks.filter(t => t.assignedToId === user.id && t.status !== 'completed' && t.status !== 'closed');
@@ -188,10 +201,11 @@ export const TeamView = () => {
               }`}
             >
               <div>
+                {/* Header Profile */}
                 <div className="flex items-start justify-between gap-3 mb-4">
                   <div className="flex items-center gap-3">
                     <img
-                      src={user.avatar}
+                      src={user.avatar || 'https://via.placeholder.com/150'}
                       alt={user.name}
                       className="w-12 h-12 rounded-full object-cover ring-2 ring-indigo-500/20"
                     />
@@ -206,6 +220,7 @@ export const TeamView = () => {
                   <RoleBadge role={user.role} size="xs" />
                 </div>
 
+                {/* Info Details */}
                 <div className="space-y-2 text-xs py-3 border-y border-slate-300/60 dark:border-zinc-800/80">
                   <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
                     <span className="flex items-center gap-1.5"><Mail className="w-3.5 h-3.5" /> Email:</span>
@@ -229,6 +244,7 @@ export const TeamView = () => {
                   )}
                 </div>
 
+                {/* Workload Indicator */}
                 <div className="py-3">
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-slate-500 dark:text-zinc-400">Active Workload:</span>
@@ -247,6 +263,7 @@ export const TeamView = () => {
                 </div>
               </div>
 
+              {/* Card Actions */}
               {canManageUsers(currentUser) && (
                 <div 
                   className="pt-3 border-t border-slate-300/60 dark:border-zinc-800/80 flex items-center justify-between text-xs"
@@ -269,12 +286,32 @@ export const TeamView = () => {
                     )}
                   </button>
 
-                  <button
-                    onClick={(e) => openEditModal(user, e)}
-                    className="p-1 rounded text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 flex items-center gap-1 cursor-pointer"
-                  >
-                    <Edit className="w-3.5 h-3.5" /> Edit
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={(e) => openEditModal(user, e)}
+                      className="p-1 rounded text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 flex items-center gap-1 cursor-pointer"
+                    >
+                      <Edit className="w-3.5 h-3.5" /> Edit
+                    </button>
+
+                    {/* Hidden for your own account — matches the
+                        backend's own guard against self-deletion, which
+                        exists so an admin can't accidentally lock
+                        themselves out. */}
+                    {String(user.id) !== String(currentUser?.id) && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`Delete ${user.name}? This action cannot be undone.`)) {
+                            deleteUser(user.id);
+                          }
+                        }}
+                        className="p-1 rounded text-slate-500 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 flex items-center gap-1 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -282,6 +319,7 @@ export const TeamView = () => {
         })}
       </div>
 
+      {/* Full Team Member Details Modal */}
       {selectedMember && (
         <div 
           className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
@@ -293,7 +331,7 @@ export const TeamView = () => {
           >
             <div className="flex items-center justify-between border-b border-slate-300 dark:border-zinc-800 pb-4">
               <div className="flex items-center gap-3">
-                <img src={selectedMember.avatar} alt={selectedMember.name} className="w-12 h-12 rounded-full object-cover" />
+                <img src={selectedMember.avatar || 'https://via.placeholder.com/150'} alt={selectedMember.name} className="w-12 h-12 rounded-full object-cover" />
                 <div>
                   <h3 className="text-base font-bold text-slate-900 dark:text-zinc-100">{selectedMember.name}</h3>
                   <p className="text-xs text-slate-500 dark:text-zinc-400">{selectedMember.title} • {selectedMember.department}</p>
@@ -364,6 +402,7 @@ export const TeamView = () => {
         </div>
       )}
 
+      {/* Add / Edit User Modal */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-lg shadow-2xl space-y-4">
@@ -497,6 +536,9 @@ export const TeamView = () => {
         </div>
       )}
 
+      {/* One-time temporary password display — there is no way to
+          retrieve this again after this modal closes; only the hashed
+          password is ever stored. */}
       {tempPasswordBanner && (
         <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-md shadow-2xl space-y-4">

@@ -93,7 +93,7 @@ export const Sidebar = () => {
       >
         <div className="flex items-center gap-2.5">
           <img
-            src={currentUser.avatar}
+            src={currentUser.avatar || 'https://via.placeholder.com/150'}
             alt={currentUser.name}
             className="w-8 h-8 rounded-full object-cover ring-1 ring-indigo-500/50 group-hover:ring-indigo-400 transition"
           />

@@ -116,15 +116,19 @@ func AdminCreateUser(c *gin.Context) {
 // describe, and role/email changes are kept out of it unconditionally,
 // for anyone, admin included.
 type UpdateUserProfileInput struct {
-	Name         *string `json:"name"`
-	Title        *string `json:"title"`
-	Phone        *string `json:"phone"`
-	Department   *string `json:"department"`
-	Avatar       *string `json:"avatar"`
-	Password     *string `json:"password"`
-	SupervisorID *uint   `json:"supervisor_id"`
-	AdminID      *uint   `json:"admin_id"`
-	Status       *string `json:"status"`
+	Name            *string `json:"name"`
+	Title           *string `json:"title"`
+	Phone           *string `json:"phone"`
+	Department      *string `json:"department"`
+	Avatar          *string `json:"avatar"`
+	Password        *string `json:"password"`
+	CurrentPassword *string `json:"current_password"`
+	Address         *string `json:"address"`
+	Stack           *string `json:"stack"`
+	Skills          *string `json:"skills"`
+	SupervisorID    *uint   `json:"supervisor_id"`
+	AdminID         *uint   `json:"admin_id"`
+	Status          *string `json:"status"`
 }
 
 // UpdateUserProfile is the "ordinary profile endpoint" — PUT /api/users/:id.
@@ -188,7 +192,33 @@ func UpdateUserProfile(c *gin.Context) {
 	if input.Avatar != nil {
 		updates["avatar"] = *input.Avatar
 	}
+	if input.Address != nil {
+		updates["address"] = *input.Address
+	}
+	if input.Stack != nil {
+		updates["stack"] = *input.Stack
+	}
+	if input.Skills != nil {
+		updates["skills"] = *input.Skills
+	}
 	if input.Password != nil && *input.Password != "" {
+		// Self-service password changes must prove knowledge of the
+		// CURRENT password first — previously this endpoint accepted a
+		// new password with no verification at all, for anyone who could
+		// reach it for their own account. An admin resetting someone
+		// ELSE'S password is deliberately exempt: that's the whole point
+		// of an admin-assisted reset, and isAdminTier already gates
+		// which records they can touch at all.
+		if isSelf {
+			if input.CurrentPassword == nil || *input.CurrentPassword == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Current password is required to set a new password"})
+				return
+			}
+			if err := bcrypt.CompareHashAndPassword([]byte(target.Password), []byte(*input.CurrentPassword)); err != nil {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Current password is incorrect"})
+				return
+			}
+		}
 		hashed, err := bcrypt.GenerateFromPassword([]byte(*input.Password), bcrypt.DefaultCost)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
@@ -216,9 +246,54 @@ func UpdateUserProfile(c *gin.Context) {
 	}
 
 	if len(updates) > 0 {
-		database.DB.Model(&target).Updates(updates)
+		// Checks the error this time — previously called .Updates()
+		// without checking it at all, so a failed write (e.g. from a
+		// bad value) still returned 200 OK with the update silently
+		// never having happened. This was the actual cause of "toggle a
+		// user inactive, refresh, they're active again": the request
+		// wasn't succeeding, it just wasn't saying so.
+		if err := database.DB.Model(&target).Updates(updates).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user: " + err.Error()})
+			return
+		}
 	}
 	database.DB.First(&target, targetIDParam)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Profile updated successfully", "user": target})
+}
+
+// DeleteUser removes a user account. Soft-deletes (User embeds
+// gorm.Model) rather than hard-deleting — audit log entries, comments,
+// and task/ticket history that reference this person should survive
+// their account being removed, rather than cascading into a chain of
+// destructive deletes or hitting a hard foreign-key violation.
+//
+// Deliberately does NOT reassign or clear SupervisorID/AdminID references
+// on other users who reported to this person, or reassign their existing
+// tasks/tickets — "who do they report to now?" is an organizational
+// decision an admin should make deliberately, not something a delete
+// action silently guesses at.
+//
+// Restricted to adminGroup in routes.go, and additionally blocks an
+// admin from deleting their own account — a safety guard against
+// accidentally locking yourself out.
+func DeleteUser(c *gin.Context) {
+	idParam := c.Param("id")
+
+	callerIDRaw, _ := c.Get("userID")
+	callerID, _ := callerIDRaw.(uint)
+
+	var user models.User
+	if err := database.DB.First(&user, idParam).Error; err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "User already deleted"})
+		return
+	}
+
+	if callerID != 0 && callerID == user.ID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "You cannot delete your own account"})
+		return
+	}
+
+	database.DB.Delete(&user)
+	c.JSON(http.StatusOK, gin.H{"message": "User deleted successfully"})
 }

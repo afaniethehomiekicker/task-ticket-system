@@ -13,14 +13,14 @@ import { AuditLogsView } from './components/audit/AuditLogsView';
 import { SettingsView } from './components/settings/SettingsView';
 import { GlobalSearchModal } from './components/common/GlobalSearchModal';
 import { QuickCreateModal } from './components/common/QuickCreateModal';
-import { QuickCreateTypePicker } from './components/common/QuickCreateTypePicker';
+import { QuickCreateTypePicker } from './components/common/Quickcreatetypepicker';
 import { Login } from './components/auth/login';
 import { AdminLogin } from './components/auth/Adminlogin';
 import { Profile } from './components/profile/profile';
 import { TaskEditModal } from './components/tasks/TaskEditModal';
 import { ProjectEditModal } from './components/projects/ProjectEditModal';
 import { TicketEditModal } from './components/tickets/TicketEditModal';
-import { ClientsView } from './components/clients/ClientsView';
+import { ClientsView } from './components/Clients/Clientsview';
 
 const AppContent = () => {
   const { activeTab, quickCreateOpen, setQuickCreateOpen, currentUser } = useApp();

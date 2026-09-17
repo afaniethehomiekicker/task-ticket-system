@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
-import { X } from 'lucide-react';
+import { X, Trash2 } from 'lucide-react';
 import AsyncSelect from 'react-select/async';
 
 export const TicketEditModal = () => {
-  const { tickets, selectedTicketEditId, setSelectedTicketEditId, updateTicket, allUsers } = useApp();
+  const { tickets, selectedTicketEditId, setSelectedTicketEditId, updateTicket, deleteTicket, allUsers } = useApp();
 
   const ticket = (tickets || []).find(t => String(t.id) === String(selectedTicketEditId));
 
@@ -232,20 +232,37 @@ export const TicketEditModal = () => {
             />
           </div>
 
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-300 dark:border-zinc-800">
+          <div className="flex items-center justify-between pt-4 border-t border-slate-300 dark:border-zinc-800">
             <button
               type="button"
-              onClick={() => setSelectedTicketEditId(null)}
-              className="px-4 py-2 text-xs font-medium text-slate-700 dark:text-zinc-300 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg transition cursor-pointer"
+              onClick={async () => {
+                if (!window.confirm('Are you sure you want to delete this ticket? This action cannot be undone.')) {
+                  return;
+                }
+                await deleteTicket(selectedTicketEditId);
+                setSelectedTicketEditId(null);
+              }}
+              className="px-3 py-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-950/40 rounded-lg transition cursor-pointer flex items-center gap-1.5"
             >
-              Cancel
+              <Trash2 className="w-3.5 h-3.5" />
+              Delete Ticket
             </button>
-            <button
-              type="submit"
-              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs transition shadow-xs cursor-pointer"
-            >
-              Save Changes
-            </button>
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setSelectedTicketEditId(null)}
+                className="px-4 py-2 text-xs font-medium text-slate-700 dark:text-zinc-300 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs transition shadow-xs cursor-pointer"
+              >
+                Save Changes
+              </button>
+            </div>
           </div>
         </form>
       </div>
