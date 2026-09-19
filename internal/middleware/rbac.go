@@ -80,13 +80,11 @@ func AuthenticateJWT() gin.HandlerFunc {
 // AuthenticateJWT, above) against the allowed roles for this route. Must
 // run after AuthenticateJWT in the middleware chain — see routes.go.
 //
-// Comparison is case-insensitive on purpose: this backend currently has
-// role strings seeded in two different casings ("Super Admin" in
-// seed.go's SeedSuperAdmin vs "super_admin" in handlers.SeedDemoUsers and
-// the entire frontend). Case-insensitive comparison here is a stopgap so
-// neither casing silently locks legitimate users out; the actual fix is
-// standardizing on one casing everywhere role strings are seeded or
-// checked, which still hasn't been done.
+// Comparison is case-insensitive as a defensive stopgap: the only
+	// seeded account (database.SeedSuperAdmin) uses "super_admin" and the
+	// rest of the codebase standardizes on that casing, but a
+	// case-insensitive check is cheap insurance against any future casing
+	// drift silently locking legitimate users out.
 func AuthorizeRole(allowedRoles ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userRole, exists := c.Get("userRole")

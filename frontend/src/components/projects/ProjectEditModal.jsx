@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
-import { X, Trash2 } from 'lucide-react';
+import { X } from 'lucide-react';
 
 export const ProjectEditModal = () => {
-  const { projects, selectedProjectEditId, setSelectedProjectEditId, updateProject, deleteProject } = useApp();
+  const { projects, selectedProjectEditId, setSelectedProjectEditId, updateProject } = useApp();
 
   const project = (projects || []).find(p => p.id === selectedProjectEditId);
 
@@ -115,37 +115,20 @@ export const ProjectEditModal = () => {
             />
           </div>
 
-          <div className="flex items-center justify-between pt-4 border-t border-slate-100 dark:border-slate-800">
+          <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
             <button
               type="button"
-              onClick={async () => {
-                if (!window.confirm('Are you sure you want to delete this project? This action cannot be undone.')) {
-                  return;
-                }
-                await deleteProject(selectedProjectEditId);
-                setSelectedProjectEditId(null);
-              }}
-              className="px-3 py-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition flex items-center gap-1.5"
+              onClick={() => setSelectedProjectEditId(null)}
+              className="px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition"
             >
-              <Trash2 className="w-3.5 h-3.5" />
-              Delete Project
+              Cancel
             </button>
-
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setSelectedProjectEditId(null)}
-                className="px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs transition shadow-sm"
-              >
-                Save Changes
-              </button>
-            </div>
+            <button
+              type="submit"
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs transition shadow-sm"
+            >
+              Save Changes
+            </button>
           </div>
         </form>
       </div>

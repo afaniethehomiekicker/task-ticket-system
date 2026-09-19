@@ -102,7 +102,7 @@ export const Navbar = () => {
             title="Go to Profile"
           >
             <img
-              src={currentUser.avatar || 'https://via.placeholder.com/150'}
+              src={currentUser.avatar}
               alt={currentUser.name}
               className="w-7 h-7 rounded-full object-cover ring-1 ring-slate-400 dark:ring-zinc-700"
             />

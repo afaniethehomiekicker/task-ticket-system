@@ -109,26 +109,6 @@ func CreateProject(c *gin.Context) {
 
 // GetProjects fetches all projects from DB
 func GetProjects(c *gin.Context) {
-	// Staff cannot see the overall Projects list at all — returns an
-	// empty result rather than a 403, since "nothing to show" is a
-	// normal, expected state for this role, not an error condition.
-	// Requires AuthenticateJWT on the route (added in routes.go) to know
-	// the caller's role at all — this endpoint had no auth requirement
-	// whatsoever before.
-	//
-	// NOTE: this is a hardcoded role check, not a dynamic permission —
-	// inconsistent with the manage_users/create_projects/etc. capabilities
-	// that now route through the permission matrix (see role.go,
-	// permissions_middleware.go). Implemented this way because that's
-	// literally what was asked for; flagging the inconsistency rather
-	// than silently deciding to convert it into "view_projects" as a
-	// matrix capability instead.
-	roleRaw, _ := c.Get("userRole")
-	if role, _ := roleRaw.(string); role == "staff" {
-		c.JSON(http.StatusOK, gin.H{"projects": []models.Project{}})
-		return
-	}
-
 	var projects []models.Project
 	if result := database.DB.
 		Preload("Owner").
@@ -263,23 +243,6 @@ func toUintSlice(raw interface{}) []uint {
 }
 
 // DeleteProject removes a project by ID gracefully
-// DeleteProject removes a project. Soft-deletes the project itself
-// (Project embeds gorm.Model, so this sets deleted_at rather than
-// issuing a hard DELETE) — which is also why this never risked an actual
-// foreign-key violation: a soft delete doesn't touch rows that reference
-// this one at the database level.
-//
-// What WAS missing: linked records were left in a silently broken state.
-// Fixed here, all in one transaction so a failure partway through can't
-// leave the project deleted while its tasks still point at it:
-//   - Tasks and Tickets referencing this project have their ProjectID
-//     cleared (set to NULL) rather than being deleted themselves — the
-//     work they represent isn't erased just because the project it was
-//     organized under is gone. They become "unassigned to any project",
-//     a state this app already supports normally.
-//   - Members/Supervisors join-table rows are explicitly cleared via
-//     Association.Clear(), rather than left dangling against a project
-//     that's now invisible to every other query.
 func DeleteProject(c *gin.Context) {
 	idParam := c.Param("id")
 	var project models.Project
@@ -288,24 +251,8 @@ func DeleteProject(c *gin.Context) {
 		return
 	}
 
-	txErr := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.Task{}).Where("project_id = ?", project.ID).Update("project_id", nil).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&models.Ticket{}).Where("project_id = ?", project.ID).Update("project_id", nil).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&project).Association("Members").Clear(); err != nil {
-			return err
-		}
-		if err := tx.Model(&project).Association("Supervisors").Clear(); err != nil {
-			return err
-		}
-		return tx.Delete(&project).Error
-	})
-
-	if txErr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete project: " + txErr.Error()})
+	if result := database.DB.Delete(&project); result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete project"})
 		return
 	}
 

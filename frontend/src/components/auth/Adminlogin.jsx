@@ -10,21 +10,12 @@ import { ShieldAlert, KeyRound } from 'lucide-react';
 // super_admin — with the SAME generic error a wrong password would give,
 // so this portal never reveals who holds that role to anyone probing it.
 export const AdminLogin = () => {
-  const { setCurrentUserId, setAuthToken, allUsers } = useApp();
+  const { setCurrentUserId, setAuthToken } = useApp();
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Same reasoning as login.jsx's resolveLocalUserId — match the
-  // backend's returned user against the frontend's already-loaded
-  // allUsers by email, rather than trusting a bare id.
-  const resolveLocalUserId = (backendUser) => {
-    const email = (backendUser.email || '').toLowerCase().trim();
-    const match = (allUsers || []).find(u => (u.email || '').toLowerCase().trim() === email);
-    return match ? match.id : backendUser.id;
-  };
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -55,7 +46,7 @@ export const AdminLogin = () => {
       }
 
       setAuthToken(data.token);
-      setCurrentUserId(resolveLocalUserId(data.user));
+      setCurrentUserId(data.user.id);
 
       // Land back on the main app after a successful admin login, rather
       // than staying on /admin-login — a full navigation (not just SPA

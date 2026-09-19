@@ -26,7 +26,6 @@ export const Profile = () => {
   const [successMessage, setSuccessMessage] = useState('');
   const [error, setError] = useState('');
   const [isUploading, setIsUploading] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -58,7 +57,7 @@ export const Profile = () => {
     }
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
     setError('');
     setSuccessMessage('');
@@ -74,26 +73,10 @@ export const Profile = () => {
       }
     }
 
-    setIsSaving(true);
-    // Previously fired-and-forgot — updateUser was never awaited, so
-    // "Profile updated successfully!" showed unconditionally, regardless
-    // of whether the save actually worked. Combined with updateUser now
-    // correctly rejecting failures instead of silently faking success,
-    // that message was flatly wrong whenever a save failed — which is
-    // exactly why fields looked saved but vanished on reload.
-    const result = await updateUser(currentUser.id, {
+    updateUser(currentUser.id, {
       ...formData,
-      ...(passwords.newPassword
-        ? { password: passwords.newPassword, currentPassword: passwords.currentPassword }
-        : {})
+      ...(passwords.newPassword ? { password: passwords.newPassword } : {})
     });
-    setIsSaving(false);
-
-    if (!result) {
-      // updateUser already alerted with the real error (e.g. "Current
-      // password is incorrect") — don't also claim success here.
-      return;
-    }
 
     logAudit({
       actorId: currentUser.id,
@@ -308,10 +291,9 @@ export const Profile = () => {
         <div className="flex justify-end">
           <button
             type="submit"
-            disabled={isSaving}
-            className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-lg text-xs transition shadow-md cursor-pointer"
+            className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs transition shadow-md cursor-pointer"
           >
-            <Save className="w-4 h-4" /> {isSaving ? 'Saving...' : 'Save Profile Changes'}
+            <Save className="w-4 h-4" /> Save Profile Changes
           </button>
         </div>
       </form>

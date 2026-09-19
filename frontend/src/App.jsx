@@ -1,29 +1,30 @@
-import React from 'react';
-import { AppProvider, useApp } from './context/AppContext';
-import { Sidebar } from './components/layout/Sidebar';
-import { Navbar } from './components/layout/Navbar';
-import { DashboardView } from './components/dashboard/DashboardView';
-import { ProjectsView } from './components/projects/ProjectsView';
-import { KanbanBoardView } from './components/kanban/KanbanBoardView';
-import { TasksView } from './components/tasks/TasksView';
-import { TicketsView } from './components/tickets/TicketsView';
-import { TeamView } from './components/team/TeamView';
-import { ReportsView } from './components/reports/ReportsView';
-import { AuditLogsView } from './components/audit/AuditLogsView';
-import { SettingsView } from './components/settings/SettingsView';
-import { GlobalSearchModal } from './components/common/GlobalSearchModal';
-import { QuickCreateModal } from './components/common/QuickCreateModal';
-import { QuickCreateTypePicker } from './components/common/Quickcreatetypepicker';
-import { Login } from './components/auth/login';
-import { AdminLogin } from './components/auth/Adminlogin';
-import { Profile } from './components/profile/profile';
-import { TaskEditModal } from './components/tasks/TaskEditModal';
-import { ProjectEditModal } from './components/projects/ProjectEditModal';
-import { TicketEditModal } from './components/tickets/TicketEditModal';
-import { ClientsView } from './components/Clients/Clientsview';
+import React from "react";
+import { AppProvider, useApp } from "./context/AppContext";
+import { Sidebar } from "./components/layout/Sidebar";
+import { Navbar } from "./components/layout/Navbar";
+import { DashboardView } from "./components/dashboard/DashboardView";
+import { ProjectsView } from "./components/projects/ProjectsView";
+import { KanbanBoardView } from "./components/kanban/KanbanBoardView";
+import { TasksView } from "./components/tasks/TasksView";
+import { TicketsView } from "./components/tickets/TicketsView";
+import { TeamView } from "./components/team/TeamView";
+import { ReportsView } from "./components/reports/ReportsView";
+import { AuditLogsView } from "./components/audit/AuditLogsView";
+import { SettingsView } from "./components/settings/SettingsView";
+import { GlobalSearchModal } from "./components/common/GlobalSearchModal";
+import { QuickCreateModal } from "./components/common/QuickCreateModal";
+import { QuickCreateTypePicker } from "./components/common/Quickcreatetypepicker";
+import { Login } from "./components/auth/login";
+import { AdminLogin } from "./components/auth/Adminlogin";
+import { Profile } from "./components/profile/profile";
+import { TaskEditModal } from "./components/tasks/TaskEditModal";
+import { ProjectEditModal } from "./components/projects/ProjectEditModal";
+import { TicketEditModal } from "./components/tickets/TicketEditModal";
+import { ClientsView } from "./components/Clients/Clientsview";
 
 const AppContent = () => {
-  const { activeTab, quickCreateOpen, setQuickCreateOpen, currentUser } = useApp();
+  const { activeTab, quickCreateOpen, setQuickCreateOpen, currentUser, authToken, dataLoaded } =
+    useApp();
 
   // Dedicated Super Admin portal — a real, separate URL path
   // (/admin-login), checked directly against window.location.pathname
@@ -32,45 +33,56 @@ const AppContent = () => {
   // URL without adding a full routing dependency for one static route —
   // worth revisiting with real routing (e.g. react-router) if more paths
   // like this are needed later.
-  if (window.location.pathname === '/admin-login') {
+  if (window.location.pathname === "/admin-login") {
     if (currentUser) {
       // Already authenticated — no reason to show the login form again;
       // a full navigation (not SPA state) keeps the URL bar and app
       // state from disagreeing with each other.
-      window.location.href = '/';
+      window.location.href = "/";
       return null;
     }
     return <AdminLogin />;
   }
 
-  // If the user is not authenticated, render only the Login page
+  // If the user is not authenticated, render only the Login page. A
+  // returning user with a stored session token still needs the initial
+  // backend fetch to finish before their currentUser can be resolved
+  // (identity now lives only in the token + backend, not a local cache),
+  // so a brief loader is shown instead of flashing the login screen.
   if (!currentUser) {
+    if (authToken && !dataLoaded) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-900">
+          <div className="animate-spin w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full" />
+        </div>
+      );
+    }
     return <Login />;
   }
 
   const renderActiveView = () => {
     switch (activeTab) {
-      case 'dashboard':
+      case "dashboard":
         return <DashboardView />;
-      case 'projects':
+      case "projects":
         return <ProjectsView />;
-      case 'kanban':
+      case "kanban":
         return <KanbanBoardView />;
-      case 'tasks':
+      case "tasks":
         return <TasksView />;
-      case 'tickets':
+      case "tickets":
         return <TicketsView />;
-      case 'clients':
+      case "clients":
         return <ClientsView />;
-      case 'team':
+      case "team":
         return <TeamView />;
-      case 'reports':
+      case "reports":
         return <ReportsView />;
-      case 'audit':
+      case "audit":
         return <AuditLogsView />;
-      case 'settings':
+      case "settings":
         return <SettingsView />;
-      case 'profile':
+      case "profile":
         return <Profile />;
       default:
         return <DashboardView />;
@@ -96,9 +108,9 @@ const AppContent = () => {
       {/* Global Modals */}
       <GlobalSearchModal />
       <QuickCreateTypePicker />
-      <QuickCreateModal 
-        isOpen={quickCreateOpen} 
-        onClose={() => setQuickCreateOpen(false)} 
+      <QuickCreateModal
+        isOpen={quickCreateOpen}
+        onClose={() => setQuickCreateOpen(false)}
       />
       <TaskEditModal />
       <ProjectEditModal />

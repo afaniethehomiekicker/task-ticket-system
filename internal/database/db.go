@@ -53,8 +53,6 @@ func ConnectDB() {
 		&models.SubTask{},
 		&models.Comment{},
 		&models.AuditLog{},
-		&models.Role{},
-		&models.RolePermission{},
 	)
 	if err != nil {
 		log.Fatal("Failed to auto-migrate database: ", err)

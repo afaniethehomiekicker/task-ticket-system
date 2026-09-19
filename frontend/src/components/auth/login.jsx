@@ -3,24 +3,12 @@ import { useApp } from '../../context/AppContext';
 import { Lock, Mail } from 'lucide-react';
 
 export const Login = () => {
-  const { setCurrentUserId, setAuthToken, allUsers } = useApp();
+  const { setCurrentUserId, setAuthToken } = useApp();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Resolves the backend's returned user (email + role) against the
-  // frontend's already-loaded allUsers list, the same way every other
-  // part of the app matches a backend record to a local one — by email,
-  // not by trusting a bare id the backend happens to send back. Falls
-  // back to the raw backend id only if no local match exists yet (e.g.
-  // fetchInitialData hasn't merged this particular user in yet).
-  const resolveLocalUserId = (backendUser) => {
-    const email = (backendUser.email || '').toLowerCase().trim();
-    const match = (allUsers || []).find(u => (u.email || '').toLowerCase().trim() === email);
-    return match ? match.id : backendUser.id;
-  };
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -56,9 +44,12 @@ export const Login = () => {
 
       // Store the token BEFORE switching currentUserId, so that if any
       // effect reacts to currentUserId changing and immediately makes an
-      // authenticated request, the token is already in place.
+      // authenticated request, the token is already in place. The user id
+      // returned by the backend is the canonical id the rest of the app
+      // uses too (see normalizeUser in AppContext), so it's passed
+      // straight through.
       setAuthToken(data.token);
-      setCurrentUserId(resolveLocalUserId(data.user));
+      setCurrentUserId(data.user.id);
     } catch (err) {
       setError('Could not reach the server. Please try again.');
     } finally {

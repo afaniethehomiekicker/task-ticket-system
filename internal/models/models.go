@@ -20,9 +20,6 @@ type User struct {
 	Title      string `json:"title"` // job title, e.g. "VP of Engineering"
 	Phone      string `json:"phone"`
 	Status     string `json:"status"` // active, deactivated
-	Address    string `json:"address"`
-	Stack      string `json:"stack"`  // free-text tech stack, e.g. "React, Go, PostgreSQL"
-	Skills     string `json:"skills"` // free-text skills/specializations
 
 	// ManagerID is kept for backward compatibility with the existing
 	// Register endpoint, which already binds it. It's superseded by the
@@ -343,34 +340,4 @@ type Comment struct {
 	TaskID     *uint  `json:"task_id"`     // Optional: Null if it belongs to a ticket
 	TicketID   *uint  `json:"ticket_id"`   // Optional: Null if it belongs to a task
 	IsInternal bool   `json:"is_internal"` // true = staff-only note, false = visible to the requester
-}
-
-// --- Role & Permission Matrix --------------------------------------------
-//
-// Previously, a role was just a bare string checked against a hardcoded
-// Go map (allowedRoles in auth.go), and authorization was a hardcoded
-// list of role NAMES per route (AuthorizeRole("Admin", "Supervisor")).
-// Neither could express "a Super Admin created a new custom role from
-// the Settings & Matrix page and decided what it can do" — these two
-// tables make role and permission real, persisted, and independent of
-// what's compiled into the binary.
-
-type Role struct {
-	gorm.Model
-	Key       string `json:"key" gorm:"unique"` // stable identifier stored in User.Role — e.g. "quality_assurance"
-	Label     string `json:"label"`             // display name — e.g. "Quality Assurance"
-	IsBuiltIn bool   `json:"is_built_in"`       // protects super_admin/admin/supervisor/staff from deletion or key changes
-}
-
-// RolePermission is deliberately denormalized on RoleKey (a string, not a
-// foreign key to Role.ID) rather than joined through Role — every
-// authorization check on every protected request needs "does <role key
-// from the JWT> have <permission key> granted" to be a single indexed
-// lookup, not a join, since it runs on the hot path of every request
-// RequirePermission guards (see internal/middleware/permissions.go).
-type RolePermission struct {
-	gorm.Model
-	RoleKey       string `json:"role_key" gorm:"uniqueIndex:idx_role_permission"`
-	PermissionKey string `json:"permission_key" gorm:"uniqueIndex:idx_role_permission"`
-	Granted       bool   `json:"granted"`
 }

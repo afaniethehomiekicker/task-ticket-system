@@ -6,8 +6,7 @@ export const PERMISSION_KEYS = {
   CREATE_TASKS: 'create_tasks',
   APPROVE_WORK: 'approve_work',
   ESCALATE_TICKETS: 'escalate_tickets',
-  ASSIGN_TICKETS: 'assign_tickets',
-  MANAGE_CLIENTS: 'manage_clients'
+  ASSIGN_TICKETS: 'assign_tickets'
 };
 
 export const PERMISSION_LABELS = {
@@ -18,8 +17,7 @@ export const PERMISSION_LABELS = {
   [PERMISSION_KEYS.CREATE_TASKS]: 'Create Tasks',
   [PERMISSION_KEYS.APPROVE_WORK]: 'Approve & Sign-off Tasks',
   [PERMISSION_KEYS.ESCALATE_TICKETS]: 'Escalate Incident Tickets',
-  [PERMISSION_KEYS.ASSIGN_TICKETS]: 'Reassign Tickets & Tasks',
-  [PERMISSION_KEYS.MANAGE_CLIENTS]: 'Manage Client & Company Profiles'
+  [PERMISSION_KEYS.ASSIGN_TICKETS]: 'Reassign Tickets & Tasks'
 };
 
 // Default role -> permission matrix. Super Admin is deliberately excluded —
@@ -33,8 +31,7 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.CREATE_TASKS]: true,
     [PERMISSION_KEYS.APPROVE_WORK]: true,
     [PERMISSION_KEYS.ESCALATE_TICKETS]: true,
-    [PERMISSION_KEYS.ASSIGN_TICKETS]: true,
-    [PERMISSION_KEYS.MANAGE_CLIENTS]: true
+    [PERMISSION_KEYS.ASSIGN_TICKETS]: true
   },
   supervisor: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -44,8 +41,7 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.CREATE_TASKS]: true,
     [PERMISSION_KEYS.APPROVE_WORK]: true,
     [PERMISSION_KEYS.ESCALATE_TICKETS]: true,
-    [PERMISSION_KEYS.ASSIGN_TICKETS]: true,
-    [PERMISSION_KEYS.MANAGE_CLIENTS]: false
+    [PERMISSION_KEYS.ASSIGN_TICKETS]: true
   },
   staff: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -55,8 +51,7 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.CREATE_TASKS]: false,
     [PERMISSION_KEYS.APPROVE_WORK]: false,
     [PERMISSION_KEYS.ESCALATE_TICKETS]: true,
-    [PERMISSION_KEYS.ASSIGN_TICKETS]: false,
-    [PERMISSION_KEYS.MANAGE_CLIENTS]: false
+    [PERMISSION_KEYS.ASSIGN_TICKETS]: false
   }
 };
 
@@ -116,18 +111,6 @@ export function canAssignTickets(user, permissionMatrix = DEFAULT_PERMISSION_MAT
   if (!user) return false;
   if (user.role === 'super_admin') return true;
   return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.ASSIGN_TICKETS];
-}
-
-// New — the backend has always gated client/company profile management
-// behind Admin/Super Admin (see client.go), but no frontend function
-// ever checked it explicitly; components either assumed currentUser.role
-// !== 'staff' inline or didn't check at all. Wired to the matrix the
-// same as everything else here now that manage_clients is a real,
-// persisted, toggleable capability.
-export function canManageClients(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
-  if (!user) return false;
-  if (user.role === 'super_admin') return true;
-  return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.MANAGE_CLIENTS];
 }
 
 export function getRoleBadgeColor(role) {

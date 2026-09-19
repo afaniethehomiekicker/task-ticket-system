@@ -224,7 +224,7 @@ export const TaskDetailDrawer = () => {
               <div className="flex items-center gap-2">
                 {assignee && (
                   <>
-                    <img src={assignee.avatar || 'https://via.placeholder.com/150'} alt={assignee.name} className="w-5 h-5 rounded-full object-cover" />
+                    <img src={assignee.avatar} alt={assignee.name} className="w-5 h-5 rounded-full object-cover" />
                     <span className="font-medium text-slate-900 dark:text-zinc-200 truncate">{assignee.name}</span>
                   </>
                 )}

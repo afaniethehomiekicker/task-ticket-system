@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import {
   filterProjectsForUser, filterTasksForUser, filterTicketsForUser,
-  DEFAULT_PERMISSION_MATRIX, getRoleDisplayName, PERMISSION_KEYS
+  DEFAULT_PERMISSION_MATRIX, getRoleDisplayName
 } from '../utils/permissions';
 import confetti from 'canvas-confetti';
 
@@ -21,23 +21,13 @@ export const getBackendId = (rawId) => {
 
 // --- User shape translation ------------------------------------------------
 //
-// The Go backend is the ONLY source of user data now — no more frontend
-// seed data to reconcile it against, so there's no more merging, no more
-// two id schemes, no more normalizeUserKey/dedup logic. What's still
-// needed is translating the backend's raw JSON shape into the shape every
-// existing view component already reads: GORM's default field casing
-// (`ID`, not `id`) and snake_case foreign keys (`admin_id`, not
-// `adminId`) don't match what TaskDetailDrawer, Sidebar,
-// ProjectDetailModal, etc. expect. This is the ONE place that translation
-// happens — every consumer of allUsers gets the already-normalized shape.
-//
-// NOTE: `lastActive` (a "5 mins ago"-style display string) existed on the
-// old frontend seed users but has no backend equivalent — the backend
-// doesn't track last-login timestamps. It's deliberately left out here
-// rather than faked with a placeholder string. If a component reads
-// user.lastActive and breaks on its absence, that component needs a
-// small update — flagging this now since I haven't reviewed every view
-// component (TeamView.jsx in particular hasn't been shown to me yet).
+// The Go backend is the ONLY source of user data. What's needed here is
+// translating the backend's raw JSON shape into the shape every existing
+// view component already reads: GORM's default field casing (`ID`, not
+// `id`) and snake_case foreign keys (`admin_id`, not `adminId`) don't
+// match what TaskDetailDrawer, Sidebar, ProjectDetailModal, etc. expect.
+// This is the ONE place that translation happens — every consumer of
+// allUsers gets the already-normalized shape.
 const normalizeUser = (raw) => {
   if (!raw) return null;
   return {
@@ -50,9 +40,6 @@ const normalizeUser = (raw) => {
     title: raw.title || '',
     phone: raw.phone || '',
     status: raw.status || 'active',
-    address: raw.address || '',
-    stack: raw.stack || '',
-    skills: raw.skills || '',
     managerId: raw.manager_id ?? null,
     supervisorId: raw.supervisor_id ?? null,
     adminId: raw.admin_id ?? null,
@@ -62,15 +49,11 @@ const normalizeUser = (raw) => {
 
 // --- Project shape translation ----------------------------------------
 //
-// Same treatment as normalizeUser above. The previous merge-against-seed
-// approach never handled `admin_id` at all (adminId was always
-// undefined, so filterProjectsForUser's Admin branch could never match
-// ANY real project), and read a `memberIds` key that doesn't exist in
-// the API response at all — the real field is `members`, a nested array
-// of full User objects (per models.go's Members []User relation), not a
-// flat array of ids. Both bugs meant a project's actual backend
-// membership/ownership was invisible to every permission check no
-// matter how correctly it was seeded.
+// Same treatment as normalizeUser above. Handles the backend's nested
+// `members`/`supervisors` relation arrays (full User objects, per
+// models.go's Members/Supervisors []User relations) and the snake_case
+// foreign keys/columns so filterProjectsForUser's ownership/admin checks
+// work against real backend data.
 const normalizeProject = (raw) => {
   if (!raw) return null;
   const memberIds = Array.isArray(raw.members)
@@ -118,10 +101,8 @@ const normalizeProject = (raw) => {
   };
 };
 
-// Looks up a user by id. Simplified from an earlier three-way check
-// (canonical id / legacy seed id / raw backend id) that existed only
-// because two different id schemes needed bridging — now there's exactly
-// one real id (the backend's), so this is just a String()-coerced
+// Looks up a user by id. With the backend as the single id source there
+// is exactly one real id per user, so this is just a String()-coerced
 // equality check, kept as a named helper so call sites (createTicket,
 // updateTicket, assignTicket, etc.) don't each repeat the coercion logic
 // inline.
@@ -209,12 +190,6 @@ const normalizeTask = (raw) => {
     isPinned: !!raw.is_pinned,
     reviewStatus: raw.review_status || 'none',
     reviewNotes: raw.review_notes || '',
-    // Richer than the original seed data's bare ['TSK-103'] strings —
-    // this is a genuinely new feature (no dependency UI/handler existed
-    // at all before), so the shape is designed fresh rather than
-    // constrained to match old mock data. Real task ids are kept
-    // alongside the display number specifically so a "remove" action has
-    // something real to call DELETE .../dependencies/:depId with.
     dependencies: Array.isArray(raw.depends_on)
       ? raw.depends_on.map(d => ({
           id: d.id ?? d.ID,
@@ -330,87 +305,60 @@ const normalizeClient = (raw) => {
 
 const AppContext = createContext(undefined);
 
-const STORAGE_KEYS = {
-  USERS: 'pm_system_users_v1',
-  PROJECTS: 'pm_system_projects_v1',
-  TASKS: 'pm_system_tasks_v1',
-  TICKETS: 'pm_system_tickets_v1',
-  AUDIT_LOGS: 'pm_system_audit_logs_v1',
-  NOTIFICATIONS: 'pm_system_notifications_v1',
-  CURRENT_USER_ID: 'pm_system_active_user_id_v1',
-  DARK_MODE: 'pm_system_theme_dark_v1',
-  PERMISSION_MATRIX: 'pm_system_permission_matrix_v1',
-  CUSTOM_ROLES: 'pm_system_custom_roles_v1',
-  AUTH_TOKEN: 'pm_system_auth_token_v1',
-  CLIENTS: 'pm_system_clients_v1'
+// The ONLY thing persisted across reloads is the session token (JWT).
+// Every collection of business data is fetched fresh from the backend on
+// startup — this app intentionally has no client-side cache of
+// users/projects/tasks/tickets/etc., so a first run is genuinely empty.
+const AUTH_TOKEN_KEY = 'pm_system_auth_token_v1';
+
+// The JWT issued by the backend carries the user id in its payload. It's
+// decoded here (read-only, client-side) so the active user can be restored
+// from the session token alone, without persisting any extra state.
+const decodeTokenUserId = (token) => {
+  if (!token) return null;
+  try {
+    const payload = token.split('.')[1];
+    if (!payload) return null;
+    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const json = JSON.parse(atob(base64));
+    return json.user_id ?? null;
+  } catch (err) {
+    return null;
+  }
 };
 
 export const AppProvider = ({ children }) => {
-  const [allUsers, setAllUsers] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.USERS);
-    return saved ? JSON.parse(saved) : [];
-  });
+  // Every collection of business data starts empty — nothing is rehydrated
+  // from localStorage. The backend is the single source of truth and is
+  // fetched on startup (see fetchInitialData below).
+  const [allUsers, setAllUsers] = useState([]);
 
+  // The active user id is derived from the session token only (see
+  // decodeTokenUserId above) — it is never written to localStorage.
+  const [authToken, setAuthTokenState] = useState(() => {
+    return localStorage.getItem(AUTH_TOKEN_KEY) || null;
+  });
   const [currentUserId, setCurrentUserIdState] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.CURRENT_USER_ID);
-    return saved || null;
+    return decodeTokenUserId(authToken);
   });
 
-  const [projects, setProjects] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.PROJECTS);
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [clients, setClients] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.CLIENTS);
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.CLIENTS, JSON.stringify(clients));
-  }, [clients]);
-
-  const [tasks, setTasks] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.TASKS);
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [tickets, setTickets] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.TICKETS);
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [auditLogs, setAuditLogs] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.AUDIT_LOGS);
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [notifications, setNotifications] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.NOTIFICATIONS);
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [projects, setProjects] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [tickets, setTickets] = useState([]);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [notifications, setNotifications] = useState([]);
 
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [darkMode, setDarkModeState] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.DARK_MODE);
-    return saved ? JSON.parse(saved) : false;
-  });
-
-  const [permissionMatrix, setPermissionMatrix] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.PERMISSION_MATRIX);
-    return saved ? JSON.parse(saved) : DEFAULT_PERMISSION_MATRIX;
-  });
-
-  const [authToken, setAuthTokenState] = useState(() => {
-    return localStorage.getItem(STORAGE_KEYS.AUTH_TOKEN) || null;
-  });
+  const [darkMode, setDarkModeState] = useState(false);
+  const [permissionMatrix, setPermissionMatrix] = useState(DEFAULT_PERMISSION_MATRIX);
 
   const setAuthToken = (token) => {
     setAuthTokenState(token);
     if (token) {
-      localStorage.setItem(STORAGE_KEYS.AUTH_TOKEN, token);
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
     } else {
-      localStorage.removeItem(STORAGE_KEYS.AUTH_TOKEN);
+      localStorage.removeItem(AUTH_TOKEN_KEY);
     }
   };
 
@@ -422,16 +370,10 @@ export const AppProvider = ({ children }) => {
     return fetch(url, { ...options, headers });
   };
 
-  const [customRoles, setCustomRoles] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_KEYS.CUSTOM_ROLES);
-    return saved ? JSON.parse(saved) : ['super_admin', 'admin', 'supervisor', 'staff', 'client'];
-  });
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.CUSTOM_ROLES, JSON.stringify(customRoles));
-  }, [customRoles]);
+  const [customRoles, setCustomRoles] = useState(['super_admin', 'admin', 'supervisor', 'staff', 'client']);
 
   const didFetchInitialDataRef = useRef(false);
+  const [dataLoaded, setDataLoaded] = useState(false);
 
   useEffect(() => {
     if (didFetchInitialDataRef.current) return;
@@ -439,13 +381,12 @@ export const AppProvider = ({ children }) => {
 
     const fetchInitialData = async () => {
       try {
-        const [usersRes, projectsRes, tasksRes, ticketsRes, clientsRes, permissionsRes] = await Promise.allSettled([
+        const [usersRes, projectsRes, tasksRes, ticketsRes, clientsRes] = await Promise.allSettled([
           apiFetch('/api/users'),
           apiFetch('/api/projects'),
           apiFetch('/api/tasks'),
           apiFetch('/api/tickets'),
-          apiFetch('/api/clients'),
-          apiFetch('/api/permissions')
+          apiFetch('/api/clients')
         ]);
 
         if (usersRes.status === 'fulfilled' && usersRes.value.ok) {
@@ -463,17 +404,6 @@ export const AppProvider = ({ children }) => {
           setClients((data.clients || []).map(normalizeClient).filter(Boolean));
         }
 
-        if (permissionsRes.status === 'fulfilled' && permissionsRes.value.ok) {
-          const data = await permissionsRes.value.json();
-          // data.matrix is already shaped exactly as permissions.js and
-          // SettingsView.jsx expect — {[roleKey]: {[permissionKey]: bool}}
-          // — no transformation needed. data.roles includes super_admin
-          // too (seeded at startup); existing UI logic already filters
-          // it out of the editable columns, so no special-casing here.
-          if (data.matrix) setPermissionMatrix(data.matrix);
-          if (Array.isArray(data.roles)) setCustomRoles(data.roles.map(r => r.key));
-        }
-
         if (tasksRes.status === 'fulfilled' && tasksRes.value.ok) {
           const data = await tasksRes.value.json();
           setTasks((data.tasks || []).map(normalizeTask).filter(Boolean));
@@ -484,7 +414,9 @@ export const AppProvider = ({ children }) => {
           setTickets((data.tickets || []).map(normalizeTicket).filter(Boolean));
         }
       } catch (err) {
-        console.warn('Backend API offline, operating on local cache:', err);
+        console.warn('Backend API offline:', err);
+      } finally {
+        setDataLoaded(true);
       }
     };
 
@@ -514,10 +446,6 @@ export const AppProvider = ({ children }) => {
 
     fetchAuditLogs();
   }, [currentUserId, allUsers]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.PERMISSION_MATRIX, JSON.stringify(permissionMatrix));
-  }, [permissionMatrix]);
 
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -560,36 +488,11 @@ export const AppProvider = ({ children }) => {
     } else {
       document.documentElement.classList.remove('dark');
     }
-    localStorage.setItem(STORAGE_KEYS.DARK_MODE, JSON.stringify(darkMode));
   }, [darkMode]);
 
   const setDarkMode = (val) => {
     setDarkModeState(val);
   };
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(allUsers));
-  }, [allUsers]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.PROJECTS, JSON.stringify(projects));
-  }, [projects]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(tasks));
-  }, [tasks]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
-  }, [tickets]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.AUDIT_LOGS, JSON.stringify(auditLogs));
-  }, [auditLogs]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.NOTIFICATIONS, JSON.stringify(notifications));
-  }, [notifications]);
 
   const currentUser = useMemo(() => {
     if (!currentUserId) return null;
@@ -600,10 +503,7 @@ export const AppProvider = ({ children }) => {
     setCurrentUserIdState(id);
 
     if (id === null || id === undefined) {
-      localStorage.removeItem(STORAGE_KEYS.CURRENT_USER_ID);
       setAuthToken(null);
-    } else {
-      localStorage.setItem(STORAGE_KEYS.CURRENT_USER_ID, String(id));
     }
 
     const switchedUser = findUserByAnyId(allUsers, id);
@@ -2095,10 +1995,6 @@ export const AppProvider = ({ children }) => {
     if (updates.phone !== undefined) wirePayload.phone = updates.phone;
     if (updates.avatar !== undefined) wirePayload.avatar = updates.avatar;
     if (updates.password) wirePayload.password = updates.password;
-    if (updates.currentPassword) wirePayload.current_password = updates.currentPassword;
-    if (updates.address !== undefined) wirePayload.address = updates.address;
-    if (updates.stack !== undefined) wirePayload.stack = updates.stack;
-    if (updates.skills !== undefined) wirePayload.skills = updates.skills;
     if (updates.department !== undefined) wirePayload.department = updates.department;
     if (updates.supervisorId !== undefined) wirePayload.supervisor_id = getBackendId(updates.supervisorId);
     if (updates.adminId !== undefined) wirePayload.admin_id = getBackendId(updates.adminId);
@@ -2112,20 +2008,15 @@ export const AppProvider = ({ children }) => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(wirePayload)
         });
-        const resData = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          // Previously fell through to an optimistic local update even
-          // on failure, which is exactly why a rejected/failed save
-          // looked identical to a successful one until the next reload
-          // re-fetched the real, unchanged DB state.
-          alert(resData.error || 'Failed to update user.');
-          return null;
+        if (res.ok) {
+          const resData = await res.json();
+          savedUser = normalizeUser(resData.user);
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          console.error('updateUser failed:', errData.error);
         }
-        savedUser = normalizeUser(resData.user);
       } catch (err) {
         console.error('Failed to sync updateUser to API:', err);
-        alert('Failed to update user. Please check your connection and try again.');
-        return null;
       }
     }
 
@@ -2144,21 +2035,13 @@ export const AppProvider = ({ children }) => {
       entityTitle: savedUser?.name || `User ${userId}`,
       details: `Updated user profile attributes: ${Object.keys(updates).join(', ')}`
     });
-
-    return savedUser || true;
   };
 
-  const toggleUserStatus = async (userId) => {
+  const toggleUserStatus = (userId) => {
     const user = allUsers.find(u => String(u.id) === String(userId));
     if (!user) return;
-    // Was 'deactivated' — standardizing on 'active'/'inactive' since the
-    // backend's login check specifically tests for 'inactive'.
-    const nextStatus = user.status === 'active' ? 'inactive' : 'active';
-
-    // Delegates to updateUser for the real backend call — this used to
-    // be purely local state with no backend call at all.
-    const result = await updateUser(userId, { status: nextStatus });
-    if (!result) return; // updateUser already alerted with the real error
+    const nextStatus = user.status === 'active' ? 'deactivated' : 'active';
+    setAllUsers(prev => prev.map(u => String(u.id) === String(userId) ? { ...u, status: nextStatus } : u));
 
     logAudit({
       actorId: currentUser?.id,
@@ -2170,41 +2053,6 @@ export const AppProvider = ({ children }) => {
       entityTitle: user.name,
       details: `User status changed to ${nextStatus.toUpperCase()}`
     });
-  };
-
-  const deleteUser = async (userId) => {
-    const targetId = getBackendId(userId);
-    const user = allUsers.find(u => String(u.id) === String(userId));
-
-    if (targetId) {
-      try {
-        const res = await apiFetch(`/api/users/${targetId}`, { method: 'DELETE' });
-        const resData = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          alert(resData.error || 'Failed to delete user.');
-          return;
-        }
-      } catch (err) {
-        console.error('Failed to sync deleteUser to API:', err);
-        alert('Failed to delete user. Please check your connection and try again.');
-        return;
-      }
-    }
-
-    setAllUsers(prev => prev.filter(u => String(u.id) !== String(userId)));
-
-    if (user) {
-      logAudit({
-        actorId: currentUser?.id,
-        actorName: currentUser?.name,
-        actorRole: currentUser?.role,
-        action: 'USER_DELETED',
-        entityType: 'user',
-        entityId: userId,
-        entityTitle: user.name,
-        details: `Deleted user account ${user.name}`
-      });
-    }
   };
 
   const toggleUserPermission = (userId, permissionKey) => {
@@ -2241,7 +2089,7 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const createCustomRole = async (roleKey, roleDisplayName, initialPermissions = {}) => {
+  const createCustomRole = (roleKey, roleDisplayName, initialPermissions = {}) => {
     if (currentUser?.role !== 'super_admin') return;
 
     const normalizedKey = roleKey.toLowerCase().trim().replace(/\s+/g, '_');
@@ -2252,50 +2100,11 @@ export const AppProvider = ({ children }) => {
       return;
     }
 
-    let created = null;
-    try {
-      const res = await apiFetch('/api/roles', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: normalizedKey, label: roleDisplayName || roleKey })
-      });
-      const resData = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        alert(resData.error || 'Failed to create role.');
-        return;
-      }
-      created = resData.role;
-    } catch (err) {
-      console.error('Failed to sync createCustomRole to API:', err);
-      alert('Failed to create role. Please check your connection and try again.');
-      return;
-    }
+    setCustomRoles(prev => [...prev, normalizedKey]);
 
-    // CreateRole always seeds every permission as false server-side —
-    // each granted checkbox in the "Create Custom Role" modal needs its
-    // own follow-up call to actually grant it. Sequential, not
-    // parallel: this is a rare, admin-only action, and sequential calls
-    // are simpler to reason about than a batch endpoint that doesn't
-    // exist yet.
-    const grantedKeys = Object.keys(initialPermissions).filter(k => initialPermissions[k]);
-    for (const key of grantedKeys) {
-      try {
-        await apiFetch(`/api/permissions/${created.key}/${key}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ granted: true })
-        });
-      } catch (err) {
-        console.error(`Failed to grant initial permission ${key} for new role:`, err);
-      }
-    }
-
-    setCustomRoles(prev => [...prev, created.key]);
     setPermissionMatrix(prev => ({
       ...prev,
-      [created.key]: Object.fromEntries(
-        Object.values(PERMISSION_KEYS).map(k => [k, !!initialPermissions[k]])
-      )
+      [normalizedKey]: initialPermissions
     }));
 
     logAudit({
@@ -2310,26 +2119,14 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const deleteCustomRole = async (roleKey) => {
+  const deleteCustomRole = (roleKey) => {
     if (currentUser?.role !== 'super_admin') return;
 
     const builtInRoles = ['super_admin', 'admin', 'supervisor', 'staff', 'client'];
     if (builtInRoles.includes(roleKey)) return;
 
-    try {
-      const res = await apiFetch(`/api/roles/${roleKey}`, { method: 'DELETE' });
-      const resData = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        alert(resData.error || 'Failed to delete role.');
-        return;
-      }
-    } catch (err) {
-      console.error('Failed to sync deleteCustomRole to API:', err);
-      alert('Failed to delete role. Please check your connection and try again.');
-      return;
-    }
-
     setCustomRoles(prev => prev.filter(r => r !== roleKey));
+
     setPermissionMatrix(prev => {
       const updated = { ...prev };
       delete updated[roleKey];
@@ -2348,43 +2145,17 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const updateRolePermission = async (role, permissionKey, value) => {
+  const updateRolePermission = (role, permissionKey, value) => {
     if (currentUser?.role !== 'super_admin') return;
     if (role === 'super_admin') return;
 
-    // Optimistic, with rollback on failure — a single-cell toggle should
-    // feel instant, but silently keeping a change that never actually
-    // persisted is exactly the class of bug this whole feature exists to
-    // avoid, so a failure reverts the cell rather than leaving it wrong.
     setPermissionMatrix(prev => ({
       ...prev,
-      [role]: { ...(prev[role] || {}), [permissionKey]: value }
-    }));
-
-    try {
-      const res = await apiFetch(`/api/permissions/${role}/${permissionKey}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ granted: value })
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        alert(errData.error || 'Failed to update permission.');
-        setPermissionMatrix(prev => ({
-          ...prev,
-          [role]: { ...(prev[role] || {}), [permissionKey]: !value }
-        }));
-        return;
+      [role]: {
+        ...(prev[role] || {}),
+        [permissionKey]: value
       }
-    } catch (err) {
-      console.error('Failed to sync updateRolePermission to API:', err);
-      alert('Failed to update permission. Please check your connection and try again.');
-      setPermissionMatrix(prev => ({
-        ...prev,
-        [role]: { ...(prev[role] || {}), [permissionKey]: !value }
-      }));
-      return;
-    }
+    }));
 
     logAudit({
       actorId: currentUser?.id,
@@ -2419,20 +2190,6 @@ export const AppProvider = ({ children }) => {
     setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
   };
 
-  const resetToSeedData = () => {
-    localStorage.clear();
-    setCurrentUserIdState(null);
-    setAuthToken(null);
-    setAuditLogs([]);
-    setNotifications([]);
-    // Roles/permissionMatrix are no longer reset here — they're
-    // backend-sourced now (GET /api/permissions), same reasoning as
-    // Users/Projects/Tasks/Tickets above. A real reset means truncating
-    // the roles/role_permissions tables server-side, not overwriting
-    // local state with DEFAULT_PERMISSION_MATRIX.
-    setActiveTab('dashboard');
-  };
-
   return (
     <AppContext.Provider
       value={{
@@ -2441,7 +2198,7 @@ export const AppProvider = ({ children }) => {
         users: allUsers,
         authToken,
         setAuthToken,
-        apiFetch,
+        dataLoaded,
         projects,
         clients,
         tasks,
@@ -2497,7 +2254,6 @@ export const AppProvider = ({ children }) => {
         deleteTicket,
         createUser,
         updateUser,
-        deleteUser,
         toggleUserStatus,
         toggleUserActiveStatus: toggleUserStatus,
         toggleUserPermission,
@@ -2508,7 +2264,6 @@ export const AppProvider = ({ children }) => {
         updateRolePermission,
         markNotificationAsRead,
         markAllNotificationsAsRead,
-        resetToSeedData,
         selectedTaskId,
         setSelectedTaskId,
         selectedTaskEditId,
