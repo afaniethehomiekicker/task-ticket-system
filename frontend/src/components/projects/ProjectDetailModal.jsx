@@ -47,6 +47,8 @@ export const ProjectDetailModal = () => {
     permissionMatrix,
     togglePinProject, 
     updateProject,
+    addProjectMember,
+    removeProjectMember,
     addProjectAttachment,
     setSelectedTaskId,
     setSelectedTicketId,
@@ -148,29 +150,21 @@ export const ProjectDetailModal = () => {
     }
   };
 
-  const handleAddMember = (e) => {
+  // Was routing through updateProject, whose request body has no field for
+  // membership at all — see AppContext.jsx's addProjectMember/
+  // removeProjectMember for the full explanation. Those call the
+  // dedicated /api/projects/:id/members endpoints that actually exist for
+  // this, same as every other add/remove-from-a-collection action in this
+  // app (feasibility vendors, project attachments, etc.).
+  const handleAddMember = async (e) => {
     e.preventDefault();
     if (!selectedMemberToAdd) return;
-
-    // selectedMemberToAdd comes from a native <select> — e.target.value
-    // is ALWAYS a string, even for a numeric <option value={u.id}>. The
-    // existing project.memberIds are real numbers (from normalizeProject),
-    // so without this coercion the array going to the backend was mixed
-    // — numbers plus one string. The backend's toUintSlice does a
-    // type assertion to float64 per element and SILENTLY DROPS any
-    // element that isn't one, rather than erroring — so the newly added
-    // member was filtered out before ever reaching the database, while
-    // the existing members (already numbers) stayed. That's exactly why
-    // adding a member looked like it worked (no error, form closed) but
-    // never actually attached them.
-    const nextMemberIds = [...(project.memberIds || []).map(Number), Number(selectedMemberToAdd)];
-    updateProject(project.id, { memberIds: nextMemberIds });
+    await addProjectMember(project.id, selectedMemberToAdd);
     setSelectedMemberToAdd('');
   };
 
-  const handleRemoveMember = (userId) => {
-    const nextMemberIds = (project.memberIds || []).filter(id => Number(id) !== Number(userId));
-    updateProject(project.id, { memberIds: nextMemberIds });
+  const handleRemoveMember = async (userId) => {
+    await removeProjectMember(project.id, userId);
   };
 
   return (

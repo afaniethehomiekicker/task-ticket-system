@@ -13,7 +13,8 @@ export const ProjectEditModal = () => {
     code: '',
     department: '',
     description: '',
-    budgetHours: 0
+    budgetHours: 0,
+    status: 'planning'
   });
 
   useEffect(() => {
@@ -23,7 +24,8 @@ export const ProjectEditModal = () => {
         code: project.code || '',
         department: project.department || '',
         description: project.description || '',
-        budgetHours: project.budgetHours || 0
+        budgetHours: project.budgetHours || 0,
+        status: project.status || 'planning'
       });
     }
   }, [project]);
@@ -89,6 +91,31 @@ export const ProjectEditModal = () => {
                 className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500 font-mono"
               />
             </div>
+          </div>
+
+          <div>
+            {/* Was the only place a project's status could be changed —
+                which turned out to be nowhere at all: neither this modal
+                nor ProjectDetailModal.jsx had a status field. "archived" is
+                deliberately excluded here — models.go's own comment on
+                Project.ArchivedAt says archiving only happens through the
+                dedicated delete/archive action (DeleteProject), stamping
+                ArchivedAt/ArchivedByID, the same rule already enforced for
+                Task/Ticket/Feasibility elsewhere in this app. */}
+            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">Status</label>
+            <select
+              name="status"
+              value={formData.status}
+              onChange={handleChange}
+              className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-lg text-xs text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+            >
+              <option value="planning">Planning</option>
+              <option value="active">Active</option>
+              <option value="on_hold">On Hold</option>
+              <option value="completed">Completed</option>
+              <option value="cancelled">Cancelled</option>
+              {formData.status === 'archived' && <option value="archived">Archived</option>}
+            </select>
           </div>
 
           <div>

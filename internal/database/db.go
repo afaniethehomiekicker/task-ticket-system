@@ -24,16 +24,24 @@ const (
 var DB *gorm.DB
 
 func ConnectDB() {
-	// Fetch credentials directly from the .env file
-	host := os.Getenv("DB_HOST")
-	user := os.Getenv("DB_USER")
-	password := os.Getenv("DB_PASSWORD")
-	dbname := os.Getenv("DB_NAME")
-	port := os.Getenv("DB_PORT")
-
-	// Construct the Data Source Name (DSN)
-	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=UTC",
-		host, user, password, dbname, port)
+	// .env here uses one ready-made connection string (DB_DSN) rather than
+	// five separate DB_HOST/DB_USER/DB_PASSWORD/DB_NAME/DB_PORT fields — this
+	// used to read only the five separate names, building a DSN with every
+	// field empty ("host= user= password= dbname= port=...") whenever they
+	// weren't set, which is not a valid connection string and fails with
+	// "invalid port" before it ever reaches the database. DB_DSN is used
+	// as-is when present; the five-field construction is the fallback,
+	// unchanged, for setups that use it instead.
+	dsn := os.Getenv("DB_DSN")
+	if dsn == "" {
+		host := os.Getenv("DB_HOST")
+		user := os.Getenv("DB_USER")
+		password := os.Getenv("DB_PASSWORD")
+		dbname := os.Getenv("DB_NAME")
+		port := os.Getenv("DB_PORT")
+		dsn = fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=UTC",
+			host, user, password, dbname, port)
+	}
 
 	var err error
 	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
@@ -75,7 +83,7 @@ func ConnectDB() {
 		// FeasibilityAttachment were above — the struct existing in
 		// models.go doesn't create its table on its own; it has to be
 		// named here too. Without this, every /api/departments request
-		// fails with "relation "departments" does not exist."
+		// fails with "relation \"departments\" does not exist."
 		&models.Department{},
 	)
 

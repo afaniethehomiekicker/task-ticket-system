@@ -971,6 +971,102 @@ export const AppProvider = ({ children }) => {
     });
   };
 
+  // Adding/removing a project MEMBER is not part of updateProject below —
+  // its wirePayload has no field for it at all, so handleAddMember calling
+  // updateProject(id, { memberIds }) silently sent a request with no member
+  // information whatsoever: the backend correctly changed nothing and
+  // returned 200, which is why it looked like it worked (green network
+  // request, form closed) but never actually attached anyone. The real
+  // endpoints already existed on the backend (POST/DELETE
+  // /api/projects/:id/members, ticket_extra.go) — nothing on the frontend
+  // called them.
+  const addProjectMember = async (projectId, userId) => {
+    const targetProjectId = getBackendId(projectId);
+    const targetUserId = getBackendId(userId);
+    if (!targetProjectId || !targetUserId) return null;
+
+    let savedProject = null;
+    try {
+      const res = await apiFetch(`/api/projects/${targetProjectId}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: targetUserId })
+      });
+      if (res.ok) {
+        const resData = await res.json();
+        savedProject = normalizeProject(resData.project);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to add member.');
+        return null;
+      }
+    } catch (err) {
+      console.error('Failed to sync addProjectMember to API:', err);
+      alert('Failed to add member. Please check your connection and try again.');
+      return null;
+    }
+
+    setProjects(prev => prev.map(p => String(p.id) === String(projectId) ? savedProject : p));
+
+    const member = allUsers.find(u => String(u.id) === String(userId));
+    logAudit({
+      actorId: currentUser?.id,
+      actorName: currentUser?.name,
+      actorRole: currentUser?.role,
+      action: 'PROJECT_MEMBER_ADDED',
+      entityType: 'project',
+      entityId: projectId,
+      entityTitle: savedProject?.title || '',
+      details: member ? `Added ${member.name} to the project team` : 'Added a team member'
+    });
+
+    return savedProject;
+  };
+
+  // The backend's response here has no "project" key at all (just a plain
+  // success message) — unlike add, which returns the full updated project.
+  // Local state has to be updated by filtering the member out directly
+  // rather than trusting a returned object that doesn't exist.
+  const removeProjectMember = async (projectId, userId) => {
+    const targetProjectId = getBackendId(projectId);
+    const targetUserId = getBackendId(userId);
+    if (!targetProjectId || !targetUserId) return false;
+
+    try {
+      const res = await apiFetch(`/api/projects/${targetProjectId}/members/${targetUserId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to remove member.');
+        return false;
+      }
+    } catch (err) {
+      console.error('Failed to sync removeProjectMember to API:', err);
+      alert('Failed to remove member. Please check your connection and try again.');
+      return false;
+    }
+
+    const project = projects.find(p => String(p.id) === String(projectId));
+    const member = allUsers.find(u => String(u.id) === String(userId));
+
+    setProjects(prev => prev.map(p => {
+      if (String(p.id) !== String(projectId)) return p;
+      return { ...p, memberIds: (p.memberIds || []).filter(id => String(id) !== String(userId)) };
+    }));
+
+    logAudit({
+      actorId: currentUser?.id,
+      actorName: currentUser?.name,
+      actorRole: currentUser?.role,
+      action: 'PROJECT_MEMBER_REMOVED',
+      entityType: 'project',
+      entityId: projectId,
+      entityTitle: project?.title || '',
+      details: member ? `Removed ${member.name} from the project team` : 'Removed a team member'
+    });
+
+    return true;
+  };
+
   const updateProject = async (id, updates) => {
     const targetId = getBackendId(id);
 
@@ -3349,6 +3445,8 @@ export const AppProvider = ({ children }) => {
         uploadAvatar,
         createProject,
         updateProject,
+        addProjectMember,
+        removeProjectMember,
         togglePinProject,
         deleteProject,
         addProjectAttachment,
