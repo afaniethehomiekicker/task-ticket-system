@@ -1,7 +1,18 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"io/fs"
 	"log"
+	"math/big"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -83,10 +94,39 @@ func main() {
 	// instead, following the same getEnv pattern already used for PORT/
 	// PUBLIC_HOST/GIN_MODE above.
 	tlsEnabled := getEnv("TLS_ENABLED", "false") == "true"
+	certFile := getEnv("TLS_CERT_FILE", "tls/cert.pem")
+	keyFile := getEnv("TLS_KEY_FILE", "tls/key.pem")
+
+	// Security headers
 	r.Use(securityHeaders(tlsEnabled))
 
 	// Register all routes
 	routes.RegisterRoutes(r)
+
+	// Serve the embedded React frontend with SPA (HTML5 history) fallback:
+	// real files (assets, index.html) are served as-is, every other path
+	// that is not an API/uploads path returns index.html so the router can
+	// handle deep links. API /uploads routes are left untouched.
+	web, err := fs.Sub(frontendDist, "frontend/dist")
+	if err != nil {
+		log.Fatalf("Embedded frontend missing: %v (run the frontend build first)", err)
+	}
+	registerFrontendRoutes(r, web)
+
+	// In TLS mode the binary terminates HTTPS itself (as the build scripts
+	// promise): it uses the certificates at TLS_CERT_FILE/TLS_KEY_FILE, and
+	// auto-generates self-signed ones on first run if they are missing or
+	// invalid. There is no nginx/caddy in front, so do the handshake here.
+	if tlsEnabled {
+		if err := ensureCertificates(certFile, keyFile); err != nil {
+			log.Fatalf("TLS setup failed: %v", err)
+		}
+		log.Printf("Server starting with HTTPS on port %s (Gin mode: %s)", port, ginMode)
+		if err := r.RunTLS(":"+port, certFile, keyFile); err != nil {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+		return
+	}
 
 	log.Printf("Server starting on port %s (Gin mode: %s)", port, ginMode)
 	log.Printf("Build version: %s, Build time: %s", buildVersion, buildTime)
@@ -102,6 +142,116 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// ensureCertificates makes sure a usable key/cert pair exists at the given
+// paths. If either file is missing or unreadable as a key pair, they are
+// regenerated as a fresh self-signed certificate so the binary can serve
+// HTTPS out of the box (this is the behaviour the build scripts advertise).
+func ensureCertificates(certFile, keyFile string) error {
+	if _, err := tls.LoadX509KeyPair(certFile, keyFile); err == nil {
+		return nil
+	}
+
+	log.Println("TLS certificate missing or invalid, generating a self-signed certificate...")
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return err
+	}
+
+	tmpl := x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "apex-core", Organization: []string{"Apex Core"}},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(3650 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		return err
+	}
+
+	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(dirOf(certFile), 0o755); err != nil {
+		return err
+	}
+	if err := writePEM(keyFile, "PRIVATE KEY", keyDER); err != nil {
+		return err
+	}
+	if err := writePEM(certFile, "CERTIFICATE", der); err != nil {
+		return err
+	}
+
+	log.Printf("Self-signed certificate written to %s / %s", keyFile, certFile)
+	return nil
+}
+
+// dirOf returns the directory part of a file path.
+func dirOf(path string) string {
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		return path[:i]
+	}
+	return "."
+}
+
+// writePEM writes a single PEM block to path with mode 0600.
+func writePEM(path, blockType string, der []byte) error {
+	data := pem.EncodeToMemory(&pem.Block{Type: blockType, Bytes: der})
+	return os.WriteFile(path, data, 0o600)
+}
+
+// registerFrontendRoutes serves the embedded React build. Static assets are
+// served directly; any non-API/non-uploads path that does not match a real
+// file falls back to index.html so client-side routes (deep links) work.
+func registerFrontendRoutes(r *gin.Engine, web fs.FS) {
+	fileServer := http.FileServer(http.FS(web))
+	indexHTML, err := fs.ReadFile(web, "index.html")
+	if err != nil {
+		log.Fatalf("index.html missing in frontend build: %v", err)
+	}
+
+	isAPI := func(p string) bool {
+		return p == "/api" || strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/uploads/")
+	}
+
+	r.Use(func(c *gin.Context) {
+		if isAPI(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+		// Serve the file if it exists (assets, index.html, favicon...).
+		if f, err := web.Open(strings.TrimPrefix(c.Request.URL.Path, "/")); err == nil {
+			f.Close()
+			fileServer.ServeHTTP(c.Writer, c.Request)
+			c.Abort()
+			return
+		}
+		// Everything else is handled by NoRoute below.
+		c.Next()
+	})
+
+	r.NoRoute(func(c *gin.Context) {
+		if isAPI(c.Request.URL.Path) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Not found"})
+			return
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML)
+	})
 }
 
 // trustedProxies parses TRUSTED_PROXIES. Empty means trust none.
