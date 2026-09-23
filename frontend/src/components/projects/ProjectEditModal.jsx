@@ -6,6 +6,7 @@ export const ProjectEditModal = () => {
   const { projects, selectedProjectEditId, setSelectedProjectEditId, updateProject } = useApp();
 
   const project = (projects || []).find(p => p.id === selectedProjectEditId);
+  const [isSaving, setIsSaving] = useState(false);
 
   const [formData, setFormData] = useState({
     title: '',
@@ -33,10 +34,19 @@ export const ProjectEditModal = () => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    updateProject(selectedProjectEditId, formData);
-    setSelectedProjectEditId(null);
+    // Was fire-and-forget: called updateProject without await and
+    // closed the modal unconditionally right after — meaning a failed
+    // update (now that updateProject actually checks res.ok and alerts
+    // on failure) still closed the modal and discarded the edits with
+    // no way to retry. Only closes now on genuine success.
+    setIsSaving(true);
+    const result = await updateProject(selectedProjectEditId, formData);
+    setIsSaving(false);
+    if (result) {
+      setSelectedProjectEditId(null);
+    }
   };
 
   return (
@@ -125,9 +135,10 @@ export const ProjectEditModal = () => {
             </button>
             <button
               type="submit"
-              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs transition shadow-sm"
+              disabled={isSaving}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-lg text-xs transition shadow-sm"
             >
-              Save Changes
+              {isSaving ? 'Saving...' : 'Save Changes'}
             </button>
           </div>
         </form>

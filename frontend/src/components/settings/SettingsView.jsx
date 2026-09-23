@@ -22,7 +22,7 @@ export const SettingsView = () => {
     setDarkMode,
     permissionMatrix,
     updateRolePermission,
-    customRoles = ["super_admin", "admin", "supervisor", "staff", "client"],
+    customRoles = ["super_admin", "admin", "supervisor", "staff"],
     createCustomRole,
     deleteCustomRole,
   } = useApp();
@@ -36,7 +36,7 @@ export const SettingsView = () => {
 
   // All non-super-admin roles to render in the matrix table dynamically
   const editableRoles = customRoles.filter((role) => role !== "super_admin");
-  const builtInRoles = ["admin", "supervisor", "staff", "client"];
+  const builtInRoles = ["admin", "supervisor", "staff"];
 
   const handleToggleInitialPermission = (key) => {
     setInitialPermissions((prev) => ({

@@ -32,14 +32,29 @@ export function exportToCSV(filename, rows) {
 }
 
 export function exportAuditLogsToCSV(logs) {
+  // Defensively guarded, not fixed — AppContext.jsx's fetchAuditLogs sets
+  // audit logs directly from the backend response with NO normalization
+  // step (unlike users/projects/tasks/tickets, which each go through a
+  // dedicated normalizeX function specifically to handle this exact kind
+  // of naming mismatch). Field names below (actorName, actorRole,
+  // entityType, entityId, timestamp) are a guess based on the OLD
+  // frontend-only audit log shape — if the real backend response uses Go
+  // convention names instead (user_id, resource_type, resource_id,
+  // created_at — matching database/audit.go's LogAction, which is the
+  // only audit-writing code seen so far), every one of these would be
+  // undefined. Previously that meant calling .toUpperCase() on undefined
+  // and crashing the export entirely; now it produces a blank cell
+  // instead. The real fix is normalizing audit logs properly once the
+  // actual response shape is confirmed — this only prevents a crash in
+  // the meantime.
   const data = logs.map(l => ({
-    'Timestamp': new Date(l.timestamp).toLocaleString(),
-    'Actor': l.actorName,
-    'Actor Role': l.actorRole.toUpperCase(),
-    'Entity Type': l.entityType.toUpperCase(),
-    'Entity ID': l.entityId,
-    'Action': l.action.toUpperCase(),
-    'Details': l.details
+    'Timestamp': l.timestamp ? new Date(l.timestamp).toLocaleString() : '',
+    'Actor': l.actorName || '',
+    'Actor Role': (l.actorRole || '').toUpperCase(),
+    'Entity Type': (l.entityType || '').toUpperCase(),
+    'Entity ID': l.entityId ?? '',
+    'Action': (l.action || '').toUpperCase(),
+    'Details': l.details || ''
   }));
 
   exportToCSV(`Audit_Logs_Export_${new Date().toISOString().split('T')[0]}`, data);

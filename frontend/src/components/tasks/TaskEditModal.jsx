@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { X } from 'lucide-react';
+import { canAssignTickets, canApproveWork } from '../../utils/permissions';
 
 export const TaskEditModal = () => {
   const { 
@@ -8,8 +9,16 @@ export const TaskEditModal = () => {
     selectedTaskEditId, 
     setSelectedTaskEditId, 
     updateTask, 
-    allUsers 
+    allUsers,
+    currentUser,
+    permissionMatrix
   } = useApp();
+
+  // Reassigning needs the assign_tickets permission ("Reassign Tickets &
+  // Tasks"); the backend now enforces it, so don't offer a control that will
+  // just be refused.
+  const canReassign = canAssignTickets(currentUser, permissionMatrix);
+  const canMarkDone = canApproveWork(currentUser, permissionMatrix);
 
   const task = (tasks || []).find(t => t.id === selectedTaskEditId);
   const [isSaving, setIsSaving] = useState(false);
@@ -122,11 +131,20 @@ export const TaskEditModal = () => {
                 onChange={handleChange}
                 className="w-full px-3 py-2 bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg text-xs text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-indigo-500"
               >
+                {/* The backend's own status names (todo, in_progress, in_review,
+                    done, blocked, cancelled), which is also what
+                    TaskStatusBadge and the Kanban board use. "In Review" is
+                    only ever reached through Submit for Review, and "Done"
+                    needs the approve_work permission (the server enforces
+                    both), so In Review is shown only when it is already the
+                    current status and Done only to people who can set it.
+                    "archived" stays excluded (archive action only). */}
                 <option value="todo">To Do</option>
                 <option value="in_progress">In Progress</option>
-                <option value="under_review">Under Review</option>
-                <option value="completed">Completed</option>
-                <option value="closed">Closed</option>
+                <option value="blocked">Blocked</option>
+                {task.status === 'in_review' && <option value="in_review">In Review</option>}
+                {(task.status === 'done' || canMarkDone) && <option value="done">Done</option>}
+                <option value="cancelled">Cancelled</option>
               </select>
             </div>
           </div>
@@ -138,6 +156,8 @@ export const TaskEditModal = () => {
                 name="assignedToId"
                 value={formData.assignedToId}
                 onChange={handleChange}
+                disabled={!canReassign}
+                title={!canReassign ? 'You don\'t have permission to reassign tasks' : undefined}
                 className="w-full px-3 py-2 bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg text-xs text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-indigo-500"
               >
                 <option value="">Unassigned</option>

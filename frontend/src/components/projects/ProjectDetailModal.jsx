@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
@@ -477,7 +476,7 @@ export const ProjectDetailModal = () => {
                           <TaskStatusBadge status={t.status} />
                           <PriorityBadge priority={t.priority} />
                           {assignee && (
-                            <img src={assignee.avatar} alt={assignee.name} className="w-6 h-6 rounded-full object-cover" />
+                            <img src={assignee.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"} alt={assignee.name} className="w-6 h-6 rounded-full object-cover" />
                           )}
                         </div>
                       </div>
@@ -585,7 +584,7 @@ export const ProjectDetailModal = () => {
                       title="Click to view workload"
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        <img src={m.avatar} alt={m.name} className="w-8 h-8 rounded-full object-cover shrink-0" />
+                        <img src={m.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"} alt={m.name} className="w-8 h-8 rounded-full object-cover shrink-0" />
                         <div className="min-w-0">
                           <span className="text-xs font-semibold text-slate-900 dark:text-zinc-100 block truncate">{m.name}</span>
                           <span className="text-[11px] text-slate-500 dark:text-zinc-400 block truncate">{m.title}</span>

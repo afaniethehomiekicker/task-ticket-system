@@ -8,7 +8,8 @@ import { FolderKanban, CheckSquare, LifeBuoy, Building2, X } from 'lucide-react'
 // QuickCreateModal already uses, so this never introduces a way to
 // switch tabs inside an already-open modal.
 const QUICK_CREATE_TYPES = [
-  { tab: 'project', label: 'New Project', description: 'Start a program of work, optionally under a client.', icon: FolderKanban, color: 'text-indigo-600 dark:text-indigo-400 bg-indigo-100 dark:bg-indigo-950/50' },
+  { tab: 'project', label: 'General Project', description: 'Start a program of work under a client.', icon: FolderKanban, color: 'text-indigo-600 dark:text-indigo-400 bg-indigo-100 dark:bg-indigo-950/50', projectType: 'general' },
+  { tab: 'project', label: 'Support / TT', description: 'A support/TT project (no budget tracking).', icon: LifeBuoy, color: 'text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/50', projectType: 'ticketing' },
   { tab: 'task', label: 'New Task', description: 'A unit of work assigned to someone.', icon: CheckSquare, color: 'text-emerald-600 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/50' },
   { tab: 'ticket', label: 'New Ticket', description: 'A customer support request.', icon: LifeBuoy, color: 'text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/50' },
   { tab: 'client', label: 'New Client', description: 'A company profile projects can be built under.', icon: Building2, color: 'text-purple-600 dark:text-purple-400 bg-purple-100 dark:bg-purple-950/50' },
@@ -19,9 +20,9 @@ export const QuickCreateTypePicker = () => {
 
   if (!quickCreatePickerOpen) return null;
 
-  const handlePick = (tab) => {
+  const handlePick = (tab, projectType) => {
     setQuickCreatePickerOpen(false);
-    openQuickCreate({ tab, restrictToTab: true });
+    openQuickCreate({ tab, restrictToTab: true, projectType });
   };
 
   return (
@@ -44,11 +45,11 @@ export const QuickCreateTypePicker = () => {
         </div>
 
         <div className="p-3 space-y-1.5">
-          {QUICK_CREATE_TYPES.map(({ tab, label, description, icon: Icon, color }) => (
+          {QUICK_CREATE_TYPES.map(({ tab, label, description, icon: Icon, color, projectType }) => (
             <button
-              key={tab}
-              id={`quick-create-pick-${tab}`}
-              onClick={() => handlePick(tab)}
+              key={tab + (projectType || '')}
+              id={`quick-create-pick-${tab}${projectType ? '-' + projectType : ''}`}
+              onClick={() => handlePick(tab, projectType)}
               className="w-full flex items-center gap-3 p-3 rounded-xl text-left hover:bg-slate-300/50 dark:hover:bg-zinc-900 transition cursor-pointer"
             >
               <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${color}`}>

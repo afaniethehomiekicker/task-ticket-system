@@ -244,7 +244,7 @@ export const GlobalSearchModal = () => {
                         className="flex items-center justify-between p-2.5 rounded-lg hover:bg-slate-300/50 dark:hover:bg-zinc-900 cursor-pointer border border-transparent hover:border-slate-300 dark:hover:border-zinc-800 transition"
                       >
                         <div className="flex items-center gap-3">
-                          <img src={u.avatar} alt={u.name} className="w-7 h-7 rounded-full object-cover" />
+                          <img src={u.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"} alt={u.name} className="w-7 h-7 rounded-full object-cover" />
                           <div>
                             <span className="text-sm font-medium text-slate-900 dark:text-zinc-100 block">{u.name}</span>
                             <span className="text-xs text-slate-500 dark:text-zinc-400">{u.title} • {u.department}</span>

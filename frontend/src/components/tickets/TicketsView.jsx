@@ -32,7 +32,11 @@ export const TicketsView = () => {
                           t.ticketNumber.toLowerCase().includes(search.toLowerCase()) ||
                           t.requesterName.toLowerCase().includes(search.toLowerCase()) ||
                           (t.requesterCompany && t.requesterCompany.toLowerCase().includes(search.toLowerCase()));
-      const matchStatus = statusFilter === 'all' || t.status === statusFilter;
+      // Statuses are the backend's real Ticket.Status values. The old list
+      // (open / pending_customer) matched nothing. "Escalated" isn't a status —
+      // it's escalation_level != none.
+      const matchStatus = statusFilter === 'all'
+        || (statusFilter === 'escalated' ? t.escalationLevel !== 'none' : t.status === statusFilter);
       const matchPriority = priorityFilter === 'all' || t.priority === priorityFilter;
       const matchCategory = categoryFilter === 'all' || t.category === categoryFilter;
       const matchAssignee = assigneeFilter === 'all' || t.assignedToId === assigneeFilter;
@@ -113,12 +117,14 @@ export const TicketsView = () => {
           className="px-2.5 py-1 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-800 dark:text-zinc-300 focus:outline-hidden"
         >
           <option value="all">All Statuses</option>
-          <option value="open">Open</option>
+          <option value="new">New</option>
+          <option value="assigned">Assigned</option>
           <option value="in_progress">In Progress</option>
-          <option value="pending_customer">Pending Customer</option>
-          <option value="escalated">Escalated</option>
+          <option value="pending">Pending</option>
           <option value="resolved">Resolved</option>
           <option value="closed">Closed</option>
+          <option value="cancelled">Cancelled</option>
+          <option value="escalated">Escalated (any tier)</option>
         </select>
 
         <select
@@ -259,7 +265,7 @@ export const TicketsView = () => {
                       <td className="p-3.5">
                         {assignee ? (
                           <div className="flex items-center gap-2">
-                            <img src={assignee.avatar} alt={assignee.name} className="w-5 h-5 rounded-full object-cover" />
+                            <img src={assignee.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"} alt={assignee.name} className="w-5 h-5 rounded-full object-cover" />
                             <span className="font-medium">{assignee.name}</span>
                           </div>
                         ) : (

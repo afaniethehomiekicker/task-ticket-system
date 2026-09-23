@@ -26,6 +26,7 @@ export const Profile = () => {
   const [successMessage, setSuccessMessage] = useState('');
   const [error, setError] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -57,7 +58,7 @@ export const Profile = () => {
     }
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setSuccessMessage('');
@@ -73,24 +74,62 @@ export const Profile = () => {
       }
     }
 
-    updateUser(currentUser.id, {
-      ...formData,
-      ...(passwords.newPassword ? { password: passwords.newPassword } : {})
-    });
+    setIsSaving(true);
+    try {
+      // Was fire-and-forget: updateUser was called without await, and
+      // success was shown unconditionally right after — meaning a
+      // rejected update (wrong current password, a network error,
+      // anything) still told the user it worked. updateUser now returns
+      // the saved user on success or null on failure, so that's checked
+      // here instead of assumed.
+      //
+      // currentPassword is now actually sent (as updates.currentPassword,
+      // which updateUser maps to current_password on the wire) so the
+      // backend can verify it against the real password hash — the
+      // "please enter your current password" check above only confirmed
+      // something was typed, never that it was correct.
+      // Was `...formData`, which always includes `department` (line ~12,
+      // carried through from currentUser.department for display) — even
+      // though this form has no way to actually EDIT it. AppContext.jsx's
+      // updateUser treats the mere PRESENCE of `department` in the payload
+      // as "an admin-only field is being changed" and routes the whole
+      // request through the admin-gated PUT /api/users/:id instead of the
+      // self-service PUT /api/me — so every save from this page, for every
+      // non-admin user, was rejected with 403, regardless of what was
+      // actually being changed. Only the fields this form genuinely lets
+      // someone edit are sent now.
+      const result = await updateUser(currentUser.id, {
+        name: formData.name,
+        title: formData.title,
+        phone: formData.phone,
+        avatar: formData.avatar,
+        ...(passwords.newPassword ? {
+          password: passwords.newPassword,
+          currentPassword: passwords.currentPassword
+        } : {})
+      });
 
-    logAudit({
-      actorId: currentUser.id,
-      actorName: currentUser.name,
-      actorRole: currentUser.role,
-      action: 'USER_PROFILE_UPDATED',
-      entityType: 'user',
-      entityId: currentUser.id,
-      entityTitle: currentUser.name,
-      details: 'Updated personal profile details, stack, or password.'
-    });
+      if (!result) {
+        setError('Failed to update profile. Please check your current password and try again.');
+        return;
+      }
 
-    setSuccessMessage('Profile updated successfully!');
-    setPasswords({ currentPassword: '', newPassword: '', confirmPassword: '' });
+      logAudit({
+        actorId: currentUser.id,
+        actorName: currentUser.name,
+        actorRole: currentUser.role,
+        action: 'USER_PROFILE_UPDATED',
+        entityType: 'user',
+        entityId: currentUser.id,
+        entityTitle: currentUser.name,
+        details: 'Updated personal profile details, stack, or password.'
+      });
+
+      setSuccessMessage('Profile updated successfully!');
+      setPasswords({ currentPassword: '', newPassword: '', confirmPassword: '' });
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -124,7 +163,7 @@ export const Profile = () => {
 
           <div className="flex items-center gap-4 py-2">
             <div className="relative group">
-              <img src={formData.avatar || 'https://via.placeholder.com/150'} alt={formData.name} className="w-16 h-16 rounded-full object-cover ring-2 ring-indigo-500/30" />
+              <img src={formData.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"} alt={formData.name} className="w-16 h-16 rounded-full object-cover ring-2 ring-indigo-500/30" />
               <label className="absolute inset-0 rounded-full bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition cursor-pointer">
                 <Camera className="w-5 h-5 text-white" />
                 <input type="file" accept="image/*" onChange={handleAvatarChange} className="hidden" disabled={isUploading} />
@@ -291,9 +330,10 @@ export const Profile = () => {
         <div className="flex justify-end">
           <button
             type="submit"
-            className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs transition shadow-md cursor-pointer"
+            disabled={isSaving}
+            className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold rounded-lg text-xs transition shadow-md cursor-pointer"
           >
-            <Save className="w-4 h-4" /> Save Profile Changes
+            <Save className="w-4 h-4" /> {isSaving ? 'Saving...' : 'Save Profile Changes'}
           </button>
         </div>
       </form>

@@ -1,26 +1,14 @@
 package main
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"embed"
-	"encoding/pem"
-	"fmt"
-	"io/fs"
 	"log"
-	"math/big"
-	"net"
-	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"task-ticket-backend/internal/database"
+	"task-ticket-backend/internal/handlers"
+	"task-ticket-backend/internal/middleware"
 	"task-ticket-backend/internal/routes"
 
 	"github.com/gin-contrib/cors"
@@ -28,279 +16,141 @@ import (
 	"github.com/joho/godotenv"
 )
 
-//go:embed frontend/dist/*
-var frontendFiles embed.FS
-
-// Overridden at build time (see build.sh):
-//
-//	go build -ldflags "-X 'main.buildVersion=...'"
-var buildVersion = "dev"
-
-const (
-	envPort       = "PORT"
-	envPublicHost = "PUBLIC_HOST"
-
-	// envTLSCert/envTLSKey: when both are set, the server serves HTTPS.
-	// Leave both empty for plain-HTTP development mode.
-	envTLSCert = "TLS_CERT_FILE"
-	envTLSKey  = "TLS_KEY_FILE"
-	// envHTTPRedirectPort is optional: when TLS is enabled, this plain-HTTP
-	// port (e.g. "80") redirects every request to the HTTPS listener. Leave
-	// empty to serve ONLY HTTPS (clients that hit :80 get a refusal).
-	envHTTPRedirectPort = "HTTP_REDIRECT_PORT"
-
-	defaultTLSCert = "tls/cert.pem"
-	defaultTLSKey  = "tls/key.pem"
+// Build info (set via ldflags at build time)
+var (
+	buildVersion = "dev"
+	buildTime    = "unknown"
 )
 
 func main() {
+	// Load environment variables
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, relying on system environment")
 	}
 
-	// Network identity — read once from the single .env source of truth.
-	port := os.Getenv(envPort)
-	if port == "" {
-		port = "8087"
-	}
-	publicHost := os.Getenv(envPublicHost)
-	if publicHost == "" {
-		publicHost = "localhost"
-	}
+	// Resolve the JWT signing key now that .env has been loaded (it used to be
+	// resolved during package init, before this point, so a JWT_SECRET set in
+	// .env was ignored) and fail fast if it is missing in release mode.
+	middleware.InitJWT()
 
+	// Server configuration
+	port := getEnv("PORT", "8080")
+	publicHost := getEnv("PUBLIC_HOST", "localhost")
+	ginMode := getEnv("GIN_MODE", "debug")
+
+	// Set Gin mode
+	gin.SetMode(ginMode)
+
+	// Connect to database
 	database.ConnectDB()
 
-	r := gin.Default()
+	// Seed built-in roles and permissions (idempotent)
+	handlers.EnsureBuiltInRolesExist()
 
-	origins := []string{"http://localhost:5173", "http://localhost:3000"}
-	for _, scheme := range []string{"http", "https"} {
-		base := scheme + "://" + publicHost
-		origins = append(origins, base, base+":"+port)
+	// Initialize Gin router. gin.New() rather than gin.Default(): Default()
+	// already installs a logger and a recovery handler, and both are added
+	// again below, so every request was being logged twice.
+	r := gin.New()
+
+	// Don't trust X-Forwarded-For / X-Real-IP unless told which proxies to
+	// trust. gin trusts every proxy by default, so any caller could spoof
+	// their IP: dodging the login rate limit and forging the IP recorded in
+	// the audit log. Set TRUSTED_PROXIES to a comma-separated list of proxy
+	// IPs/CIDRs if you run behind a reverse proxy.
+	if err := r.SetTrustedProxies(trustedProxies()); err != nil {
+		log.Fatalf("Invalid TRUSTED_PROXIES: %v", err)
 	}
-	r.Use(cors.New(cors.Config{
-		AllowOrigins:     origins,
-		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "x-user-role", "x-user-id"},
-		AllowCredentials: true,
+
+	// Configure CORS
+	configureCORS(r, publicHost, port)
+
+	// Request logging middleware
+	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
+		return param.TimeStamp.Format(time.RFC3339) + " | " +
+			param.Method + " " + param.Path + " | " +
+			param.ClientIP + " | " +
+			param.Request.UserAgent() + " | " +
+			param.ErrorMessage + "\n"
 	}))
 
-	// ── TLS resolution ──────────────────────────────────────────────
-	// Dev builds (buildVersion == "dev", i.e. `go run main.go`) always
-	// use plain HTTP — TLS env vars are intentionally ignored so there
-	// is zero certificate overhead during local development.
-	//
-	// Production builds (buildVersion != "dev") read TLS_CERT_FILE /
-	// TLS_KEY_FILE from the environment. When both are empty the binary
-	// falls back to the default paths tls/cert.pem / tls/key.pem in the
-	// working directory and auto-generates self-signed certificates if
-	// they don't exist yet.
-	tlsCert, tlsKey := resolveTLSPaths()
-	tlsEnabled := tlsCert != "" && tlsKey != ""
+	// Recovery middleware
+	r.Use(gin.Recovery())
 
-	if tlsEnabled {
-		ensureSelfSignedCert(tlsCert, tlsKey)
-	}
-
+	// Security headers
+	// Was securityHeaders(false) hardcoded unconditionally — meaning
+	// Strict-Transport-Security would never be set even if this is
+	// deployed behind real TLS in production. Derived from an env var
+	// instead, following the same getEnv pattern already used for PORT/
+	// PUBLIC_HOST/GIN_MODE above.
+	tlsEnabled := getEnv("TLS_ENABLED", "false") == "true"
 	r.Use(securityHeaders(tlsEnabled))
 
+	// Register all routes
 	routes.RegisterRoutes(r)
 
-	// Setup embedded frontend file system
-	subFS, err := fs.Sub(frontendFiles, "frontend/dist")
-	if err != nil {
-		log.Fatal("Failed to sub embed filesystem: ", err)
-	}
+	log.Printf("Server starting on port %s (Gin mode: %s)", port, ginMode)
+	log.Printf("Build version: %s, Build time: %s", buildVersion, buildTime)
 
-	// Serve the web interface and handle SPA routing cleanly.
-	r.Use(func(c *gin.Context) {
-		path := c.Request.URL.Path
-		if len(path) >= 4 && path[:4] == "/api" {
-			c.Next()
-			return
-		}
-
-		fPath := path
-		if len(fPath) > 0 && fPath[0] == '/' {
-			fPath = fPath[1:]
-		}
-		if fPath == "" {
-			fPath = "index.html"
-		}
-
-		if f, err := subFS.Open(fPath); err == nil {
-			f.Close()
-			http.FileServer(http.FS(subFS)).ServeHTTP(c.Writer, c.Request)
-			c.Abort()
-			return
-		}
-
-		indexHTML, err := fs.ReadFile(subFS, "index.html")
-		if err != nil {
-			c.String(404, "index.html not found in embed")
-			return
-		}
-		c.Data(200, "text/html; charset=utf-8", indexHTML)
-		c.Abort()
-	})
-
-	describe := func() string {
-		if buildVersion == "" || buildVersion == "dev" {
-			return "development build"
-		}
-		return "build " + buildVersion
-	}
-
-	if tlsEnabled {
-		if redirectPort := os.Getenv(envHTTPRedirectPort); redirectPort != "" {
-			go startHTTPRedirect(redirectPort)
-		}
-		log.Printf("APEX CORE (%s) serving HTTPS on :%s (TLS cert=%s key=%s)", describe(), port, tlsCert, tlsKey)
-		if err := r.RunTLS(":"+port, tlsCert, tlsKey); err != nil {
-			log.Fatalf("Failed to start HTTPS server: %v", err)
-		}
-		return
-	}
-
-	log.Printf("APEX CORE (%s) serving plain HTTP on :%s (development mode — set %s and %s for HTTPS)", describe(), port, envTLSCert, envTLSKey)
 	if err := r.Run(":" + port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
 
-// resolveTLSPaths decides which TLS certificate / key to use.
-//
-//   - Dev builds (buildVersion == "dev"): always returns ("", "") so the
-//     server runs plain HTTP. TLS env vars are deliberately ignored.
-//   - Production builds: reads TLS_CERT_FILE / TLS_KEY_FILE. When both
-//     are empty, falls back to the default tls/cert.pem and tls/key.pem
-//     paths so the server can auto-generate self-signed certificates.
-func resolveTLSPaths() (cert, key string) {
-	if buildVersion == "" || buildVersion == "dev" {
-		return "", ""
+// getEnv gets an environment variable or returns a default value
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
 	}
-
-	cert = os.Getenv(envTLSCert)
-	key = os.Getenv(envTLSKey)
-
-	if cert == "" && key == "" {
-		cert = defaultTLSCert
-		key = defaultTLSKey
-	}
-
-	if cert != "" && key != "" {
-		return cert, key
-	}
-	return "", ""
+	return defaultValue
 }
 
-// ensureSelfSignedCert checks whether certPath and keyPath contain a valid
-// TLS key pair. If either file is missing or fails to parse — e.g. a
-// corrupt/truncated placeholder — a fresh self-signed certificate is
-// generated using pure Go (no openssl dependency at runtime).
-func ensureSelfSignedCert(certPath, keyPath string) {
-	if _, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
-		return // valid, usable key pair
+// trustedProxies parses TRUSTED_PROXIES. Empty means trust none.
+func trustedProxies() []string {
+	raw := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES"))
+	if raw == "" {
+		return nil
 	}
-
-	log.Println("TLS certificates missing or invalid — generating self-signed certificates…")
-
-	if err := generateSelfSignedCert(certPath, keyPath); err != nil {
-		log.Fatalf("Failed to generate self-signed TLS certificates: %v", err)
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
 	}
-
-	log.Printf("  cert: %s", certPath)
-	log.Printf("  key:  %s", keyPath)
-	log.Println("  NOTE: self-signed certs are for testing only. Replace with CA-signed certificates for production.")
+	return out
 }
 
-// generateSelfSignedCert creates a self-signed X.509 certificate and
-// corresponding ECDSA private key, writing them to disk as PEM files.
-func generateSelfSignedCert(certPath, keyPath string) error {
-	if err := os.MkdirAll(filepath.Dir(certPath), 0o755); err != nil {
-		return fmt.Errorf("create tls directory: %w", err)
+// configureCORS sets up CORS middleware
+func configureCORS(r *gin.Engine, publicHost, port string) {
+	origins := []string{
+		"http://localhost:5173",
+		"http://localhost:3000",
+		"http://" + publicHost + ":" + port,
+		"https://" + publicHost + ":" + port,
 	}
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return fmt.Errorf("generate key: %w", err)
+	// Add Vite dev server defaults
+	for _, scheme := range []string{"http", "https"} {
+		base := scheme + "://" + publicHost
+		origins = append(origins, base, base+":"+port)
 	}
 
-	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return fmt.Errorf("generate serial: %w", err)
-	}
-
-	notBefore := time.Now()
-	notAfter := notBefore.Add(365 * 24 * time.Hour)
-
-	template := x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			Organization: []string{"APEX CORE"},
-			CommonName:   "apex-core.local",
-		},
-		NotBefore:             notBefore,
-		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		DNSNames:              []string{"localhost", "apex-core.local"},
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
-	}
-
-	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
-	if err != nil {
-		return fmt.Errorf("create certificate: %w", err)
-	}
-
-	certFile, err := os.Create(certPath)
-	if err != nil {
-		return fmt.Errorf("create cert file: %w", err)
-	}
-	defer certFile.Close()
-	if err := pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
-		return fmt.Errorf("write cert: %w", err)
-	}
-
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return fmt.Errorf("marshal key: %w", err)
-	}
-	keyFile, err := os.Create(keyPath)
-	if err != nil {
-		return fmt.Errorf("create key file: %w", err)
-	}
-	defer keyFile.Close()
-	if err := pem.Encode(keyFile, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}); err != nil {
-		return fmt.Errorf("write key: %w", err)
-	}
-
-	return nil
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     origins,
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-Requested-With"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
 }
 
-// startHTTPRedirect runs a minimal plain-HTTP listener whose only job is
-// to 301-redirect browsers to the same host/path over HTTPS.
-func startHTTPRedirect(port string) {
-	redir := gin.New()
-	redir.NoRoute(func(c *gin.Context) {
-		target := "https://" + c.Request.Host + c.Request.RequestURI
-		c.Redirect(http.StatusMovedPermanently, target)
-	})
-	log.Printf("HTTP→HTTPS redirect listening on :%s", port)
-	if err := redir.Run(":" + port); err != nil {
-		log.Printf("HTTP redirect listener stopped: %v", err)
-	}
-}
-
-// securityHeaders hardens every response. HSTS is only advertised when
-// TLS is active.
+// securityHeaders adds security headers to responses
 func securityHeaders(tlsEnabled bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "SAMEORIGIN")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
-		ri := c.GetHeader("X-Forwarded-Proto")
-		if tlsEnabled || strings.EqualFold(ri, "https") {
+		c.Header("X-XSS-Protection", "1; mode=block")
+		if tlsEnabled {
 			c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		c.Next()

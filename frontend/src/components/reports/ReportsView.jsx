@@ -18,8 +18,15 @@ export const ReportsView = () => {
   const [dateRange, setDateRange] = useState('30d');
 
   // Compute Analytics Metrics
+  //
+  // Was `t.status === 'completed' || t.status === 'closed'` — neither
+  // is a real Task.Status value on the backend (todo, in_progress,
+  // in_review, done, blocked, cancelled, archived — confirmed in
+  // models.go). This meant completedTasks was always empty regardless
+  // of how many tasks were genuinely done, and Task Completion Rate
+  // always showed 0% no matter what.
   const totalTasks = visibleTasks.length;
-  const completedTasks = visibleTasks.filter(t => t.status === 'completed' || t.status === 'closed');
+  const completedTasks = visibleTasks.filter(t => t.status === 'done');
   const taskCompletionRate = totalTasks > 0 ? Math.round((completedTasks.length / totalTasks) * 100) : 0;
 
   const totalTickets = visibleTickets.length;
@@ -189,13 +196,13 @@ export const ReportsView = () => {
             </thead>
             <tbody className="divide-y divide-slate-300/50 dark:divide-zinc-800/60 text-slate-800 dark:text-zinc-300">
               {allUsers.filter(u => u.role === 'staff' || u.role === 'supervisor').map(user => {
-                const userCompletedTasks = visibleTasks.filter(t => t.assignedToId === user.id && (t.status === 'completed' || t.status === 'closed')).length;
+                const userCompletedTasks = visibleTasks.filter(t => t.assignedToId === user.id && t.status === 'done').length;
                 const userActiveTickets = visibleTickets.filter(t => t.assignedToId === user.id && t.status !== 'resolved' && t.status !== 'closed').length;
 
                 return (
                   <tr key={user.id}>
                     <td className="py-3 flex items-center gap-2.5">
-                      <img src={user.avatar} alt={user.name} className="w-6 h-6 rounded-full object-cover" />
+                      <img src={user.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"} alt={user.name} className="w-6 h-6 rounded-full object-cover" />
                       <span className="font-semibold text-slate-900 dark:text-zinc-100">{user.name}</span>
                     </td>
                     <td className="py-3 text-slate-500 dark:text-zinc-400 capitalize">{user.role.replace('_', ' ')}</td>

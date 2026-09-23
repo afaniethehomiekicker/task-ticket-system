@@ -37,7 +37,17 @@ export const RoleBadge = ({ role, size = 'sm' }) => {
     }
   };
 
-  const current = map[role] || map.staff;
+  // Custom roles (created in Settings and now assignable to users) aren't in
+  // the map above. They used to fall through to map.staff, so a "Technician"
+  // rendered as a green "Staff" badge. Show the real role name in a neutral
+  // style instead; only a missing role still defaults to Staff.
+  const prettify = (r) => String(r).split('_').filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  const current = map[role] || (role ? {
+    bg: 'bg-slate-100 dark:bg-zinc-800',
+    text: 'text-slate-700 dark:text-zinc-300',
+    border: 'border-slate-200 dark:border-zinc-700',
+    label: prettify(role)
+  } : map.staff);
 
   return (
     <span
@@ -72,14 +82,23 @@ export const PriorityBadge = ({ priority, showIcon }) => {
 };
 
 export const TaskStatusBadge = ({ status }) => {
+  // Rewritten to match the actual backend enum for Task.Status (see
+  // models.go): todo, in_progress, in_review, done, blocked, cancelled,
+  // archived. The previous map used "completed" instead of "done",
+  // "under_review" instead of "in_review", and had no entries at all
+  // for "blocked", "cancelled", or "archived" — meaning most real tasks
+  // fell through to the default and displayed a blue "To Do" badge
+  // regardless of their actual status. "new" and "on_hold" (the old
+  // map's other two keys) are removed — neither is a real Task.Status
+  // value on the backend, so they could never actually be matched.
   const map = {
-    new: { bg: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300', text: '', label: 'New' },
     todo: { bg: 'bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300', text: '', label: 'To Do' },
     in_progress: { bg: 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300', text: '', label: 'In Progress' },
-    on_hold: { bg: 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300', text: '', label: 'On Hold' },
-    under_review: { bg: 'bg-purple-50 text-purple-700 dark:bg-purple-950/50 dark:text-purple-300', text: '', label: 'Under Review' },
-    completed: { bg: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300', text: '', label: 'Completed' },
-    closed: { bg: 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400', text: '', label: 'Closed' }
+    in_review: { bg: 'bg-purple-50 text-purple-700 dark:bg-purple-950/50 dark:text-purple-300', text: '', label: 'In Review' },
+    done: { bg: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300', text: '', label: 'Done' },
+    blocked: { bg: 'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300', text: '', label: 'Blocked' },
+    cancelled: { bg: 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400', text: '', label: 'Cancelled' },
+    archived: { bg: 'bg-zinc-100 text-zinc-500 dark:bg-zinc-900 dark:text-zinc-500', text: '', label: 'Archived' }
   };
 
   const c = map[status] || map.todo;
@@ -95,18 +114,29 @@ export const TaskStatusBadge = ({ status }) => {
 };
 
 export const TicketStatusBadge = ({ status }) => {
+  // Rewritten to match the actual backend enum for Ticket.Status (see
+  // models.go): new, assigned, in_progress, pending, resolved, closed,
+  // cancelled, archived. The previous map had no entry for "new" (the
+  // actual backend default status), "cancelled", or "archived" — the
+  // last of which I added to the backend myself in an earlier fix,
+  // making this the direct cause of an archived ticket showing a blue
+  // "Open" badge. "open", "escalated", and "reopened" are removed —
+  // none is a real Ticket.Status value on the backend (this replica
+  // never implemented a distinct "reopened" state, and escalation is
+  // tracked, if at all, separately from Status — see the open
+  // escalation-feature question from earlier).
   const map = {
-    open: { bg: 'bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300', text: '', label: 'Open' },
+    new: { bg: 'bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300', text: '', label: 'New' },
     assigned: { bg: 'bg-cyan-50 text-cyan-700 dark:bg-cyan-950/60 dark:text-cyan-300', text: '', label: 'Assigned' },
     in_progress: { bg: 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300', text: '', label: 'In Progress' },
     pending: { bg: 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300', text: '', label: 'Pending' },
-    escalated: { bg: 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 font-semibold', text: '', label: 'Escalated' },
     resolved: { bg: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300', text: '', label: 'Resolved' },
     closed: { bg: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400', text: '', label: 'Closed' },
-    reopened: { bg: 'bg-orange-50 text-orange-700 dark:bg-orange-950/60 dark:text-orange-300', text: '', label: 'Reopened' }
+    cancelled: { bg: 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400', text: '', label: 'Cancelled' },
+    archived: { bg: 'bg-zinc-100 text-zinc-500 dark:bg-zinc-900 dark:text-zinc-500', text: '', label: 'Archived' }
   };
 
-  const c = map[status] || map.open;
+  const c = map[status] || map.new;
 
   return (
     <span
@@ -119,12 +149,18 @@ export const TicketStatusBadge = ({ status }) => {
 };
 
 export const ProjectStatusBadge = ({ status }) => {
+  // Added "cancelled" — the actual backend enum for Project.Status (see
+  // models.go) includes it, and its absence here meant a cancelled
+  // project fell through to the default and displayed a green "Active"
+  // badge, which is actively misleading rather than just cosmetically
+  // off.
   const map = {
     planning: { bg: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300', text: '', label: 'Planning' },
     active: { bg: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300', text: '', label: 'Active' },
     on_hold: { bg: 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300', text: '', label: 'On Hold' },
     completed: { bg: 'bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300', text: '', label: 'Completed' },
-    archived: { bg: 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400', text: '', label: 'Archived' }
+    cancelled: { bg: 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400', text: '', label: 'Cancelled' },
+    archived: { bg: 'bg-zinc-100 text-zinc-500 dark:bg-zinc-900 dark:text-zinc-500', text: '', label: 'Archived' }
   };
 
   const c = map[status] || map.active;

@@ -44,69 +44,6 @@ func generateTempPassword() (string, error) {
 // them to specific Supervisors/Admins." Restricted to adminGroup in
 // routes.go (AuthenticateJWT + AuthorizeRole) — deliberately not built on
 // top of the public /auth/register endpoint.
-func AdminCreateUser(c *gin.Context) {
-	var input AdminCreateUserInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	if !allowedRoles[input.Role] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid role. Must be one of: super_admin, admin, supervisor, staff"})
-		return
-	}
-
-	plainPassword := input.Password
-	generatedPassword := false
-	if plainPassword == "" {
-		var err error
-		plainPassword, err = generateTempPassword()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate a temporary password"})
-			return
-		}
-		generatedPassword = true
-	}
-
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(plainPassword), bcrypt.DefaultCost)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
-		return
-	}
-
-	user := models.User{
-		Name:         input.Name,
-		Email:        input.Email,
-		Password:     string(hashedPassword),
-		Role:         input.Role,
-		Department:   input.Department,
-		Title:        input.Title,
-		Phone:        input.Phone,
-		Avatar:       input.Avatar,
-		Status:       "active",
-		SupervisorID: input.SupervisorID,
-		AdminID:      input.AdminID,
-	}
-
-	if result := database.DB.Create(&user); result.Error != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Email already exists or invalid data"})
-		return
-	}
-
-	response := gin.H{
-		"message": "User created successfully",
-		"user":    user,
-	}
-	// The plaintext temp password is returned ONLY this once, and only
-	// when the admin didn't supply one — there is no way to retrieve it
-	// again afterward (only the bcrypt hash is ever stored). The admin is
-	// responsible for relaying it to the new hire out of band.
-	if generatedPassword {
-		response["temporary_password"] = plainPassword
-	}
-
-	c.JSON(http.StatusCreated, response)
-}
 
 // UpdateUserProfileInput covers every field either a self-edit or an
 // admin edit might touch. Pointers, not plain values — so "field not

@@ -22,14 +22,27 @@ export const KanbanBoardView = () => {
   const [assigneeFilter, setAssigneeFilter] = useState('all');
   const [draggingTaskId, setDraggingTaskId] = useState(null);
 
+  // Column ids previously didn't match the real backend Task.Status
+  // enum (todo, in_progress, in_review, done, blocked, cancelled,
+  // archived — confirmed in models.go). "new", "on_hold", and "closed"
+  // aren't real Task statuses at all (they're Ticket statuses); a task
+  // can never have them, so those three columns were permanently empty.
+  // "under_review" and "completed" were close but wrong — the real
+  // values are "in_review" and "done" — so those two columns were also
+  // always empty despite tasks genuinely being in those states. And
+  // "blocked"/"cancelled" had no column at all, meaning tasks in those
+  // states were simply invisible on the board entirely, filtered out
+  // with nowhere to render. "archived" is deliberately left off the
+  // board (not a missing column) — GetTasks already excludes archived
+  // tasks from the default list server-side, so an archived task never
+  // reaches this component to begin with.
   const columns = [
-    { id: 'new', title: 'New', color: 'border-slate-400 dark:border-zinc-700', dot: 'bg-slate-400' },
     { id: 'todo', title: 'To Do', color: 'border-blue-400 dark:border-blue-700', dot: 'bg-blue-500' },
     { id: 'in_progress', title: 'In Progress', color: 'border-indigo-400 dark:border-indigo-700', dot: 'bg-indigo-500' },
-    { id: 'on_hold', title: 'On Hold', color: 'border-amber-400 dark:border-amber-700', dot: 'bg-amber-500' },
-    { id: 'under_review', title: 'Under Review', color: 'border-purple-400 dark:border-purple-700', dot: 'bg-purple-500' },
-    { id: 'completed', title: 'Completed', color: 'border-emerald-400 dark:border-emerald-700', dot: 'bg-emerald-500' },
-    { id: 'closed', title: 'Closed', color: 'border-zinc-400 dark:border-zinc-700', dot: 'bg-zinc-500' },
+    { id: 'in_review', title: 'In Review', color: 'border-purple-400 dark:border-purple-700', dot: 'bg-purple-500' },
+    { id: 'blocked', title: 'Blocked', color: 'border-rose-400 dark:border-rose-700', dot: 'bg-rose-500' },
+    { id: 'done', title: 'Done', color: 'border-emerald-400 dark:border-emerald-700', dot: 'bg-emerald-500' },
+    { id: 'cancelled', title: 'Cancelled', color: 'border-zinc-400 dark:border-zinc-700', dot: 'bg-zinc-500' },
   ];
 
   const filteredTasks = useMemo(() => {

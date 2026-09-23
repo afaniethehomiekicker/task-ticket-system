@@ -178,7 +178,7 @@ export const TaskDetailDrawer = () => {
                 <>
                   <textarea
                     rows={2}
-                    placeholder="Notes for the assignee (optional — shown either way, whether you approve or reopen)..."
+                    placeholder="Notes for the assignee (optional when approving — required to reopen)..."
                     value={reviewNotes}
                     onChange={(e) => setReviewNotes(e.target.value)}
                     disabled={isProcessingReview}
@@ -196,7 +196,8 @@ export const TaskDetailDrawer = () => {
                     <button
                       id="task-reopen-btn"
                       onClick={handleReopen}
-                      disabled={isProcessingReview}
+                      disabled={isProcessingReview || !reviewNotes.trim()}
+                      title={!reviewNotes.trim() ? 'Add a note explaining what needs to change' : undefined}
                       className="px-3 py-1.5 bg-slate-300 dark:bg-zinc-800 hover:bg-slate-400 dark:hover:bg-zinc-700 disabled:opacity-60 disabled:cursor-not-allowed text-slate-800 dark:text-zinc-200 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer"
                     >
                       <RotateCcw className="w-3.5 h-3.5" /> {isProcessingReview ? 'Working...' : 'Reopen'}
@@ -330,7 +331,7 @@ export const TaskDetailDrawer = () => {
                   >
                     <option value="todo">To Do</option>
                     <option value="in_progress">In Progress</option>
-                    <option value="completed">Completed</option>
+                    <option value="done">Done</option>
                   </select>
                 </div>
               ))}
@@ -479,31 +480,31 @@ export const TaskDetailDrawer = () => {
                 onChange={(e) => updateTaskStatus(task.id, e.target.value)}
                 className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 font-medium focus:outline-hidden"
                 title={
-                  (task.status !== 'under_review' && task.status !== 'completed')
-                    ? '"Under Review" and "Completed" are reached via Submit for Review / Approve, not this dropdown — that\'s what keeps the review workflow\'s role checks meaningful.'
+                  (task.status !== 'in_review' && task.status !== 'done')
+                    ? '"In Review" and "Done" are reached via Submit for Review / Approve, not this dropdown — that\'s what keeps the review workflow\'s role checks meaningful.'
                     : undefined
                 }
               >
-                <option value="new">New</option>
                 <option value="todo">To Do</option>
                 <option value="in_progress">In Progress</option>
-                <option value="on_hold">On Hold</option>
-                {/* "Under Review" and "Completed" are intentionally NOT
-                    freely selectable here — reaching either one must go
-                    through submitTaskForReview / approveTask, which
-                    (unlike this generic status PATCH) are backed by real
-                    server-side role checks. Only shown as an option at
-                    all when it's already the task's current status, so
-                    the dropdown still displays correctly rather than
-                    showing blank. */}
-                {task.status === 'under_review' && <option value="under_review">Under Review</option>}
-                {task.status === 'completed' && <option value="completed">Completed</option>}
-                <option value="closed">Closed</option>
+                <option value="blocked">Blocked</option>
+                <option value="cancelled">Cancelled</option>
+                {/* "In Review" and "Done" are intentionally NOT freely
+                    selectable here — reaching either one must go through
+                    submitTaskForReview / approveTask, which (unlike this
+                    generic status PATCH) are backed by real server-side role
+                    checks. Only shown as an option at all when it's already
+                    the task's current status, so the dropdown still displays
+                    correctly rather than showing blank. These are the
+                    backend's own status names, the same ones TaskStatusBadge
+                    and the Kanban board use. */}
+                {task.status === 'in_review' && <option value="in_review">In Review</option>}
+                {task.status === 'done' && <option value="done">Done</option>}
               </select>
             </div>
 
             <div className="flex items-center gap-2">
-              {task.status !== 'under_review' && task.status !== 'completed' && !showReviewInput && (
+              {task.status !== 'in_review' && task.status !== 'done' && !showReviewInput && (
                 <button
                   id="task-submit-review-btn"
                   onClick={() => setShowReviewInput(true)}

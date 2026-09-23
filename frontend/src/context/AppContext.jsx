@@ -149,6 +149,11 @@ const normalizeChecklistItem = (raw) => {
   };
 };
 
+// <input type="date"> only accepts yyyy-MM-dd; the backend sends full RFC3339
+// timestamps ("2026-09-30T05:00:00+05:00"), which produced the console warning
+// and left date fields blank.
+const toDateOnly = (v) => (typeof v === 'string' && v.includes('T')) ? v.slice(0, 10) : (v || '');
+
 const normalizeSubTask = (raw) => {
   if (!raw) return null;
   return {
@@ -183,21 +188,22 @@ const normalizeTask = (raw) => {
     supervisorId: raw.assignee?.supervisor_id ?? null,
     adminId: raw.assignee?.admin_id ?? null,
     progress: raw.progress ?? 0,
-    startDate: raw.start_date || '',
-    dueDate: raw.due_date || '',
+    startDate: toDateOnly(raw.start_date),
+    dueDate: toDateOnly(raw.due_date),
     estimatedHours: raw.estimated_hours ?? 0,
     actualHours: raw.actual_hours ?? 0,
     isPinned: !!raw.is_pinned,
     reviewStatus: raw.review_status || 'none',
     reviewNotes: raw.review_notes || '',
-    dependencies: Array.isArray(raw.depends_on)
-      ? raw.depends_on.map(d => ({
-          id: d.id ?? d.ID,
-          taskNumber: d.task_number || '',
-          title: d.title || '',
-          status: d.status || '',
-        })).filter(d => d.id)
-      : [],
+    // models.Task serialises this relation as "dependencies"; the old code
+    // only looked for "depends_on", so dependencies never survived a reload.
+    dependencies: (Array.isArray(raw.dependencies) ? raw.dependencies : (Array.isArray(raw.depends_on) ? raw.depends_on : []))
+      .map(d => ({
+        id: d.id ?? d.ID,
+        taskNumber: d.task_number || '',
+        title: d.title || '',
+        status: d.status || '',
+      })).filter(d => d.id),
     checklists: Array.isArray(raw.checklists) ? raw.checklists.map(normalizeChecklistItem).filter(Boolean) : [],
     subTasks: Array.isArray(raw.sub_tasks) ? raw.sub_tasks.map(normalizeSubTask).filter(Boolean) : [],
     comments: Array.isArray(raw.comments) ? raw.comments.map(normalizeComment).filter(Boolean) : [],
@@ -238,31 +244,51 @@ const normalizeTicket = (raw) => {
     category: raw.category || '',
     priority: raw.priority || 'normal',
     severity: raw.severity || 'normal',
-    status: raw.status || 'open',
-    requesterName: raw.requester_name || '',
-    requesterEmail: raw.requester_email || '',
-    requesterCompany: raw.requester_company || '',
+    status: raw.status || 'new',
+    // The Ticket model has no requester_* columns; the linked Client is the
+    // real source (GetTickets preloads it), so fall back to that.
+    requesterName: raw.requester_name || raw.client?.contact_person || '',
+    requesterEmail: raw.requester_email || raw.client?.email || '',
+    requesterCompany: raw.requester_company || raw.client?.company_name || '',
     projectId: raw.project_id ?? null,
     assignedToId: raw.assigned_to_id ?? null,
+    createdById: raw.created_by_id ?? null,
     supervisorId: raw.assigned_to?.supervisor_id ?? null,
     adminId: raw.assigned_to?.admin_id ?? null,
     dueDate: raw.due_date || '',
+    slaDeadline: raw.sla_deadline || null,
     responseSlaMinutes: raw.response_sla_minutes ?? 0,
     resolutionSlaMinutes: raw.resolution_sla_minutes ?? 0,
     firstResponseAt: raw.first_response_at || null,
     resolvedAt: raw.resolved_at || null,
     closedAt: raw.closed_at || null,
     escalationLevel: raw.escalation_level || 'none',
-    // Computed server-side, fresh, every response — see the Breached
-    // field comment in models.go for why this is never stored.
-    breached: !!raw.breached,
+    // Was `!!raw.breached` — the comment above this claimed it was
+    // "computed server-side, fresh, every response," referencing a
+    // Breached field in models.go. That's true of the ORIGINAL project's
+    // backend, which had exactly that virtual field — but this replica's
+    // actual Ticket model has no such field at all (confirmed directly
+    // in models.go), so raw.breached was always undefined and this was
+    // always false, for every ticket, regardless of real SLA status.
+    // The SLA Compliance report was showing 100% unconditionally as a
+    // direct result. Computed client-side instead, from sla_deadline
+    // (which this function wasn't even reading before — it only read
+    // due_date, a field this replica's Ticket model also doesn't have)
+    // and status, mirroring the exact logic report.go's GetSLABreaches
+    // and GetDashboardStats already use server-side in SQL: a deadline
+    // in the past, on a ticket that isn't resolved/closed/archived yet.
+    breached: !!(raw.sla_deadline &&
+      new Date(raw.sla_deadline).getTime() < Date.now() &&
+      !['resolved', 'closed', 'archived'].includes(raw.status)),
     // TicketsView.jsx already had SLA-breach UI built in, expecting these
     // exact names — it was silently dead (badge never lit, due date
     // never shown) purely because this function didn't produce them.
     // Aliased rather than renamed, since `breached`/`dueDate` are also
     // used/expected elsewhere.
-    slaBreached: !!raw.breached,
-    slaDueTime: raw.due_date || null,
+    slaBreached: !!(raw.sla_deadline &&
+      new Date(raw.sla_deadline).getTime() < Date.now() &&
+      !['resolved', 'closed', 'archived'].includes(raw.status)),
+    slaDueTime: raw.sla_deadline || raw.due_date || null,
     escalationReason: raw.escalation_reason || '',
     resolutionSummary: raw.resolution_summary || '',
     labels,
@@ -303,6 +329,109 @@ const normalizeClient = (raw) => {
   };
 };
 
+// --- Feasibility shape translation ---------------------------------------
+const normalizeFeasibilityVendor = (raw) => {
+  if (!raw) return null;
+  return {
+    id: raw.id ?? raw.ID,
+    vendorName: raw.vendor_name || '',
+    contactPerson: raw.contact_person || '',
+    contactEmail: raw.contact_email || '',
+    contactPhone: raw.contact_phone || '',
+    quotationRef: raw.quotation_ref || '',
+    status: raw.status || 'pending',
+    responseNotes: raw.response_notes || '',
+    evidenceURLs: raw.evidence_urls || '',
+    respondedAt: raw.responded_at || null,
+  };
+};
+
+const normalizeFeasibilityAttachment = (raw) => {
+  if (!raw) return null;
+  return {
+    id: raw.id ?? raw.ID,
+    name: raw.name || '',
+    size: raw.size || '',
+    type: raw.type || '',
+    url: raw.url || '',
+    uploadedById: raw.uploaded_by_id ?? null,
+    uploadedByName: raw.uploaded_by?.name || '',
+    uploadedAt: raw.uploaded_at || raw.CreatedAt || null,
+  };
+};
+
+// Previously fetchAuditLogs (below) stored the raw backend response
+// directly with no normalization at all — the one entity in this whole
+// app that skipped it. That meant consumers (exportUtils.js's
+// exportAuditLogsToCSV, and presumably AuditLogsView) were working with
+// raw Go field names: user_id, resource_type, resource_id, and gorm.
+// Model's CreatedAt with a capital C (no json tag on that field, same
+// reason User.ID serializes as "ID" elsewhere in this app). This maps
+// it into the same camelCase shape every other normalizeX function
+// already produces.
+const normalizeAuditLog = (raw) => {
+  if (!raw) return null;
+  return {
+    id: raw.id ?? raw.ID,
+    userId: raw.user_id ?? null,
+    actorName: raw.user?.name || 'Unknown',
+    actorRole: raw.user?.role || '',
+    action: raw.action || '',
+    entityType: raw.resource_type || '',
+    entityId: raw.resource_id ?? null,
+    oldValues: raw.old_values || '',
+    newValues: raw.new_values || '',
+    details: raw.details || '',
+    ipAddress: raw.ip_address || '',
+    userAgent: raw.user_agent || '',
+    timestamp: raw.created_at || raw.CreatedAt || null,
+  };
+};
+
+const normalizeFeasibility = (raw) => {
+  if (!raw) return null;
+  return {
+    id: raw.id ?? raw.ID,
+    feasibilityNumber: raw.feasibility_number || '',
+    clientId: raw.client_id ?? null,
+    client: raw.client ? normalizeClient(raw.client) : null,
+    product: raw.product || '',
+    capacity: raw.capacity || '',
+    fromLocation: raw.from_location || '',
+    toLocation: raw.to_location || '',
+    city: raw.city || '',
+    requirementDetails: raw.requirement_details || '',
+    assignedDept: raw.assigned_dept || '',
+    assignedUserId: raw.assigned_user_id ?? null,
+    assignedUser: raw.assigned_user ? normalizeUser(raw.assigned_user) : null,
+    priority: raw.priority || 'normal',
+    status: raw.status || 'draft',
+    notes: raw.notes || '',
+    targetDate: raw.target_date || '',
+    completedAt: raw.completed_at ?? null,
+    convertedProjectId: raw.converted_project_id ?? null,
+    convertedProject: raw.converted_project ? {
+      id: raw.converted_project.id ?? raw.converted_project.ID,
+      code: raw.converted_project.code || '',
+      title: raw.converted_project.title || '',
+    } : null,
+    convertedAt: raw.converted_at ?? null,
+    vendors: Array.isArray(raw.vendors) ? raw.vendors.map(normalizeFeasibilityVendor).filter(Boolean) : [],
+    attachments: Array.isArray(raw.attachments) ? raw.attachments.map(normalizeFeasibilityAttachment).filter(Boolean) : [],
+    createdAt: raw.created_at || raw.CreatedAt || null,
+    updatedAt: raw.updated_at || raw.UpdatedAt || null,
+  };
+};
+
+const normalizeDepartment = (raw) => {
+  if (!raw) return null;
+  return {
+    id: raw.id ?? raw.ID,
+    name: raw.name || '',
+    description: raw.description || '',
+  };
+};
+
 const AppContext = createContext(undefined);
 
 // The ONLY thing persisted across reloads is the session token (JWT).
@@ -314,6 +443,26 @@ const AUTH_TOKEN_KEY = 'pm_system_auth_token_v1';
 // The JWT issued by the backend carries the user id in its payload. It's
 // decoded here (read-only, client-side) so the active user can be restored
 // from the session token alone, without persisting any extra state.
+// Converts a bare "YYYY-MM-DD" date string (what every date picker and
+// default in this file produces) into a full RFC3339 timestamp, which
+// is what Go's standard time.Time JSON unmarshaling actually requires
+// (format 2006-01-02T15:04:05Z07:00). A bare date string fails to parse
+// at all — "cannot parse \"\" as \"T\"" — which is exactly what was
+// happening on every createProject/createTask call that included a
+// start or due date. An empty string is converted to null rather than
+// sent as-is, since Go's *time.Time also can't parse "" — sending null
+// lets the pointer stay nil, which is what "no date set" should mean.
+// A string that already looks like it has a time component (contains
+// "T") is passed through unchanged, so this is safe to apply even if a
+// caller somewhere is already sending a full timestamp.
+const toRFC3339 = (dateInput) => {
+  if (!dateInput) return null;
+  if (typeof dateInput === 'string' && dateInput.includes('T')) return dateInput;
+  const d = dateInput instanceof Date ? dateInput : new Date(`${dateInput}T00:00:00Z`);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString();
+};
+
 const decodeTokenUserId = (token) => {
   if (!token) return null;
   try {
@@ -344,6 +493,8 @@ export const AppProvider = ({ children }) => {
 
   const [projects, setProjects] = useState([]);
   const [clients, setClients] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [feasibilities, setFeasibilities] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [tickets, setTickets] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
@@ -370,28 +521,95 @@ export const AppProvider = ({ children }) => {
     return fetch(url, { ...options, headers });
   };
 
-  const [customRoles, setCustomRoles] = useState(['super_admin', 'admin', 'supervisor', 'staff', 'client']);
+  // List endpoints are paginated server-side (default 20 per page) and the
+  // app loads everything once at startup with no paging UI, so anything past
+  // the first 20 tasks/tickets/etc. simply never existed in the frontend.
+  // Fetches every page (up to a safety cap) and hands back a Response-like
+  // object so the existing `.ok` / `.json()` handling below is unchanged.
+  const fetchAllPages = async (path, key) => {
+    const PAGE_SIZE = 200;
+    const MAX_PAGES = 50;
+    const first = await apiFetch(`${path}?page=1&limit=${PAGE_SIZE}`);
+    if (!first.ok) return first;
+    const firstData = await first.json();
+    let all = Array.isArray(firstData[key]) ? firstData[key] : [];
+    const pages = firstData.pagination?.pages || 1;
+    for (let page = 2; page <= pages && page <= MAX_PAGES; page++) {
+      const res = await apiFetch(`${path}?page=${page}&limit=${PAGE_SIZE}`);
+      if (!res.ok) break;
+      const data = await res.json();
+      all = all.concat(Array.isArray(data[key]) ? data[key] : []);
+    }
+    return { ok: true, json: async () => ({ ...firstData, [key]: all }) };
+  };
 
-  const didFetchInitialDataRef = useRef(false);
+  const [customRoles, setCustomRoles] = useState(['super_admin', 'admin', 'supervisor', 'staff']);
+
+  const fetchedForTokenRef = useRef(null);
   const [dataLoaded, setDataLoaded] = useState(false);
 
   useEffect(() => {
-    if (didFetchInitialDataRef.current) return;
-    didFetchInitialDataRef.current = true;
+    // Previously ran unconditionally on mount with an empty dependency
+    // array ([]) — meaning it fired before anyone was even logged in,
+    // hitting every protected endpoint with no Authorization header and
+    // getting 401s back immediately. That's exactly what was visible on
+    // the bare login screen: six failed requests before any credentials
+    // were ever submitted. Now gated on authToken actually being
+    // present, and keyed to the token's value (not just a boolean) so
+    // logging in — or logging out and into a different account — always
+    // triggers a fresh fetch, rather than "only ever once per page load."
+    if (!authToken) {
+      setDataLoaded(false);
+      return;
+    }
+    if (fetchedForTokenRef.current === authToken) return;
+    fetchedForTokenRef.current = authToken;
 
     const fetchInitialData = async () => {
       try {
-        const [usersRes, projectsRes, tasksRes, ticketsRes, clientsRes] = await Promise.allSettled([
+        const [usersRes, projectsRes, tasksRes, ticketsRes, clientsRes, feasibilitiesRes, rolesRes, permMatrixRes, departmentsRes] = await Promise.allSettled([
           apiFetch('/api/users'),
-          apiFetch('/api/projects'),
-          apiFetch('/api/tasks'),
-          apiFetch('/api/tickets'),
-          apiFetch('/api/clients')
+          fetchAllPages('/api/projects', 'projects'),
+          fetchAllPages('/api/tasks', 'tasks'),
+          fetchAllPages('/api/tickets', 'tickets'),
+          fetchAllPages('/api/clients', 'clients'),
+          fetchAllPages('/api/feasibilities', 'feasibilities'),
+          apiFetch('/api/roles'),
+          apiFetch('/api/roles/permissions'),
+          apiFetch('/api/departments')
         ]);
 
         if (usersRes.status === 'fulfilled' && usersRes.value.ok) {
           const data = await usersRes.value.json();
           setAllUsers((data.users || []).map(normalizeUser).filter(Boolean));
+        } else {
+          // GET /api/users is restricted to user managers, so for everyone
+          // else it fails and allUsers stayed empty — which also left
+          // currentUser (looked up in allUsers) null. The directory endpoint
+          // returns the same people without needing manage_users.
+          try {
+            const dirRes = await apiFetch('/api/directory/users');
+            if (dirRes.ok) {
+              const dirData = await dirRes.json();
+              setAllUsers((dirData.users || []).map(normalizeUser).filter(Boolean));
+            }
+          } catch (err) {
+            console.warn('Failed to load user directory:', err);
+          }
+        }
+
+        // Whatever the list contained, the logged-in user must be in it.
+        try {
+          const meRes = await apiFetch('/api/me');
+          if (meRes.ok) {
+            const meData = await meRes.json();
+            const me = normalizeUser(meData.user);
+            if (me) {
+              setAllUsers(prev => prev.some(u => String(u.id) === String(me.id)) ? prev : [...prev, me]);
+            }
+          }
+        } catch (err) {
+          console.warn('Failed to load current user:', err);
         }
 
         if (projectsRes.status === 'fulfilled' && projectsRes.value.ok) {
@@ -404,6 +622,20 @@ export const AppProvider = ({ children }) => {
           setClients((data.clients || []).map(normalizeClient).filter(Boolean));
         }
 
+        if (feasibilitiesRes.status === 'fulfilled' && feasibilitiesRes.value.ok) {
+          const data = await feasibilitiesRes.value.json();
+          setFeasibilities((data.feasibilities || []).map(normalizeFeasibility).filter(Boolean));
+        }
+
+        // Departments: option B — a real, admin-managed list (spec: "not
+        // hard-coded"), fetched once at startup like every other collection,
+        // so every Department dropdown across the app reads from one source
+        // of truth instead of a hardcoded array or free text.
+        if (departmentsRes.status === 'fulfilled' && departmentsRes.value.ok) {
+          const data = await departmentsRes.value.json();
+          setDepartments((data.departments || []).map(normalizeDepartment).filter(Boolean));
+        }
+
         if (tasksRes.status === 'fulfilled' && tasksRes.value.ok) {
           const data = await tasksRes.value.json();
           setTasks((data.tasks || []).map(normalizeTask).filter(Boolean));
@@ -413,6 +645,33 @@ export const AppProvider = ({ children }) => {
           const data = await ticketsRes.value.json();
           setTickets((data.tickets || []).map(normalizeTicket).filter(Boolean));
         }
+
+        // Was never fetched at all — customRoles/permissionMatrix
+        // permanently stayed at their hardcoded defaults regardless of
+        // what actually existed in the database, and every mutation
+        // (createCustomRole/deleteCustomRole/updateRolePermission,
+        // fixed separately) had no real backend state to sync against
+        // in the first place. NOTE: the exact response shape of
+        // GetRoles/GetPermissionMatrix hasn't been verified against
+        // their actual handler source (not yet reviewed) — this checks
+        // a couple of reasonable key names defensively, and simply
+        // leaves the existing state untouched if neither matches, so a
+        // wrong guess here can't make things worse than they already
+        // were.
+        if (rolesRes.status === 'fulfilled' && rolesRes.value.ok) {
+          const data = await rolesRes.value.json();
+          const rawRoles = Array.isArray(data.roles) ? data.roles : (Array.isArray(data) ? data : null);
+          if (rawRoles) {
+            const keys = rawRoles.map(r => r.key ?? r.Key).filter(Boolean);
+            if (keys.length > 0) setCustomRoles(keys);
+          }
+        }
+
+        if (permMatrixRes.status === 'fulfilled' && permMatrixRes.value.ok) {
+          const data = await permMatrixRes.value.json();
+          const matrix = data.matrix || data.permissions || (typeof data === 'object' && !data.error ? data : null);
+          if (matrix && typeof matrix === 'object') setPermissionMatrix(matrix);
+        }
       } catch (err) {
         console.warn('Backend API offline:', err);
       } finally {
@@ -421,7 +680,7 @@ export const AppProvider = ({ children }) => {
     };
 
     fetchInitialData();
-  }, []);
+  }, [authToken]);
 
   useEffect(() => {
     if (!currentUserId) return;
@@ -430,14 +689,16 @@ export const AppProvider = ({ children }) => {
 
     const fetchAuditLogs = async () => {
       try {
-        const res = await apiFetch('/api/audit-logs', {
-          headers: {
-            'x-user-role': activeUser.role === 'super_admin' ? 'Super Admin' : 'Admin'
-          }
-        });
+        // Was "/api/audit-logs" — the actual registered route is
+        // "/api/audit" (see routes.go: protected.Group("/audit")). Also
+        // dropped the manually-set "x-user-role" header — the backend's
+        // RequirePermission middleware reads role from the verified JWT
+        // exclusively now, never from a client-supplied header, so this
+        // was sending information nothing on the other end reads at all.
+        const res = await apiFetch('/api/audit');
         if (res.ok) {
           const data = await res.json();
-          if (data.logs && data.logs.length > 0) setAuditLogs(data.logs);
+          if (data.logs && data.logs.length > 0) setAuditLogs(data.logs.map(normalizeAuditLog).filter(Boolean));
         }
       } catch (err) {
         console.warn('Failed to fetch audit logs from backend:', err);
@@ -456,6 +717,8 @@ export const AppProvider = ({ children }) => {
   const [selectedTicketEditId, setSelectedTicketEditId] = useState(null);
   const [selectedProjectDetailId, setSelectedProjectDetailId] = useState(null);
   const [selectedProjectEditId, setSelectedProjectEditId] = useState(null);
+  const [selectedFeasibilityId, setSelectedFeasibilityId] = useState(null);
+  const [selectedFeasibilityEditId, setSelectedFeasibilityEditId] = useState(null);
   const [quickCreateOpen, setQuickCreateOpenState] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [quickCreatePickerOpen, setQuickCreatePickerOpen] = useState(false);
@@ -463,21 +726,28 @@ export const AppProvider = ({ children }) => {
   const [quickCreateConfig, setQuickCreateConfig] = useState({
     tab: 'project',
     lockedProjectId: null,
-    restrictToTab: false
+    restrictToTab: false,
+    projectType: null
   });
 
   const setQuickCreateOpen = (val) => {
     setQuickCreateOpenState(val);
     if (!val) {
-      setQuickCreateConfig({ tab: 'project', lockedProjectId: null, restrictToTab: false });
+      setQuickCreateConfig({ tab: 'project', lockedProjectId: null, restrictToTab: false, projectType: null });
     }
   };
 
   const openQuickCreate = (config = {}) => {
+    // Was silently dropping config.projectType — QuickCreateTypePicker
+    // passes it (to distinguish "General Project" from "Support / TT"),
+    // but this function only ever carried tab/lockedProjectId/
+    // restrictToTab through. Picking "Support / TT" had no observable
+    // effect at all as a result.
     setQuickCreateConfig({
       tab: config.tab || 'project',
       lockedProjectId: config.lockedProjectId || null,
-      restrictToTab: !!config.restrictToTab
+      restrictToTab: !!config.restrictToTab,
+      projectType: config.projectType || null
     });
     setQuickCreateOpenState(true);
   };
@@ -552,6 +822,11 @@ export const AppProvider = ({ children }) => {
     return filterTicketsForUser(tickets, currentUser, allUsers);
   }, [tickets, currentUser, allUsers]);
 
+  const visibleFeasibilities = useMemo(() => {
+    // Feasibilities are visible to all authenticated users (management overview)
+    return feasibilities;
+  }, [feasibilities]);
+
   const userNotifications = useMemo(() => {
     if (!currentUser) return [];
     if (currentUser.role === 'super_admin') {
@@ -579,7 +854,8 @@ export const AppProvider = ({ children }) => {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Upload failed');
 
-      updateUser(currentUser.id, { avatar: data.url });
+      const updated = await updateUser(currentUser.id, { avatar: data.url });
+      if (!updated) throw new Error('Image uploaded, but saving it to your profile failed');
       return data.url;
     } catch (err) {
       console.error('Avatar upload failed:', err);
@@ -602,6 +878,9 @@ export const AppProvider = ({ children }) => {
       currentUser?.role === 'admin' ? currentUser.id : currentUser?.adminId ?? null
     );
 
+    // Determine project type: 'general' or 'ticketing'
+    const projectType = data.projectType || 'general';
+
     const basePayload = {
       ...data,
       memberIds,
@@ -609,26 +888,45 @@ export const AppProvider = ({ children }) => {
       createdBy: currentUser?.id ?? null,
       progress: 0,
       spentHours: 0,
+      projectType,
     };
 
+    // Build wire payload matching new backend
     const wirePayload = {
-      ...basePayload,
-      member_ids: memberIds,
-      admin_id: resolvedAdminId,
-      created_by: currentUser?.id ?? null,
-      owner_id: basePayload.ownerId ?? currentUser?.id ?? null,
+      // Omit entirely when not explicitly provided — the backend now
+      // auto-generates a real, collision-free code (PRJ-000001 style)
+      // when this field is absent. Was previously
+      // `data.code || \`PRJ-${Date.now().toString().slice(-4)}\`` — the
+      // last 4 digits of a millisecond timestamp, which repeats every
+      // 10 seconds and would collide under completely ordinary usage,
+      // not just a rare race condition.
+      ...(data.code ? { code: data.code } : {}),
+      title: data.title,
+      description: data.description,
+      type: projectType,
+      department: data.department || currentUser?.department || '',
+      status: data.status || 'planning',
+      priority: data.priority || 'normal',
+      start_date: toRFC3339(data.startDate) || toRFC3339(new Date()),
+      due_date: toRFC3339(data.dueDate),
       client_id: getBackendId(data.clientId) || null,
+      owner_id: data.ownerId ?? currentUser?.id ?? null,
+      admin_id: data.adminId ?? resolvedAdminId,
+      budget_hours: data.budgetHours ?? 0,
+      member_ids: memberIds,
+      supervisor_ids: data.supervisorIds || [],
     };
+
+    // Strip budget_hours for ticketing projects
+    if (projectType === 'ticketing') {
+      delete wirePayload.budget_hours;
+    }
 
     let savedProject = null;
     try {
       const res = await apiFetch('/api/projects', {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'x-user-role': currentUser?.role === 'super_admin' ? 'Super Admin' : (currentUser?.role || 'Admin'),
-          'x-user-id': String(currentUser?.id || 1)
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(wirePayload)
       });
       if (res.ok) {
@@ -656,7 +954,7 @@ export const AppProvider = ({ children }) => {
       entityType: 'project',
       entityId: newProject.id,
       entityTitle: newProject.title,
-      details: `Created project [${newProject.code}] for client/company ID: ${newProject.clientId || newProject.companyId}`
+      details: `Created ${projectType} project [${newProject.code}] for client ID: ${newProject.clientId}`
     });
 
     memberIds.forEach(memId => {
@@ -675,23 +973,62 @@ export const AppProvider = ({ children }) => {
 
   const updateProject = async (id, updates) => {
     const targetId = getBackendId(id);
+
+    // Was sending `updates` directly as the request body — the raw
+    // camelCase keys this app uses everywhere on the frontend
+    // (budgetHours, dueDate, clientId, etc.) never matched the
+    // backend's snake_case json tags, so most fields silently failed to
+    // bind at all even on a "successful" 200 response. Also never
+    // checked res.ok — a failed request (validation error, permission
+    // denied, network failure) still unconditionally applied the
+    // attempted change to local state, so the UI always showed success
+    // regardless of what actually happened server-side. This mirrors
+    // the exact fix already applied to updateUser earlier in this
+    // review.
+    const wirePayload = {};
+    if (updates.title !== undefined) wirePayload.title = updates.title;
+    if (updates.code !== undefined) wirePayload.code = updates.code;
+    if (updates.description !== undefined) wirePayload.description = updates.description;
+    if (updates.department !== undefined) wirePayload.department = updates.department;
+    if (updates.status !== undefined) wirePayload.status = updates.status;
+    if (updates.priority !== undefined) wirePayload.priority = updates.priority;
+    if (updates.startDate !== undefined) wirePayload.start_date = toRFC3339(updates.startDate);
+    if (updates.dueDate !== undefined) wirePayload.due_date = toRFC3339(updates.dueDate);
+    if (updates.clientId !== undefined) wirePayload.client_id = getBackendId(updates.clientId);
+    if (updates.ownerId !== undefined) wirePayload.owner_id = getBackendId(updates.ownerId);
+    if (updates.adminId !== undefined) wirePayload.admin_id = getBackendId(updates.adminId);
+    if (updates.budgetHours !== undefined) wirePayload.budget_hours = updates.budgetHours;
+    if (updates.progress !== undefined) wirePayload.progress = updates.progress;
+    if (updates.isPinned !== undefined) wirePayload.is_pinned = updates.isPinned;
+
+    let succeeded = false;
+    let savedProject = null;
     if (targetId) {
       try {
-        await apiFetch(`/api/projects/${targetId}`, {
+        const res = await apiFetch(`/api/projects/${targetId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updates)
+          body: JSON.stringify(wirePayload)
         });
+        if (res.ok) {
+          const resData = await res.json().catch(() => ({}));
+          savedProject = resData.project ? normalizeProject(resData.project) : null;
+          succeeded = true;
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          alert(errData.error || 'Failed to update project.');
+        }
       } catch (err) {
         console.error('Failed to sync updateProject to API:', err);
+        alert('Failed to update project. Please check your connection and try again.');
       }
     }
 
+    if (!succeeded) return null;
+
     setProjects(prev => prev.map(p => {
-      if (String(p.id) === String(id)) {
-        return { ...p, ...updates, updatedAt: new Date().toISOString() };
-      }
-      return p;
+      if (String(p.id) !== String(id)) return p;
+      return savedProject || { ...p, ...updates, updatedAt: new Date().toISOString() };
     }));
 
     const prj = projects.find(p => String(p.id) === String(id));
@@ -707,6 +1044,8 @@ export const AppProvider = ({ children }) => {
         details: `Updated project fields: ${Object.keys(updates).join(', ')}`
       });
     }
+
+    return savedProject || true;
   };
 
   const togglePinProject = (id) => {
@@ -737,6 +1076,131 @@ export const AppProvider = ({ children }) => {
         details: `Archived/Deleted project ${prj.title}`
       });
     }
+  };
+
+  const createDepartment = async (data) => {
+    let savedDept = null;
+    try {
+      const res = await apiFetch('/api/departments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: data.name, description: data.description || '' })
+      });
+      if (res.ok) {
+        const resData = await res.json();
+        savedDept = normalizeDepartment(resData.department);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to create department.');
+      }
+    } catch (err) {
+      console.error('Failed to sync createDepartment to API:', err);
+      alert('Failed to create department. Please check your connection and try again.');
+    }
+
+    if (!savedDept) return null;
+    setDepartments(prev => [...prev, savedDept].sort((a, b) => a.name.localeCompare(b.name)));
+
+    logAudit({
+      actorId: currentUser?.id,
+      actorName: currentUser?.name,
+      actorRole: currentUser?.role,
+      action: 'DEPARTMENT_CREATED',
+      entityType: 'department',
+      entityId: savedDept.id,
+      entityTitle: savedDept.name,
+      details: `Created department ${savedDept.name}`
+    });
+
+    return savedDept;
+  };
+
+  // Renaming cascades server-side to every user/task/ticket/project/
+  // feasibility currently pointing at the old name (department.go), so a
+  // successful rename here means those records changed too — not just this
+  // one row. There's no local-state cascade to mirror that; the affected
+  // collections will show the old name until their next fetch. Acceptable
+  // for now since nothing currently re-derives visibility from a stale
+  // in-memory department string mid-session, but worth knowing if that
+  // changes later.
+  const updateDepartment = async (id, updates) => {
+    const targetId = getBackendId(id);
+    if (!targetId) return null;
+
+    let succeeded = false;
+    let savedDept = null;
+    try {
+      const res = await apiFetch(`/api/departments/${targetId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: updates.name,
+          description: updates.description !== undefined ? updates.description : undefined
+        })
+      });
+      if (res.ok) {
+        const resData = await res.json().catch(() => ({}));
+        savedDept = resData.department ? normalizeDepartment(resData.department) : null;
+        succeeded = true;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to update department.');
+      }
+    } catch (err) {
+      console.error('Failed to sync updateDepartment to API:', err);
+      alert('Failed to update department. Please check your connection and try again.');
+    }
+
+    if (!succeeded) return null;
+    setDepartments(prev => prev.map(d => String(d.id) === String(id) ? (savedDept || { ...d, ...updates }) : d)
+      .sort((a, b) => a.name.localeCompare(b.name)));
+
+    logAudit({
+      actorId: currentUser?.id,
+      actorName: currentUser?.name,
+      actorRole: currentUser?.role,
+      action: 'DEPARTMENT_UPDATED',
+      entityType: 'department',
+      entityId: id,
+      entityTitle: savedDept?.name || updates.name || '',
+      details: `Updated department fields: ${Object.keys(updates).join(', ')}`
+    });
+
+    return savedDept || true;
+  };
+
+  const deleteDepartment = async (id) => {
+    const targetId = getBackendId(id);
+    const dept = departments.find(d => String(d.id) === String(id));
+    if (targetId) {
+      try {
+        const res = await apiFetch(`/api/departments/${targetId}`, { method: 'DELETE' });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          alert(errData.error || 'Failed to delete department.');
+          return false;
+        }
+      } catch (err) {
+        console.error('Failed to sync deleteDepartment to API:', err);
+        alert('Failed to delete department. Please check your connection and try again.');
+        return false;
+      }
+    }
+
+    setDepartments(prev => prev.filter(d => String(d.id) !== String(id)));
+    if (dept) {
+      logAudit({
+        actorId: currentUser?.id,
+        actorName: currentUser?.name,
+        actorRole: currentUser?.role,
+        action: 'DEPARTMENT_DELETED',
+        entityType: 'department',
+        entityId: id,
+        entityTitle: dept.name,
+        details: `Deleted department ${dept.name}`
+      });
+    }
+    return true;
   };
 
   const createClient = async (data) => {
@@ -788,19 +1252,50 @@ export const AppProvider = ({ children }) => {
 
   const updateClient = async (id, updates) => {
     const targetId = getBackendId(id);
+
+    // Same class of fix as updateProject/updateUser — was sending
+    // camelCase `updates` directly (companyName, contactPerson, etc.)
+    // to a snake_case backend, and never checked res.ok before applying
+    // the change to local state regardless of outcome.
+    const wirePayload = {};
+    if (updates.companyName !== undefined) wirePayload.company_name = updates.companyName;
+    if (updates.contactPerson !== undefined) wirePayload.contact_person = updates.contactPerson;
+    if (updates.email !== undefined) wirePayload.email = updates.email;
+    if (updates.phone !== undefined) wirePayload.phone = updates.phone;
+    if (updates.website !== undefined) wirePayload.website = updates.website;
+    if (updates.industry !== undefined) wirePayload.industry = updates.industry;
+    if (updates.address !== undefined) wirePayload.address = updates.address;
+    if (updates.city !== undefined) wirePayload.city = updates.city;
+    if (updates.country !== undefined) wirePayload.country = updates.country;
+    if (updates.notes !== undefined) wirePayload.notes = updates.notes;
+    if (updates.status !== undefined) wirePayload.status = updates.status;
+
+    let succeeded = false;
+    let savedClient = null;
     if (targetId) {
       try {
-        await apiFetch(`/api/clients/${targetId}`, {
+        const res = await apiFetch(`/api/clients/${targetId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(updates)
+          body: JSON.stringify(wirePayload)
         });
+        if (res.ok) {
+          const resData = await res.json().catch(() => ({}));
+          savedClient = resData.client ? normalizeClient(resData.client) : null;
+          succeeded = true;
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          alert(errData.error || 'Failed to update client.');
+        }
       } catch (err) {
         console.error('Failed to sync updateClient to API:', err);
+        alert('Failed to update client. Please check your connection and try again.');
       }
     }
 
-    setClients(prev => prev.map(c => String(c.id) === String(id) ? { ...c, ...updates } : c));
+    if (!succeeded) return null;
+
+    setClients(prev => prev.map(c => String(c.id) === String(id) ? (savedClient || { ...c, ...updates }) : c));
 
     logAudit({
       actorId: currentUser?.id,
@@ -812,17 +1307,34 @@ export const AppProvider = ({ children }) => {
       entityTitle: updates.companyName || clients.find(c => String(c.id) === String(id))?.companyName || '',
       details: `Updated client profile fields: ${Object.keys(updates).join(', ')}`
     });
+
+    return savedClient || true;
   };
 
   const deleteClient = async (id) => {
     const targetId = getBackendId(id);
+    let succeeded = false;
     if (targetId) {
       try {
-        await apiFetch(`/api/clients/${targetId}`, { method: 'DELETE' });
+        const res = await apiFetch(`/api/clients/${targetId}`, { method: 'DELETE' });
+        if (res.ok) {
+          succeeded = true;
+        } else {
+          // Was unconditionally removed from local state regardless of
+          // this response — meaning a client that failed to delete on
+          // the backend (permission denied, network error) still
+          // vanished from the UI, giving the false impression it was
+          // gone when it still existed server-side.
+          const errData = await res.json().catch(() => ({}));
+          alert(errData.error || 'Failed to delete client.');
+        }
       } catch (err) {
         console.error('Failed to sync deleteClient to API:', err);
+        alert('Failed to delete client. Please check your connection and try again.');
       }
     }
+
+    if (!succeeded) return false;
 
     const client = clients.find(c => String(c.id) === String(id));
     setClients(prev => prev.filter(c => String(c.id) !== String(id)));
@@ -837,6 +1349,318 @@ export const AppProvider = ({ children }) => {
         entityTitle: client.companyName,
         details: `Deleted client profile ${client.companyName}`
       });
+    }
+
+    return true;
+  };
+
+  // --- Feasibility API Functions ---
+  const createFeasibility = async (data) => {
+    const wirePayload = {
+      feasibility_number: data.feasibilityNumber || undefined,
+      client_id: data.clientId,
+      product: data.product,
+      capacity: data.capacity || '',
+      from_location: data.fromLocation || '',
+      to_location: data.toLocation || '',
+      city: data.city || '',
+      requirement_details: data.requirementDetails || '',
+      assigned_dept: data.assignedDept || '',
+      assigned_user_id: data.assignedUserId || null,
+      priority: data.priority || 'normal',
+      status: data.status || 'draft',
+      target_date: data.targetDate || '',
+      notes: data.notes || '',
+      vendors: (data.vendors || []).map(v => ({
+        vendor_name: v.vendorName,
+        contact_person: v.contactPerson || '',
+        contact_email: v.contactEmail || '',
+        contact_phone: v.contactPhone || '',
+        quotation_ref: v.quotationRef || '',
+        status: v.status || 'pending'
+      }))
+    };
+
+    let succeeded = false;
+    let savedFeasibility = null;
+    try {
+      const res = await apiFetch('/api/feasibilities', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(wirePayload)
+      });
+      if (res.ok) {
+        const resData = await res.json();
+        savedFeasibility = normalizeFeasibility(resData.feasibility);
+        succeeded = true;
+      } else {
+        // Was falling back to a fake local object on ANY failure and
+        // returning it as if it were real — meaning a rejected request
+        // (missing required product field, network error, anything)
+        // still showed success and added a feasibility to the list that
+        // didn't actually exist on the backend.
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to create feasibility.');
+      }
+    } catch (err) {
+      console.error('Failed to sync createFeasibility to API:', err);
+      alert('Failed to create feasibility. Please check your connection and try again.');
+    }
+
+    if (!succeeded) return null;
+
+    setFeasibilities(prev => [savedFeasibility, ...prev]);
+
+    logAudit({
+      actorId: currentUser?.id,
+      actorName: currentUser?.name,
+      actorRole: currentUser?.role,
+      action: 'FEASIBILITY_CREATED',
+      entityType: 'feasibility',
+      entityId: savedFeasibility.id,
+      entityTitle: savedFeasibility.feasibilityNumber,
+      details: `Created feasibility ${savedFeasibility.feasibilityNumber} for ${savedFeasibility.product} in ${savedFeasibility.city}`
+    });
+
+    return savedFeasibility;
+  };
+
+  const updateFeasibility = async (id, updates) => {
+    const targetId = getBackendId(id);
+
+    // Same class of fix as updateProject/updateClient above — raw
+    // camelCase updates sent directly to a snake_case backend, and no
+    // res.ok check before applying the change to local state.
+    const wirePayload = {};
+    if (updates.product !== undefined) wirePayload.product = updates.product;
+    if (updates.capacity !== undefined) wirePayload.capacity = updates.capacity;
+    if (updates.fromLocation !== undefined) wirePayload.from_location = updates.fromLocation;
+    if (updates.toLocation !== undefined) wirePayload.to_location = updates.toLocation;
+    if (updates.city !== undefined) wirePayload.city = updates.city;
+    if (updates.clientId !== undefined) wirePayload.client_id = getBackendId(updates.clientId);
+    if (updates.requirementDetails !== undefined) wirePayload.requirement_details = updates.requirementDetails;
+    if (updates.assignedDept !== undefined) wirePayload.assigned_dept = updates.assignedDept;
+    if (updates.assignedUserId !== undefined) wirePayload.assigned_user_id = getBackendId(updates.assignedUserId);
+    if (updates.priority !== undefined) wirePayload.priority = updates.priority;
+    if (updates.status !== undefined) wirePayload.status = updates.status;
+    if (updates.targetDate !== undefined) wirePayload.target_date = updates.targetDate;
+    if (updates.notes !== undefined) wirePayload.notes = updates.notes;
+
+    let succeeded = false;
+    let savedFeasibility = null;
+    if (targetId) {
+      try {
+        const res = await apiFetch(`/api/feasibilities/${targetId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(wirePayload)
+        });
+        if (res.ok) {
+          const resData = await res.json().catch(() => ({}));
+          savedFeasibility = resData.feasibility ? normalizeFeasibility(resData.feasibility) : null;
+          succeeded = true;
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          alert(errData.error || 'Failed to update feasibility.');
+        }
+      } catch (err) {
+        console.error('Failed to sync updateFeasibility to API:', err);
+        alert('Failed to update feasibility. Please check your connection and try again.');
+      }
+    }
+
+    if (!succeeded) return null;
+
+    setFeasibilities(prev => prev.map(f => {
+      if (String(f.id) !== String(id)) return f;
+      return savedFeasibility || { ...f, ...updates, updatedAt: new Date().toISOString() };
+    }));
+
+    const feas = feasibilities.find(f => String(f.id) === String(id));
+    if (feas) {
+      logAudit({
+        actorId: currentUser?.id,
+        actorName: currentUser?.name,
+        actorRole: currentUser?.role,
+        action: 'FEASIBILITY_UPDATED',
+        entityType: 'feasibility',
+        entityId: id,
+        entityTitle: feas.feasibilityNumber,
+        details: `Updated feasibility fields: ${Object.keys(updates).join(', ')}`
+      });
+    }
+
+    return savedFeasibility || true;
+  };
+
+  // Was silent on failure (no res.ok check, no return value at all) — a
+  // rejected add (missing vendor_name, network error) looked identical to
+  // success from the caller's side, since nothing was ever returned to
+  // check. Now returns the created vendor on success, null on failure,
+  // matching every other create-style function in this file.
+  const addFeasibilityVendor = async (feasibilityId, vendorData) => {
+    const targetId = getBackendId(feasibilityId);
+    if (!targetId) return null;
+
+    try {
+      const res = await apiFetch(`/api/feasibilities/${targetId}/vendors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(vendorData)
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to add vendor.');
+        return null;
+      }
+      const resData = await res.json();
+      const newVendor = normalizeFeasibilityVendor(resData.feasibility?.vendors?.find(v => v.id === resData.vendor?.id) || resData.vendor);
+      setFeasibilities(prev => prev.map(f => {
+        if (String(f.id) === String(feasibilityId)) {
+          return { ...f, vendors: [...(f.vendors || []), newVendor], updatedAt: new Date().toISOString() };
+        }
+        return f;
+      }));
+      return newVendor;
+    } catch (err) {
+      console.error('Failed to sync addFeasibilityVendor to API:', err);
+      alert('Failed to add vendor. Please check your connection and try again.');
+      return null;
+    }
+  };
+
+  // Was applying `updates` to local state unconditionally, even when the
+  // PUT failed or the response was never checked (res.ok was never even
+  // read) — so a rejected vendor status change still showed as changed in
+  // the UI, permanently, until the next full reload silently reverted it.
+  const updateFeasibilityVendor = async (feasibilityId, vendorId, updates) => {
+    const targetFeasId = getBackendId(feasibilityId);
+    const targetVendorId = getBackendId(vendorId);
+    if (!targetFeasId || !targetVendorId) return false;
+
+    try {
+      const res = await apiFetch(`/api/feasibilities/${targetFeasId}/vendors/${targetVendorId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to update vendor.');
+        return false;
+      }
+    } catch (err) {
+      console.error('Failed to sync updateFeasibilityVendor to API:', err);
+      alert('Failed to update vendor. Please check your connection and try again.');
+      return false;
+    }
+
+    setFeasibilities(prev => prev.map(f => {
+      if (String(f.id) === String(feasibilityId)) {
+        return {
+          ...f,
+          vendors: (f.vendors || []).map(v => String(v.id) === String(vendorId) ? { ...v, ...updates } : v),
+          updatedAt: new Date().toISOString()
+        };
+      }
+      return f;
+    }));
+    return true;
+  };
+
+  const deleteFeasibilityVendor = async (feasibilityId, vendorId) => {
+    const targetFeasId = getBackendId(feasibilityId);
+    const targetVendorId = getBackendId(vendorId);
+    if (!targetFeasId || !targetVendorId) return;
+
+    try {
+      await apiFetch(`/api/feasibilities/${targetFeasId}/vendors/${targetVendorId}`, { method: 'DELETE' });
+    } catch (err) {
+      console.error('Failed to sync deleteFeasibilityVendor to API:', err);
+    }
+
+    setFeasibilities(prev => prev.map(f => {
+      if (String(f.id) === String(feasibilityId)) {
+        return {
+          ...f,
+          vendors: (f.vendors || []).filter(v => String(v.id) !== String(vendorId)),
+          updatedAt: new Date().toISOString()
+        };
+      }
+      return f;
+    }));
+  };
+
+  // Backend route exists (DELETE /api/feasibilities/:id, gated by
+  // create_projects — routes.go) but nothing in this file called it.
+  // Mirrors deleteTicket's shape exactly.
+  const deleteFeasibility = async (id) => {
+    const targetId = getBackendId(id);
+    if (targetId) {
+      try {
+        const res = await apiFetch(`/api/feasibilities/${targetId}`, { method: 'DELETE' });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          alert(errData.error || 'Failed to archive feasibility.');
+          return false;
+        }
+      } catch (err) {
+        console.error('Failed to sync deleteFeasibility to API:', err);
+        alert('Failed to archive feasibility. Please check your connection and try again.');
+        return false;
+      }
+    }
+
+    const feas = feasibilities.find(f => String(f.id) === String(id));
+    setFeasibilities(prev => prev.filter(f => String(f.id) !== String(id)));
+    if (feas) {
+      logAudit({
+        actorId: currentUser?.id,
+        actorName: currentUser?.name,
+        actorRole: currentUser?.role,
+        action: 'FEASIBILITY_DELETED',
+        entityType: 'feasibility',
+        entityId: id,
+        entityTitle: feas.feasibilityNumber,
+        details: `Archived feasibility ${feas.feasibilityNumber}`
+      });
+    }
+    return true;
+  };
+
+  const convertFeasibilityToProject = async (feasibilityId, projectData) => {
+    const targetId = getBackendId(feasibilityId);
+    if (!targetId) return;
+
+    try {
+      const res = await apiFetch(`/api/feasibilities/${targetId}/convert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(projectData)
+      });
+      if (res.ok) {
+        const resData = await res.json();
+        setFeasibilities(prev => prev.map(f => {
+          if (String(f.id) === String(feasibilityId)) {
+            return { 
+              ...f, 
+              status: 'converted', 
+              convertedProjectId: resData.project?.id,
+              convertedProject: resData.project,
+              convertedAt: new Date().toISOString(),
+              completedAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString() 
+            };
+          }
+          return f;
+        }));
+        if (resData.project) {
+          const newProject = normalizeProject(resData.project);
+          setProjects(prev => [newProject, ...prev]);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to sync convertFeasibilityToProject to API:', err);
     }
   };
 
@@ -908,10 +1732,11 @@ export const AppProvider = ({ children }) => {
       priority: basePayload.priority || 'normal',
       labels: Array.isArray(basePayload.labels) ? basePayload.labels.join(',') : (basePayload.labels || ''),
       project_id: getBackendId(basePayload.projectId) || null,
+      ticket_id: getBackendId(basePayload.ticketId) || null,
       assignee_id: assignee?.id ?? getBackendId(basePayload.assignedToId) ?? null,
       creator_id: currentUser?.id ?? null,
-      start_date: basePayload.startDate || '',
-      due_date: basePayload.dueDate || '',
+      start_date: toRFC3339(basePayload.startDate),
+      due_date: toRFC3339(basePayload.dueDate),
       estimated_hours: basePayload.estimatedHours ?? 0,
     };
 
@@ -925,17 +1750,22 @@ export const AppProvider = ({ children }) => {
       if (res.ok) {
         const resData = await res.json();
         savedTask = normalizeTask(resData.task);
+      } else {
+        // Was silently falling through to a made-up local task, so a refused
+        // request (no create_tasks permission, validation error) still looked
+        // like success and the "task" vanished on the next reload.
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to create task.');
+        return null;
       }
     } catch (err) {
       console.error('Failed to sync createTask to API:', err);
+      alert('Failed to create task. Please check your connection and try again.');
+      return null;
     }
 
-    const newTask = savedTask || {
-      ...basePayload,
-      id: `tsk_${Date.now().toString(36)}`,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
+    if (!savedTask) return null;
+    const newTask = savedTask;
 
     setTasks(prev => [newTask, ...(prev || [])]);
 
@@ -967,16 +1797,30 @@ export const AppProvider = ({ children }) => {
   const updateTask = async (id, updates) => {
     const targetId = getBackendId(id);
 
-    const wireUpdates = { ...updates };
-    ['assignedToId', 'projectId', 'creatorId'].forEach(key => {
-      if (key in wireUpdates) {
-        const val = wireUpdates[key];
-        wireUpdates[key] = (val === '' || val === null || val === undefined) ? null : getBackendId(val);
-      }
-    });
-    if ('estimatedHours' in wireUpdates) {
-      wireUpdates.estimatedHours = Number(wireUpdates.estimatedHours) || 0;
+    // This used to spread the camelCase `updates` straight onto the wire
+    // (assignedToId, dueDate, startDate, estimatedHours, ...). The backend
+    // binds snake_case (assignee_id, due_date, ...), so it ignored every
+    // one of those, answered 200 with the task unchanged, and the UI then
+    // replaced its state with that unchanged copy — reassigning a task or
+    // changing its dates silently did nothing. Only fields the backend's
+    // UpdateTaskInput actually accepts are sent.
+    const wireUpdates = {};
+    if (updates.title !== undefined) wireUpdates.title = updates.title;
+    if (updates.description !== undefined) wireUpdates.description = updates.description;
+    if (updates.priority !== undefined) wireUpdates.priority = updates.priority;
+    if (updates.status !== undefined) wireUpdates.status = updates.status;
+    if (updates.assignedToId !== undefined && updates.assignedToId !== '' && updates.assignedToId !== null) {
+      wireUpdates.assignee_id = getBackendId(updates.assignedToId);
     }
+    if (updates.dueDate) wireUpdates.due_date = toRFC3339(updates.dueDate);
+    if (updates.startDate) wireUpdates.start_date = toRFC3339(updates.startDate);
+    if (updates.storyPoints !== undefined) wireUpdates.story_points = Number(updates.storyPoints) || 0;
+    if (updates.labels !== undefined) {
+      wireUpdates.labels = Array.isArray(updates.labels) ? updates.labels.join(',') : (updates.labels || '');
+    }
+    if (updates.estimatedHours !== undefined) wireUpdates.estimated_hours = Number(updates.estimatedHours) || 0;
+    if (updates.actualHours !== undefined) wireUpdates.actual_hours = Number(updates.actualHours) || 0;
+    if (updates.isPinned !== undefined) wireUpdates.is_pinned = !!updates.isPinned;
 
     let savedTask = null;
     if (targetId) {
@@ -1028,12 +1872,9 @@ export const AppProvider = ({ children }) => {
     if (!task) return;
 
     let progress = task.progress;
-    if (newStatus === 'completed' || newStatus === 'closed') {
+    if (newStatus === 'done') {
       progress = 100;
-      if (typeof confetti === 'function') {
-        confetti({ particleCount: 50, spread: 60, origin: { y: 0.7 } });
-      }
-    } else if (newStatus === 'new' || newStatus === 'todo') {
+    } else if (newStatus === 'todo') {
       progress = 0;
     } else if (newStatus === 'in_progress' && progress === 0) {
       progress = 25;
@@ -1042,14 +1883,27 @@ export const AppProvider = ({ children }) => {
     const targetId = getBackendId(id);
     if (targetId) {
       try {
-        await apiFetch(`/api/tasks/${targetId}/status`, {
+        const res = await apiFetch(`/api/tasks/${targetId}/status`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: newStatus })
         });
+        if (!res.ok) {
+          // The response used to be ignored, so a rejected change still
+          // showed as applied until the next reload.
+          const errData = await res.json().catch(() => ({}));
+          alert(errData.error || 'Failed to update task status.');
+          return;
+        }
       } catch (err) {
         console.error('Failed to sync updateTaskStatus to API:', err);
+        alert('Failed to update task status. Please check your connection and try again.');
+        return;
       }
+    }
+
+    if (newStatus === 'done' && typeof confetti === 'function') {
+      confetti({ particleCount: 50, spread: 60, origin: { y: 0.7 } });
     }
 
     setTasks(prev => (prev || []).map(t => {
@@ -1321,7 +2175,10 @@ export const AppProvider = ({ children }) => {
 
     let savedSub = null;
     try {
-      const res = await apiFetch('/api/subtasks', {
+      // Was POSTing to the flat "/api/subtasks" — the real route is
+      // nested under its parent task (tasks.POST("/:id/subtasks", ...)
+      // in routes.go), which is why every subtask creation was 404ing.
+      const res = await apiFetch(`/api/tasks/${targetTaskId}/subtasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1361,7 +2218,7 @@ export const AppProvider = ({ children }) => {
     const targetSubTaskId = getBackendId(subTaskId);
     let savedSub = null;
     try {
-      const res = await apiFetch(`/api/subtasks/${targetSubTaskId}/status`, {
+      const res = await apiFetch(`/api/tasks/subtasks/${targetSubTaskId}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status })
@@ -1369,9 +2226,15 @@ export const AppProvider = ({ children }) => {
       if (res.ok) {
         const resData = await res.json();
         savedSub = normalizeSubTask(resData.subtask);
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to update sub-task status.');
+        return;
       }
     } catch (err) {
       console.error('Failed to sync subtask status to API:', err);
+      alert('Failed to update sub-task status. Please check your connection and try again.');
+      return;
     }
 
     setTasks(prev => prev.map(t => {
@@ -1393,7 +2256,10 @@ export const AppProvider = ({ children }) => {
     const targetTaskId = getBackendId(taskId);
     let savedComment = null;
     try {
-      const res = await apiFetch('/api/comments', {
+      // Was POSTing to the flat "/api/comments" — the real route is
+      // nested under the parent task (tasks.POST("/:id/comments", ...)
+      // in routes.go).
+      const res = await apiFetch(`/api/tasks/${targetTaskId}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1516,6 +2382,9 @@ export const AppProvider = ({ children }) => {
     const supervisorId = assignee?.supervisorId ?? data.supervisorId ?? null;
     const adminId = assignee?.adminId ?? data.adminId ?? null;
 
+    // Determine if this is a Support/TT (ticketing) type
+    const isSupportTT = data.projectType === 'ticketing';
+
     const basePayload = {
       ...data,
       supervisorId,
@@ -1528,20 +2397,26 @@ export const AppProvider = ({ children }) => {
       title: basePayload.title,
       description: basePayload.description,
       department: basePayload.department || currentUser?.department || '',
-      category: basePayload.category || '',
+      category: basePayload.category || 'incident',
       priority: basePayload.priority || 'normal',
-      severity: basePayload.severity || 'normal',
+      severity: basePayload.severity || 'minor',
       status: basePayload.status || 'open',
       requester_name: basePayload.requesterName || '',
       requester_email: basePayload.requesterEmail || '',
       requester_company: basePayload.requesterCompany || '',
       project_id: getBackendId(basePayload.projectId) || null,
       assigned_to_id: assignee?.id ?? getBackendId(basePayload.assignedToId) ?? null,
-      due_date: basePayload.dueDate || '',
+      due_date: toRFC3339(basePayload.dueDate),
       response_sla_minutes: basePayload.responseSlaMinutes ?? 0,
       resolution_sla_minutes: basePayload.resolutionSlaMinutes ?? 0,
       labels: Array.isArray(basePayload.labels) ? basePayload.labels.join(',') : (basePayload.labels || ''),
     };
+
+    // Strip fields not applicable to Support/TT tickets
+    if (isSupportTT) {
+      // For Support/TT, department comes from the project or user's department
+      wirePayload.department = wirePayload.department || currentUser?.department || 'Support';
+    }
 
     let savedTicket = null;
     try {
@@ -1637,18 +2512,34 @@ export const AppProvider = ({ children }) => {
     const canonicalAssignedId = targetUser ? targetUser.id : (rawAssignedId && rawAssignedId !== 'unassigned' ? rawAssignedId : null);
     const apiAssignedId = targetUser ? (targetUser.backendId || getBackendId(targetUser.id)) : getBackendId(rawAssignedId);
 
+    // Only fields UpdateTicketInput binds. This used to spread the whole
+    // camelCase `updates` object onto the wire, so anything not named the same
+    // as its backend field (isPinned, ...) was silently ignored, and the
+    // response was never checked, so a refused change still showed as saved.
+    const wire = {};
+    ['title', 'description', 'category', 'priority', 'severity', 'status', 'department'].forEach(key => {
+      if (updates[key] !== undefined) wire[key] = updates[key];
+    });
+    if (updates.isPinned !== undefined) wire.is_pinned = !!updates.isPinned;
+    if (updates.projectId !== undefined && updates.projectId !== '') wire.project_id = getBackendId(updates.projectId);
+    if (hasAssignedProp && apiAssignedId) wire.assigned_to_id = apiAssignedId;
+
     if (targetId) {
       try {
-        await apiFetch(`/api/tickets/${targetId}`, {
+        const res = await apiFetch(`/api/tickets/${targetId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...updates,
-            assigned_to_id: hasAssignedProp ? apiAssignedId : undefined
-          })
+          body: JSON.stringify(wire)
         });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          alert(errData.error || 'Failed to update ticket.');
+          return null;
+        }
       } catch (err) {
         console.error('Failed to sync updateTicket to API:', err);
+        alert('Failed to update ticket. Please check your connection and try again.');
+        return null;
       }
     }
 
@@ -1679,6 +2570,7 @@ export const AppProvider = ({ children }) => {
         details: `Updated ticket properties: ${Object.keys(updates).join(', ')}`
       });
     }
+    return true;
   };
 
   const updateTicketStatus = async (id, status, resolutionSummary) => {
@@ -1692,13 +2584,20 @@ export const AppProvider = ({ children }) => {
     const targetId = getBackendId(id);
     if (targetId) {
       try {
-        await apiFetch(`/api/tickets/${targetId}/status`, {
+        const res = await apiFetch(`/api/tickets/${targetId}/status`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status, resolution_summary: resolutionSummary })
         });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          alert(errData.error || 'Failed to update ticket status.');
+          return;
+        }
       } catch (err) {
         console.error('Failed to sync updateTicketStatus to API:', err);
+        alert('Failed to update ticket status. Please check your connection and try again.');
+        return;
       }
     }
 
@@ -1739,21 +2638,32 @@ export const AppProvider = ({ children }) => {
     const targetId = getBackendId(id);
     if (targetId) {
       try {
-        await apiFetch(`/api/tickets/${targetId}/escalate`, {
+        const res = await apiFetch(`/api/tickets/${targetId}/escalate`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ level, reason })
         });
+        if (!res.ok) {
+          // Was fire-and-forget, so a refused escalation (no permission, no
+          // reason) still showed as escalated until the next reload.
+          const errData = await res.json().catch(() => ({}));
+          alert(errData.error || 'Failed to escalate ticket.');
+          return false;
+        }
       } catch (err) {
         console.error('Failed to sync escalateTicket to API:', err);
+        alert('Failed to escalate ticket. Please check your connection and try again.');
+        return false;
       }
     }
 
+    // Status is deliberately left alone: escalation is tracked by
+    // escalationLevel, and 'escalated' isn't a real Ticket.Status (the status
+    // badge would render it as "New").
     setTickets(prev => prev.map(t => {
       if (String(t.id) === String(id)) {
         return {
           ...t,
-          status: 'escalated',
           escalationLevel: level,
           escalationReason: reason,
           updatedAt: new Date().toISOString()
@@ -1784,13 +2694,17 @@ export const AppProvider = ({ children }) => {
         entityId: id
       });
     }
+    return true;
   };
 
   const postTicketComment = async (ticketId, content, isInternal) => {
     const targetTicketId = getBackendId(ticketId);
     let savedComment = null;
     try {
-      const res = await apiFetch('/api/comments', {
+      // Was POSTing to the flat "/api/comments" — the real route is
+      // nested under the parent ticket (tickets.POST("/:id/comments",
+      // ...) in routes.go).
+      const res = await apiFetch(`/api/tickets/${targetTicketId}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1830,7 +2744,7 @@ export const AppProvider = ({ children }) => {
   };
 
   const addTicketComment = async (ticketId, content) => {
-    await postTicketComment(ticketId, content, false);
+    return await postTicketComment(ticketId, content, false);
   };
 
   const addTicketInternalNote = async (ticketId, content) => {
@@ -1847,6 +2761,7 @@ export const AppProvider = ({ children }) => {
         details: `Added internal staff note by ${currentUser?.name}`
       });
     }
+    return saved;
   };
 
   const addTicketResponse = async (ticketId, content, isInternalNote = false) => {
@@ -1866,17 +2781,47 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  const assignTicket = (ticketId, agentId) => {
+  // Was a purely local state change — it never called the backend, so every
+  // assignment made from the ticket drawer disappeared on reload. Uses the
+  // real POST /tickets/:id/assign (assign_tickets permission).
+  const assignTicket = async (ticketId, agentId) => {
     const ticket = tickets.find(t => String(t.id) === String(ticketId));
-    if (!ticket) return;
+    if (!ticket) return false;
 
     const agent = findUserByAnyId(allUsers, agentId);
+    const apiAgentId = agent ? getBackendId(agent.id) : getBackendId(agentId);
+    if (!apiAgentId) {
+      alert('Pick an agent to assign this ticket to.');
+      return false;
+    }
+
+    const targetId = getBackendId(ticketId);
+    let saved = null;
+    try {
+      const res = await apiFetch(`/api/tickets/${targetId}/assign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assigned_to_id: apiAgentId })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to assign ticket.');
+        return false;
+      }
+      saved = resData.ticket || null;
+    } catch (err) {
+      console.error('Failed to sync assignTicket to API:', err);
+      alert('Failed to assign ticket. Please check your connection and try again.');
+      return false;
+    }
 
     setTickets(prev => prev.map(t => {
       if (String(t.id) === String(ticketId)) {
         return {
           ...t,
-          assignedToId: agent ? agent.id : (agentId || undefined),
+          assignedToId: agent ? agent.id : apiAgentId,
+          status: saved?.status || t.status,
+          firstResponseAt: saved?.first_response_at || t.firstResponseAt,
           supervisorId: agent?.supervisorId || t.supervisorId,
           adminId: agent?.adminId || t.adminId,
           updatedAt: new Date().toISOString()
@@ -1893,7 +2838,7 @@ export const AppProvider = ({ children }) => {
       entityType: 'ticket',
       entityId: ticketId,
       entityTitle: `${ticket.ticketNumber}: ${ticket.title}`,
-      details: agent ? `Reassigned to ${agent.name}` : 'Unassigned'
+      details: agent ? `Reassigned to ${agent.name}` : 'Reassigned'
     });
 
     if (agent && String(agent.id) !== String(currentUser?.id)) {
@@ -1906,15 +2851,25 @@ export const AppProvider = ({ children }) => {
         entityId: ticketId
       });
     }
+    return true;
   };
 
   const deleteTicket = async (id) => {
     const targetId = getBackendId(id);
     if (targetId) {
       try {
-        await apiFetch(`/api/tickets/${targetId}`, { method: 'DELETE' });
+        const res = await apiFetch(`/api/tickets/${targetId}`, { method: 'DELETE' });
+        if (!res.ok) {
+          // Removed the ticket from the UI even when the server refused
+          // (only admins may archive), so it "vanished" until the next reload.
+          const errData = await res.json().catch(() => ({}));
+          alert(errData.error || 'Failed to archive ticket.');
+          return false;
+        }
       } catch (err) {
         console.error('Failed to sync deleteTicket to API:', err);
+        alert('Failed to archive ticket. Please check your connection and try again.');
+        return false;
       }
     }
 
@@ -1995,13 +2950,78 @@ export const AppProvider = ({ children }) => {
     if (updates.phone !== undefined) wirePayload.phone = updates.phone;
     if (updates.avatar !== undefined) wirePayload.avatar = updates.avatar;
     if (updates.password) wirePayload.password = updates.password;
+    // Was never sent at all — a self-service password change had no way
+    // for the backend to verify the caller actually knows their current
+    // password, even though profile.jsx's form collects it and checks
+    // it's non-empty. Checking "did they type something" client-side
+    // isn't verification; the backend needs the value itself to check it
+    // against the real hash.
+    if (updates.currentPassword) wirePayload.current_password = updates.currentPassword;
     if (updates.department !== undefined) wirePayload.department = updates.department;
     if (updates.supervisorId !== undefined) wirePayload.supervisor_id = getBackendId(updates.supervisorId);
     if (updates.adminId !== undefined) wirePayload.admin_id = getBackendId(updates.adminId);
     if (updates.status !== undefined) wirePayload.status = updates.status;
 
+    // PUT /api/users/:id needs manage_users, so a regular user editing their
+    // OWN profile (name/title/phone/avatar/password) was rejected — and that
+    // rejection was only console.error'd. Self-service edits go through
+    // /api/me and /api/me/password instead; anything that touches
+    // department/supervisor/status still needs the admin endpoint.
+    const isSelfService =
+      !!targetId &&
+      String(targetId) === String(getBackendId(currentUser?.id)) &&
+      updates.department === undefined &&
+      updates.supervisorId === undefined &&
+      updates.adminId === undefined &&
+      updates.status === undefined;
+
     let savedUser = null;
-    if (targetId) {
+    let succeeded = false;
+    if (targetId && isSelfService) {
+      try {
+        let ok = true;
+        const selfPayload = {};
+        if (wirePayload.name !== undefined) selfPayload.name = wirePayload.name;
+        if (wirePayload.title !== undefined) selfPayload.title = wirePayload.title;
+        if (wirePayload.phone !== undefined) selfPayload.phone = wirePayload.phone;
+        if (wirePayload.avatar !== undefined) selfPayload.avatar = wirePayload.avatar;
+
+        if (Object.keys(selfPayload).length > 0) {
+          const res = await apiFetch('/api/me', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(selfPayload)
+          });
+          if (res.ok) {
+            const resData = await res.json();
+            savedUser = normalizeUser(resData.user);
+          } else {
+            ok = false;
+            const errData = await res.json().catch(() => ({}));
+            console.error('updateUser (self) failed:', errData.error);
+          }
+        }
+
+        if (ok && updates.password) {
+          const res = await apiFetch('/api/me/password', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              old_password: updates.currentPassword || '',
+              new_password: updates.password
+            })
+          });
+          if (!res.ok) {
+            ok = false;
+            const errData = await res.json().catch(() => ({}));
+            alert(errData.error || 'Failed to change password.');
+          }
+        }
+        succeeded = ok;
+      } catch (err) {
+        console.error('Failed to sync updateUser (self) to API:', err);
+      }
+    } else if (targetId) {
       try {
         const res = await apiFetch(`/api/users/${targetId}`, {
           method: 'PUT',
@@ -2011,6 +3031,7 @@ export const AppProvider = ({ children }) => {
         if (res.ok) {
           const resData = await res.json();
           savedUser = normalizeUser(resData.user);
+          succeeded = true;
         } else {
           const errData = await res.json().catch(() => ({}));
           console.error('updateUser failed:', errData.error);
@@ -2020,10 +3041,15 @@ export const AppProvider = ({ children }) => {
       }
     }
 
-    setAllUsers(prev => prev.map(u => String(u.id) === String(userId)
-      ? (savedUser || { ...u, ...updates })
-      : u
-    ));
+    // Previously applied `savedUser || { ...u, ...updates }` unconditionally
+    // — meaning a FAILED update still merged the attempted changes into
+    // local state, so the UI displayed success regardless of what the
+    // backend actually did. Now local state only changes when the API
+    // call genuinely succeeded, matching how every other update function
+    // in this file already behaves.
+    if (succeeded) {
+      setAllUsers(prev => prev.map(u => String(u.id) === String(userId) ? (savedUser || u) : u));
+    }
 
     logAudit({
       actorId: currentUser?.id,
@@ -2035,13 +3061,27 @@ export const AppProvider = ({ children }) => {
       entityTitle: savedUser?.name || `User ${userId}`,
       details: `Updated user profile attributes: ${Object.keys(updates).join(', ')}`
     });
+
+    // Callers previously had no way to tell success from failure at all
+    // — updateUser had no return statement, so `await updateUser(...)`
+    // always evaluated to undefined regardless of what actually happened.
+    return succeeded ? (savedUser || true) : null;
   };
 
-  const toggleUserStatus = (userId) => {
+  const toggleUserStatus = async (userId) => {
     const user = allUsers.find(u => String(u.id) === String(userId));
-    if (!user) return;
-    const nextStatus = user.status === 'active' ? 'deactivated' : 'active';
-    setAllUsers(prev => prev.map(u => String(u.id) === String(userId) ? { ...u, status: nextStatus } : u));
+    if (!user) return null;
+    const nextStatus = user.status === 'active' ? 'inactive' : 'active';
+
+    // Was a pure local setAllUsers mutation with NO backend call at all
+    // — meaning a status toggle looked like it worked but was never
+    // persisted; reloading the page silently reverted it. Reusing
+    // updateUser here means this now goes through the same real PUT
+    // request, the same success-only state update, and the same audit
+    // logging as every other user edit, rather than duplicating (and
+    // re-breaking) that logic separately.
+    const result = await updateUser(userId, { status: nextStatus });
+    if (!result) return null;
 
     logAudit({
       actorId: currentUser?.id,
@@ -2089,7 +3129,7 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const createCustomRole = (roleKey, roleDisplayName, initialPermissions = {}) => {
+  const createCustomRole = async (roleKey, roleDisplayName, initialPermissions = {}) => {
     if (currentUser?.role !== 'super_admin') return;
 
     const normalizedKey = roleKey.toLowerCase().trim().replace(/\s+/g, '_');
@@ -2098,6 +3138,44 @@ export const AppProvider = ({ children }) => {
     if (customRoles.includes(normalizedKey)) {
       alert('Role already exists!');
       return;
+    }
+
+    // Was pure local state — setCustomRoles/setPermissionMatrix with no
+    // backend call at all. A role "created" here never touched the real
+    // roles table, so it vanished on reload and — far more seriously —
+    // was never usable for actual permission enforcement, since
+    // middleware.RequirePermission checks the real database, which this
+    // never wrote to.
+    try {
+      const res = await apiFetch('/api/roles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: normalizedKey, label: roleDisplayName || roleKey })
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to create role.');
+        return;
+      }
+    } catch (err) {
+      console.error('Failed to create role:', err);
+      alert('Failed to create role. Please check your connection and try again.');
+      return;
+    }
+
+    // No bulk "create role with initial permissions" endpoint exists —
+    // grant each checked one individually via SetPermission.
+    for (const [permKey, granted] of Object.entries(initialPermissions)) {
+      if (!granted) continue;
+      try {
+        await apiFetch(`/api/roles/${normalizedKey}/permissions/${permKey}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ granted: true })
+        });
+      } catch (err) {
+        console.error(`Failed to grant ${permKey} for new role ${normalizedKey}:`, err);
+      }
     }
 
     setCustomRoles(prev => [...prev, normalizedKey]);
@@ -2119,11 +3197,31 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const deleteCustomRole = (roleKey) => {
+  const deleteCustomRole = async (roleKey) => {
     if (currentUser?.role !== 'super_admin') return;
 
-    const builtInRoles = ['super_admin', 'admin', 'supervisor', 'staff', 'client'];
+    // "client" removed from this list — it isn't a real backend role at
+    // all (allowedRoles in auth.go only recognizes super_admin/admin/
+    // supervisor/staff), so treating it as a protected built-in here was
+    // just dead weight left over from an earlier design.
+    const builtInRoles = ['super_admin', 'admin', 'supervisor', 'staff'];
     if (builtInRoles.includes(roleKey)) return;
+
+    // Same fix as createCustomRole above — was pure local state, never
+    // called the backend, so a "deleted" role's permission rows stayed
+    // in the real database untouched.
+    try {
+      const res = await apiFetch(`/api/roles/${roleKey}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to delete role.');
+        return;
+      }
+    } catch (err) {
+      console.error('Failed to delete role:', err);
+      alert('Failed to delete role. Please check your connection and try again.');
+      return;
+    }
 
     setCustomRoles(prev => prev.filter(r => r !== roleKey));
 
@@ -2145,9 +3243,34 @@ export const AppProvider = ({ children }) => {
     });
   };
 
-  const updateRolePermission = (role, permissionKey, value) => {
+  const updateRolePermission = async (role, permissionKey, value) => {
     if (currentUser?.role !== 'super_admin') return;
     if (role === 'super_admin') return;
+
+    // Was pure local state — this is the most consequential of the
+    // three fixes here. Every toggle in the Settings & Matrix UI was
+    // purely cosmetic: it looked granted or revoked on screen, an audit
+    // entry was even created, but the real role_permissions table (what
+    // middleware.RequirePermission actually checks on every protected
+    // request) was never touched. A Super Admin revoking a capability
+    // believed they'd changed system behavior; nothing downstream ever
+    // changed at all.
+    try {
+      const res = await apiFetch(`/api/roles/${role}/permissions/${permissionKey}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ granted: value })
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to update permission.');
+        return;
+      }
+    } catch (err) {
+      console.error('Failed to update permission:', err);
+      alert('Failed to update permission. Please check your connection and try again.');
+      return;
+    }
 
     setPermissionMatrix(prev => ({
       ...prev,
@@ -2197,10 +3320,12 @@ export const AppProvider = ({ children }) => {
         allUsers,
         users: allUsers,
         authToken,
+        apiFetch,
         setAuthToken,
         dataLoaded,
         projects,
         clients,
+        feasibilities,
         tasks,
         tickets,
         auditLogs,
@@ -2216,6 +3341,7 @@ export const AppProvider = ({ children }) => {
         visibleProjects,
         visibleTasks,
         visibleTickets,
+        visibleFeasibilities,
         userNotifications,
         unreadNotificationCount,
         setCurrentUserId,
@@ -2229,6 +3355,17 @@ export const AppProvider = ({ children }) => {
         createClient,
         updateClient,
         deleteClient,
+        departments,
+        createDepartment,
+        updateDepartment,
+        deleteDepartment,
+        createFeasibility,
+        updateFeasibility,
+        addFeasibilityVendor,
+        updateFeasibilityVendor,
+        deleteFeasibilityVendor,
+        deleteFeasibility,
+        convertFeasibilityToProject,
         createTask,
         updateTask,
         updateTaskStatus,
@@ -2276,6 +3413,10 @@ export const AppProvider = ({ children }) => {
         setSelectedTicketEditId,
         selectedProjectDetailId,
         setSelectedProjectDetailId,
+        selectedFeasibilityId,
+        setSelectedFeasibilityId,
+        selectedFeasibilityEditId,
+        setSelectedFeasibilityEditId,
         quickCreateOpen,
         quickCreatePickerOpen,
         setQuickCreatePickerOpen,

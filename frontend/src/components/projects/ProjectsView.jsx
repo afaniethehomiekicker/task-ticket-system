@@ -219,7 +219,7 @@ export const ProjectsView = () => {
                       {members.slice(0, 3).map(m => (
                         <img
                           key={m.id}
-                          src={m.avatar}
+                          src={m.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"}
                           alt={m.name}
                           title={m.name}
                           className="w-5 h-5 rounded-full object-cover ring-1 ring-slate-200 dark:ring-zinc-900"

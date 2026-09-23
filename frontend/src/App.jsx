@@ -7,6 +7,7 @@ import { ProjectsView } from "./components/projects/ProjectsView";
 import { KanbanBoardView } from "./components/kanban/KanbanBoardView";
 import { TasksView } from "./components/tasks/TasksView";
 import { TicketsView } from "./components/tickets/TicketsView";
+import { FeasibilitiesView } from "./components/feasibilities/FeasibilitiesView";
 import { TeamView } from "./components/team/TeamView";
 import { ReportsView } from "./components/reports/ReportsView";
 import { AuditLogsView } from "./components/audit/AuditLogsView";
@@ -21,6 +22,7 @@ import { TaskEditModal } from "./components/tasks/TaskEditModal";
 import { ProjectEditModal } from "./components/projects/ProjectEditModal";
 import { TicketEditModal } from "./components/tickets/TicketEditModal";
 import { ClientsView } from "./components/Clients/Clientsview";
+import { DepartmentsView } from "./components/departments/Departmentsview";
 
 const AppContent = () => {
   const { activeTab, quickCreateOpen, setQuickCreateOpen, currentUser, authToken, dataLoaded } =
@@ -72,8 +74,12 @@ const AppContent = () => {
         return <TasksView />;
       case "tickets":
         return <TicketsView />;
+      case "feasibilities":
+        return <FeasibilitiesView />;
       case "clients":
         return <ClientsView />;
+      case "departments":
+        return <DepartmentsView />;
       case "team":
         return <TeamView />;
       case "reports":

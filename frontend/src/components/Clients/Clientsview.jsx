@@ -1,12 +1,14 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
+import { canManageClients } from '../../utils/permissions';
 import { 
   Building2, Search, Mail, Phone, Globe, MapPin, Briefcase, 
   Pencil, Trash2, X, Check, FolderKanban
 } from 'lucide-react';
 
 export const ClientsView = () => {
-  const { clients, projects, updateClient, deleteClient, openQuickCreate } = useApp();
+  const { clients, projects, updateClient, deleteClient, openQuickCreate, currentUser, permissionMatrix } = useApp();
+  const canManage = canManageClients(currentUser, permissionMatrix);
 
   const [search, setSearch] = useState('');
   const [editingId, setEditingId] = useState(null);
@@ -47,15 +49,21 @@ export const ClientsView = () => {
 
   const saveEdit = async (clientId) => {
     setIsSaving(true);
-    await updateClient(clientId, editForm);
+    // updateClient now returns null on failure (and already alerts with
+    // the real error internally) — only exit edit mode on genuine
+    // success, so a failed save doesn't discard what was typed with no
+    // way to retry.
+    const result = await updateClient(clientId, editForm);
     setIsSaving(false);
-    setEditingId(null);
-    setEditForm({});
+    if (result) {
+      setEditingId(null);
+      setEditForm({});
+    }
   };
 
-  const handleDelete = (client) => {
+  const handleDelete = async (client) => {
     if (!window.confirm(`Delete ${client.companyName}? This can't be undone.`)) return;
-    deleteClient(client.id);
+    await deleteClient(client.id);
   };
 
   return (
@@ -72,14 +80,16 @@ export const ClientsView = () => {
           </p>
         </div>
 
-        <button
-          id="clients-new-btn"
-          onClick={() => openQuickCreate({ tab: 'client', restrictToTab: true })}
-          className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-purple-600 hover:bg-purple-700 text-white shadow-xs transition cursor-pointer self-start sm:self-auto"
-        >
-          <Building2 className="w-4 h-4" />
-          New Client
-        </button>
+        {canManage && (
+          <button
+            id="clients-new-btn"
+            onClick={() => openQuickCreate({ tab: 'client', restrictToTab: true })}
+            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-purple-600 hover:bg-purple-700 text-white shadow-xs transition cursor-pointer self-start sm:self-auto"
+          >
+            <Building2 className="w-4 h-4" />
+            New Client
+          </button>
+        )}
       </div>
 
       {/* Search */}
@@ -204,7 +214,7 @@ export const ClientsView = () => {
                           </span>
                         )}
                       </div>
-                      <div className="flex items-center gap-1 shrink-0">
+                      {canManage && <div className="flex items-center gap-1 shrink-0">
                         <button
                           onClick={() => startEdit(client)}
                           className="p-1.5 text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
@@ -219,7 +229,7 @@ export const ClientsView = () => {
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
-                      </div>
+                      </div>}
                     </div>
 
                     <div className="space-y-1 text-xs text-slate-600 dark:text-zinc-400">

@@ -44,12 +44,21 @@ export const Login = () => {
 
       // Store the token BEFORE switching currentUserId, so that if any
       // effect reacts to currentUserId changing and immediately makes an
-      // authenticated request, the token is already in place. The user id
-      // returned by the backend is the canonical id the rest of the app
-      // uses too (see normalizeUser in AppContext), so it's passed
-      // straight through.
+      // authenticated request, the token is already in place.
+      //
+      // data.user.id ?? data.user.ID — both casings checked deliberately.
+      // Go's gorm.Model has no explicit json tag on its ID field, so the
+      // raw backend response key is "ID" (capital), not "id". Reading
+      // data.user.id alone silently returned undefined here, which then
+      // flowed into setCurrentUserId — whose own null/undefined guard
+      // calls setAuthToken(null), deleting the token this function had
+      // just stored one line above, before anything downstream (like the
+      // redirect on AdminLogin's equivalent flow) even ran. Every other
+      // consumer of backend user data already handles this via
+      // normalizeUser's raw.id ?? raw.ID; this was the one place still
+      // reading the raw response directly instead.
       setAuthToken(data.token);
-      setCurrentUserId(data.user.id);
+      setCurrentUserId(data.user.id ?? data.user.ID);
     } catch (err) {
       setError('Could not reach the server. Please try again.');
     } finally {

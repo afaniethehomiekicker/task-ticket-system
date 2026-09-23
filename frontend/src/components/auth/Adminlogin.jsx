@@ -46,7 +46,7 @@ export const AdminLogin = () => {
       }
 
       setAuthToken(data.token);
-      setCurrentUserId(data.user.id);
+      setCurrentUserId(data.user.id ?? data.user.ID);
 
       // Land back on the main app after a successful admin login, rather
       // than staying on /admin-login — a full navigation (not just SPA

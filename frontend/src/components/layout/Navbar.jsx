@@ -102,7 +102,7 @@ export const Navbar = () => {
             title="Go to Profile"
           >
             <img
-              src={currentUser.avatar}
+              src={currentUser.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"}
               alt={currentUser.name}
               className="w-7 h-7 rounded-full object-cover ring-1 ring-slate-400 dark:ring-zinc-700"
             />

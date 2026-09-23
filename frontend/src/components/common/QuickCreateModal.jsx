@@ -18,10 +18,12 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     createTask,
     createTicket,
     createClient,
+    createFeasibility,
     quickCreateConfig,
     visibleProjects,
     currentUser,
     allUsers,
+    apiFetch,
   } = useApp() || {};
 
   const [localTab, setLocalTab] = useState(quickCreateConfig?.tab || "project");
@@ -33,11 +35,18 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
 
     if (justOpened) {
       setLocalTab(quickCreateConfig?.tab || "project");
+      // Was never synced from config at all — QuickCreateTypePicker's
+      // "Support / TT" option passed projectType through (once
+      // openQuickCreate itself was fixed to stop dropping it), but this
+      // modal's own local projectType state stayed hardcoded at
+      // "general" regardless, requiring the user to manually re-select
+      // it every time from the dropdown inside the form.
+      setProjectType(quickCreateConfig?.projectType || "general");
       setOpenNonce((n) => n + 1);
     }
 
     wasOpenRef.current = isOpen;
-  }, [isOpen, quickCreateConfig?.tab]);
+  }, [isOpen, quickCreateConfig?.tab, quickCreateConfig?.projectType]);
 
   const lockedProjectId = quickCreateConfig?.lockedProjectId || null;
   const lockedProject = lockedProjectId
@@ -51,6 +60,8 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   const [prjStartDate, setPrjStartDate] = useState("");
   const [prjDueDate, setPrjDueDate] = useState("");
   const [projectClientId, setProjectClientId] = useState("");
+  const [projectDepartment, setProjectDepartment] = useState("");
+  const [projectType, setProjectType] = useState("general"); // 'general' or 'ticketing'
   const [selectedClientName, setSelectedClientName] = useState("");
   const [showNewClientForm, setShowNewClientForm] = useState(false);
   const [newClientName, setNewClientName] = useState("");
@@ -63,18 +74,18 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   const [taskTitle, setTaskTitle] = useState("");
   const [taskProjectId, setTaskProjectId] = useState("");
   const [taskPriority, setTaskPriority] = useState("normal");
+  const [taskDepartment, setTaskDepartment] = useState("");
+  const [taskAssigneeId, setTaskAssigneeId] = useState("");
 
   // Form states — Ticket
   const [ticketSubject, setTicketSubject] = useState("");
   const [ticketCategory, setTicketCategory] = useState(TICKET_CATEGORIES[0]);
   const [ticketPriority, setTicketPriority] = useState("normal");
   const [ticketProjectId, setTicketProjectId] = useState("");
+  const [ticketDepartment, setTicketDepartment] = useState("");
+  const [ticketAssigneeId, setTicketAssigneeId] = useState("");
 
-  // Form states — standalone Client tab. Deliberately separate state
-  // (not reusing newClientName/newClientContact/newClientEmail above) —
-  // those belong to the inline quick-add nested inside the Project tab,
-  // which only collects 3 of the 7 fields as a fast-path. This tab is
-  // the full form.
+  // Form states — standalone Client tab.
   const [clientCompanyName, setClientCompanyName] = useState("");
   const [clientContactPerson, setClientContactPerson] = useState("");
   const [clientEmail, setClientEmail] = useState("");
@@ -84,45 +95,31 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   const [clientAddress, setClientAddress] = useState("");
   const [isSubmittingClient, setIsSubmittingClient] = useState(false);
 
+  // Form states — Feasibility. Product list matches FeasibilitiesView.jsx's
+  // own PRODUCTS constant, kept in sync manually since there's no shared
+  // source for it yet.
+  const FEASIBILITY_PRODUCTS = ["DPLC", "Dark Fiber", "IPT", "IPT Mix", "Pure IPT"];
+  const [feasProduct, setFeasProduct] = useState(FEASIBILITY_PRODUCTS[0]);
+  const [feasCapacity, setFeasCapacity] = useState("");
+  const [feasFromLocation, setFeasFromLocation] = useState("");
+  const [feasToLocation, setFeasToLocation] = useState("");
+  const [feasCity, setFeasCity] = useState("");
+  const [feasClientId, setFeasClientId] = useState("");
+  const [feasSelectedClientName, setFeasSelectedClientName] = useState("");
+  const [feasRequirementDetails, setFeasRequirementDetails] = useState("");
+  const [feasPriority, setFeasPriority] = useState("normal");
+  const [feasTargetDate, setFeasTargetDate] = useState("");
+  const [isSubmittingFeasibility, setIsSubmittingFeasibility] = useState(false);
+
   if (!isOpen) return null;
 
-  // Server-side User Search for Client Select
-  const loadUserOptions = async (inputValue) => {
-    try {
-      const res = await fetch(
-        `/api/users?search=${encodeURIComponent(inputValue)}`,
-      );
-      if (!res.ok) throw new Error("Search failed");
-      const data = await res.json();
-      const users = data.users || [];
-      return users.map((u) => ({
-        value: u.id || u.ID,
-        label: `${u.name} (${u.role ? u.role.toUpperCase() : "USER"}) ${u.companyName ? `— ${u.companyName}` : ""}`,
-      }));
-    } catch (err) {
-      const availableUsers = allUsers && allUsers.length > 0 ? allUsers : [];
-      const filtered = availableUsers.filter(
-        (u) =>
-          u.name?.toLowerCase().includes(inputValue.toLowerCase()) ||
-          u.email?.toLowerCase().includes(inputValue.toLowerCase()),
-      );
-      return filtered.map((u) => ({
-        value: u.id,
-        label: `${u.name} (${u.role ? u.role.toUpperCase() : "USER"}) ${u.companyName ? `— ${u.companyName}` : ""}`,
-      }));
-    }
-  };
-
-  // Server-side Client/Company search — hits the real /api/clients
-  // endpoint, not /api/users. This replaces a previous stub that searched
-  // the staff directory and displayed a companyName field that doesn't
-  // exist on User at all: picking a "client" used to mean picking a
-  // regular team member, with no way to tell an actual external client
-  // apart from a colleague, and the resulting clientId pointed at
-  // nothing a project's real client_id foreign key could ever resolve.
+  // Server-side Client/Company search
   const loadClientOptions = async (inputValue) => {
     try {
-      const res = await fetch(
+      // Was a raw fetch() with no Authorization header — every keystroke
+      // in this search box hit /api/clients with no token attached,
+      // failing with 401 on every single character typed.
+      const res = await apiFetch(
         `/api/clients?search=${encodeURIComponent(inputValue)}`,
       );
       if (!res.ok) throw new Error("Search failed");
@@ -156,11 +153,6 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
       setNewClientName("");
       setNewClientContact("");
       setNewClientEmail("");
-      // AsyncSelect below is uncontrolled (no `value` prop) — bumping this
-      // key forces it to remount so its displayed value doesn't silently
-      // disagree with projectClientId now pointing at the just-created
-      // client. The confirmation line under the field covers the gap
-      // between the remount and the next time someone actually searches.
       setClientPickerNonce((n) => n + 1);
     } else {
       alert("Could not create the client. Please try again.");
@@ -170,7 +162,8 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   // Server-side Project Search
   const loadProjectOptions = async (inputValue) => {
     try {
-      const res = await fetch(
+      // Same fix as loadClientOptions above.
+      const res = await apiFetch(
         `/api/projects?search=${encodeURIComponent(inputValue)}`,
       );
       if (!res.ok) throw new Error("Search failed");
@@ -196,6 +189,63 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
           label: `${p.code} — ${p.title}`,
         })),
       ];
+    }
+  };
+
+  // NOT actually a cascade from the selected Client — Department is an
+  // internal-org concept (which team handles the work), unrelated to
+  // which Client a project is for, so there's no real dependency here to
+  // begin with. This returns a flat, hardcoded list because Department
+  // isn't a real backend entity yet (no /api/departments exists) — this
+  // is a stopgap until it is, not a working cascade. Previously gated
+  // behind "a client must be picked first," which implied a dependency
+  // that doesn't actually exist and just made department-picking
+  // pointlessly blocked on an unrelated field.
+  const loadDepartmentOptions = async (inputValue) => {
+    try {
+      const departments = [
+        "Technical",
+        "Customer Success", 
+        "Feasibility",
+        "Engineering",
+        "Support",
+        "Sales",
+        "Operations",
+        "Administration"
+      ];
+      return departments
+        .filter(d => d.toLowerCase().includes(inputValue.toLowerCase()))
+        .map(d => ({ value: d, label: d }));
+    } catch (err) {
+      return [];
+    }
+  };
+
+  // Cascading: Load Assignees based on selected Department
+  const loadAssigneeOptions = async (inputValue) => {
+    const dept = projectDepartment || taskDepartment || ticketDepartment;
+    if (!dept) return [];
+    try {
+      // Same fix as loadClientOptions/loadProjectOptions above.
+      const res = await apiFetch(`/api/users?search=${encodeURIComponent(inputValue)}`);
+      if (!res.ok) throw new Error("Search failed");
+      const data = await res.json();
+      const users = data.users || [];
+      // Filter users by department
+      return users
+        .filter(u => !dept || u.department === dept)
+        .map(u => ({
+          value: u.id || u.ID,
+          label: `${u.name} (${u.role ? u.role.toUpperCase() : "USER"})`,
+        }));
+    } catch (err) {
+      // Fallback to local users
+      return (allUsers || [])
+        .filter(u => !dept || u.department === dept)
+        .map(u => ({
+          value: u.id,
+          label: `${u.name} (${u.role ? u.role.toUpperCase() : "USER"})`,
+        }));
     }
   };
 
@@ -236,6 +286,8 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     setPrjStartDate("");
     setPrjDueDate("");
     setProjectClientId("");
+    setProjectDepartment("");
+    setProjectType("general");
     setSelectedClientName("");
     setShowNewClientForm(false);
     setNewClientName("");
@@ -244,10 +296,14 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     setTaskTitle("");
     setTaskProjectId("");
     setTaskPriority("normal");
+    setTaskDepartment("");
+    setTaskAssigneeId("");
     setTicketSubject("");
     setTicketCategory(TICKET_CATEGORIES[0]);
     setTicketPriority("normal");
     setTicketProjectId("");
+    setTicketDepartment("");
+    setTicketAssigneeId("");
     setClientCompanyName("");
     setClientContactPerson("");
     setClientEmail("");
@@ -255,6 +311,16 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     setClientWebsite("");
     setClientIndustry("");
     setClientAddress("");
+    setFeasProduct(FEASIBILITY_PRODUCTS[0]);
+    setFeasCapacity("");
+    setFeasFromLocation("");
+    setFeasToLocation("");
+    setFeasCity("");
+    setFeasClientId("");
+    setFeasSelectedClientName("");
+    setFeasRequirementDetails("");
+    setFeasPriority("normal");
+    setFeasTargetDate("");
   };
 
   const handleSubmit = async (e) => {
@@ -268,17 +334,27 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
         return;
       }
 
+      // For "Support/TT" type, strip budgetHours
+      const isSupportTT = projectType === 'ticketing';
       const newProject = {
         title: projectName,
         description: projectDescription,
-        budgetHours: prjBudgetHours,
+        budgetHours: isSupportTT ? undefined : prjBudgetHours,
         startDate: prjStartDate || new Date().toISOString().split("T")[0],
         dueDate: prjDueDate || new Date().toISOString().split("T")[0],
-        code: `PRJ-${Date.now().toString().slice(-4)}`,
-        department: currentUser?.department || "Engineering",
-        status: "active",
+        // No client-generated code anymore — it was
+        // `PRJ-${Date.now().toString().slice(-4)}`, the last 4 digits of
+        // a millisecond timestamp, which repeats every 10 seconds. Two
+        // people creating projects within that window — routine usage,
+        // not a rare race — would collide on the backend's unique index
+        // and one would fail outright. The backend now auto-generates a
+        // real, collision-free code (PRJ-000001 style) when this field
+        // is omitted, matching how Task/Ticket numbers already work.
+        department: projectDepartment || currentUser?.department || "Engineering",
+        status: "planning",
         priority: "normal",
         clientId: projectClientId,
+        projectType, // 'general' or 'ticketing'
       };
 
       if (typeof createProject === "function") {
@@ -297,8 +373,9 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
         checklists: [],
         comments: [],
         dueDate: new Date().toISOString().split("T")[0],
-        assignedToId: null,
+        assignedToId: taskAssigneeId || null,
         projectId: resolvedProjectId,
+        department: taskDepartment || currentUser?.department || "",
         progress: 0,
       };
 
@@ -312,15 +389,16 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
         category: ticketCategory,
         priority: ticketPriority,
         severity: ticketPriority,
-        department: currentUser?.department || "Customer Success",
+        department: ticketDepartment || currentUser?.department || "Support",
         requesterName: currentUser?.name || "Internal Requester",
         requesterEmail: currentUser?.email || "",
         requesterCompany: "",
         status: "open",
         projectId: ticketProjectId || null,
-        assignedToId: null,
+        assignedToId: ticketAssigneeId || null,
         escalationLevel: "none",
         dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        projectType: 'ticketing', // Tickets are always ticketing type
       };
 
       if (typeof createTicket === "function") {
@@ -342,9 +420,25 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
       });
       setIsSubmittingClient(false);
 
-      // createClient already alerts on failure and returns null — don't
-      // close/reset on top of that, so the admin doesn't lose what they
-      // typed.
+      if (!created) return;
+    } else if (localTab === "feasibility") {
+      if (!feasProduct) return;
+      if (typeof createFeasibility !== "function") return;
+
+      setIsSubmittingFeasibility(true);
+      const created = await createFeasibility({
+        product: feasProduct,
+        capacity: feasCapacity.trim(),
+        fromLocation: feasFromLocation.trim(),
+        toLocation: feasToLocation.trim(),
+        city: feasCity.trim(),
+        clientId: feasClientId || null,
+        requirementDetails: feasRequirementDetails.trim(),
+        priority: feasPriority,
+        targetDate: feasTargetDate || "",
+      });
+      setIsSubmittingFeasibility(false);
+
       if (!created) return;
     }
 
@@ -357,6 +451,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     task: "New Task",
     ticket: "New Ticket",
     client: "New Client",
+    feasibility: "New Feasibility",
   }[localTab];
 
   return (
@@ -494,6 +589,21 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Project Type
+                </label>
+                <select
+                  value={projectType}
+                  onChange={(e) => setProjectType(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                >
+                  <option value="general">General Project</option>
+                  <option value="ticketing">Support / TT</option>
+                </select>
+              </div>
+
+              {projectType === 'general' && (
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text zinc-300 uppercase tracking-wider mb-1.5">
                   Budget (Hours)
                 </label>
                 <input
@@ -504,6 +614,22 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                   value={prjBudgetHours}
                   onChange={(e) => setPrjBudgetHours(Number(e.target.value))}
                   className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                />
+              </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Department
+                </label>
+                <AsyncSelect
+                  cacheOptions
+                  defaultOptions
+                  isSearchable
+                  loadOptions={loadDepartmentOptions}
+                  onChange={(option) => setProjectDepartment(option ? option.value : "")}
+                  placeholder="Select department..."
+                  styles={customStyles}
                 />
               </div>
 
@@ -601,6 +727,36 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Department
+                </label>
+                <AsyncSelect
+                  cacheOptions
+                  defaultOptions
+                  isSearchable
+                  loadOptions={loadDepartmentOptions}
+                  onChange={(option) => setTaskDepartment(option ? option.value : "")}
+                  placeholder="Select department..."
+                  styles={customStyles}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Assignee
+                </label>
+                <AsyncSelect
+                  cacheOptions
+                  defaultOptions
+                  isSearchable
+                  loadOptions={loadAssigneeOptions}
+                  onChange={(option) => setTaskAssigneeId(option ? option.value : "")}
+                  placeholder="Select assignee..."
+                  styles={customStyles}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
                   Priority
                 </label>
                 <select
@@ -684,6 +840,36 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                     <option value="critical">Critical</option>
                   </select>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Department
+                </label>
+                <AsyncSelect
+                  cacheOptions
+                  defaultOptions
+                  isSearchable
+                  loadOptions={loadDepartmentOptions}
+                  onChange={(option) => setTicketDepartment(option ? option.value : "")}
+                  placeholder="Select department..."
+                  styles={customStyles}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Assignee
+                </label>
+                <AsyncSelect
+                  cacheOptions
+                  defaultOptions
+                  isSearchable
+                  loadOptions={loadAssigneeOptions}
+                  onChange={(option) => setTicketAssigneeId(option ? option.value : "")}
+                  placeholder="Select assignee..."
+                  styles={customStyles}
+                />
               </div>
 
               <div>
@@ -831,6 +1017,165 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                   className="px-5 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-60 disabled:cursor-not-allowed rounded-lg shadow-xs cursor-pointer"
                 >
                   {isSubmittingClient ? "Creating..." : "Create Client"}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {localTab === "feasibility" && (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                    Product *
+                  </label>
+                  <select
+                    value={feasProduct}
+                    onChange={(e) => setFeasProduct(e.target.value)}
+                    required
+                    className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                  >
+                    {FEASIBILITY_PRODUCTS.map((p) => (
+                      <option key={p} value={p}>{p}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                    Capacity
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 100 Mbps, 1 Gbps..."
+                    value={feasCapacity}
+                    onChange={(e) => setFeasCapacity(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                    From Location
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Origin site or address"
+                    value={feasFromLocation}
+                    onChange={(e) => setFeasFromLocation(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                    To Location
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Destination site or address"
+                    value={feasToLocation}
+                    onChange={(e) => setFeasToLocation(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                    City
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Karachi"
+                    value={feasCity}
+                    onChange={(e) => setFeasCity(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                    Priority
+                  </label>
+                  <select
+                    value={feasPriority}
+                    onChange={(e) => setFeasPriority(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                  >
+                    <option value="low">Low</option>
+                    <option value="normal">Normal</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Client
+                </label>
+                <AsyncSelect
+                  cacheOptions
+                  defaultOptions
+                  isSearchable
+                  isClearable
+                  loadOptions={loadClientOptions}
+                  onChange={(option) => {
+                    setFeasClientId(option ? option.value : "");
+                    setFeasSelectedClientName(option ? option.label : "");
+                  }}
+                  placeholder="Type to search client or company..."
+                  styles={customStyles}
+                />
+                {feasSelectedClientName && (
+                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1">
+                    Selected: {feasSelectedClientName}
+                  </p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                    Target Date
+                  </label>
+                  <input
+                    type="date"
+                    value={feasTargetDate}
+                    onChange={(e) => setFeasTargetDate(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Requirement Details
+                </label>
+                <textarea
+                  rows={3}
+                  placeholder="Describe the connectivity or feasibility requirement..."
+                  value={feasRequirementDetails}
+                  onChange={(e) => setFeasRequirementDetails(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden resize-none"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-slate-300 dark:border-zinc-800">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-4 py-2 text-sm font-medium text-slate-700 dark:text-zinc-300 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingFeasibility}
+                  className="px-5 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed rounded-lg shadow-xs cursor-pointer"
+                >
+                  {isSubmittingFeasibility ? "Creating..." : "Create Feasibility"}
                 </button>
               </div>
             </form>

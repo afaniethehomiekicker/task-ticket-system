@@ -1,383 +1,518 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { 
-  X, LifeBuoy, Send, Clock, UserCheck, ShieldAlert, ArrowUpRight, 
-  MessageSquare, Lock, Globe, AlertTriangle, CheckCircle, RotateCcw, Building
+import {
+  X, Clock, AlertTriangle, ShieldAlert, Pencil, Trash2, Send, Lock,
+  User as UserIcon, Building, Paperclip, MessageSquare
 } from 'lucide-react';
 import { PriorityBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
 import { canEscalateTicket, canAssignTickets } from '../../utils/permissions';
 
+// Rebuilt from scratch after the original file was overwritten. It reads the
+// same context state TicketsView already drives (selectedTicketId) and calls
+// the real ticket actions in AppContext, so every change goes to the backend
+// and is only shown once the server has accepted it.
+
+const FALLBACK_AVATAR =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E";
+
+// The backend's own ticket statuses. "escalated" isn't one: escalation is
+// tracked separately (escalationLevel), and "archived" is only reachable via
+// the archive action.
+const STATUS_OPTIONS = [
+  ['new', 'New'],
+  ['assigned', 'Assigned'],
+  ['in_progress', 'In Progress'],
+  ['pending', 'Pending'],
+  ['resolved', 'Resolved'],
+  ['closed', 'Closed'],
+  ['cancelled', 'Cancelled'],
+];
+
+// Escalation chain from the spec: staff -> department head -> department
+// admin -> super admin. The values are what escalateTicket()/the backend use.
+const ESCALATION_LEVELS = [
+  ['supervisor', 'Supervisor / Department head'],
+  ['admin', 'Department admin'],
+  ['super_admin', 'Super admin'],
+];
+
+const fmt = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
+
 export const TicketDetailDrawer = () => {
-  const { 
-    selectedTicketId, 
-    setSelectedTicketId, 
-    tickets, 
-    allUsers, 
-    projects,
-    currentUser, 
-    updateTicketStatus, 
-    escalateTicket, 
-    addTicketResponse,
-    assignTicket
+  const {
+    tickets,
+    selectedTicketId,
+    setSelectedTicketId,
+    setSelectedTicketEditId,
+    allUsers,
+    currentUser,
+    permissionMatrix,
+    updateTicketStatus,
+    escalateTicket,
+    addTicketComment,
+    addTicketInternalNote,
+    assignTicket,
+    deleteTicket,
   } = useApp();
 
-  const [responseText, setResponseText] = useState('');
-  const [isInternalNote, setIsInternalNote] = useState(false);
-  const [escalateReason, setEscalateReason] = useState('');
-  const [showEscalateModal, setShowEscalateModal] = useState(false);
+  const [tab, setTab] = useState('public');
+  const [commentText, setCommentText] = useState('');
+  const [isPosting, setIsPosting] = useState(false);
+  const [isBusy, setIsBusy] = useState(false);
+  const [resolving, setResolving] = useState(false);
+  const [resolutionSummary, setResolutionSummary] = useState('');
+  const [showEscalate, setShowEscalate] = useState(false);
+  const [escLevel, setEscLevel] = useState('supervisor');
+  const [escReason, setEscReason] = useState('');
 
   if (!selectedTicketId) return null;
+  const ticket = (tickets || []).find(t => String(t.id) === String(selectedTicketId));
+  if (!ticket || !currentUser) return null;
 
-  const ticket = tickets.find(t => t.id === selectedTicketId);
-  if (!ticket) return null;
+  const users = allUsers || [];
+  const assignee = users.find(u => String(u.id) === String(ticket.assignedToId));
+  const agents = users.filter(u => u.status !== 'inactive');
 
-  const ticketResponses = ticket.responses || [];
+  const isClosedOut = ticket.status === 'closed' || ticket.status === 'cancelled' || ticket.status === 'archived';
+  const isEscalated = ticket.escalationLevel && ticket.escalationLevel !== 'none';
+  const canEscalate = !isClosedOut && ticket.status !== 'resolved' && canEscalateTicket(currentUser, ticket, permissionMatrix);
+  const canAssign = canAssignTickets(currentUser, permissionMatrix);
+  const isAdminTier = currentUser.role === 'super_admin' || currentUser.role === 'admin';
 
-  const assignee = allUsers.find(u => u.id === ticket.assignedToId);
-  const project = projects.find(p => p.id === ticket.projectId);
+  const publicComments = ticket.comments || [];
+  const internalNotes = ticket.internalNotes || [];
+  const visibleComments = tab === 'internal' ? internalNotes : publicComments;
 
-  const handleSendResponse = (e) => {
-    e.preventDefault();
-    if (!responseText.trim()) return;
-    addTicketResponse(ticket.id, responseText, isInternalNote);
-    setResponseText('');
-  };
+  const close = () => setSelectedTicketId(null);
 
-  const handleEscalate = (targetLevel) => {
-    if (!escalateReason.trim()) {
-      alert('Please enter a reason for escalation');
+  const handleStatusChange = async (next) => {
+    if (!next || next === ticket.status) return;
+    if (next === 'resolved') {
+      // A resolution needs a summary — collect it before calling the API.
+      setResolving(true);
       return;
     }
-    escalateTicket(ticket.id, targetLevel, escalateReason);
-    setShowEscalateModal(false);
-    setEscalateReason('');
+    setIsBusy(true);
+    await updateTicketStatus(ticket.id, next);
+    setIsBusy(false);
+  };
+
+  const confirmResolve = async () => {
+    if (!resolutionSummary.trim()) return;
+    setIsBusy(true);
+    await updateTicketStatus(ticket.id, 'resolved', resolutionSummary.trim());
+    setIsBusy(false);
+    setResolving(false);
+    setResolutionSummary('');
+  };
+
+  const handleAssign = async (value) => {
+    if (!value || String(value) === String(ticket.assignedToId)) return;
+    setIsBusy(true);
+    await assignTicket(ticket.id, value);
+    setIsBusy(false);
+  };
+
+  const confirmEscalate = async () => {
+    if (!escReason.trim()) return;
+    setIsBusy(true);
+    const ok = await escalateTicket(ticket.id, escLevel, escReason.trim());
+    setIsBusy(false);
+    if (ok) {
+      setShowEscalate(false);
+      setEscReason('');
+    }
+  };
+
+  const handlePost = async (e) => {
+    e.preventDefault();
+    const text = commentText.trim();
+    if (!text) return;
+    setIsPosting(true);
+    const saved = tab === 'internal'
+      ? await addTicketInternalNote(ticket.id, text)
+      : await addTicketComment(ticket.id, text);
+    setIsPosting(false);
+    if (saved) setCommentText('');
+  };
+
+  const handleArchive = async () => {
+    if (!window.confirm(`Archive ${ticket.ticketNumber}? It will leave the default list but stays available for audit.`)) return;
+    const ok = await deleteTicket(ticket.id);
+    if (ok !== false) close();
   };
 
   return (
-    <div 
+    <div
       id="ticket-detail-drawer-backdrop"
       className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-xs"
-      onClick={() => setSelectedTicketId(null)}
+      onClick={close}
     >
-      <div 
+      <div
         id="ticket-detail-drawer-container"
         className="w-full max-w-2xl bg-slate-200 dark:bg-zinc-950 h-full shadow-2xl border-l border-slate-300 dark:border-zinc-800 flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Drawer Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-300 dark:border-zinc-800 bg-slate-300/40 dark:bg-zinc-900/50">
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-xs font-bold text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/80 px-2 py-0.5 rounded">
-              {ticket.ticketNumber}
-            </span>
-            <TicketStatusBadge status={ticket.status} />
-            <PriorityBadge priority={ticket.priority} />
+        {/* Header */}
+        <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-slate-300 dark:border-zinc-800 bg-slate-300/40 dark:bg-zinc-900/50">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2 mb-1.5">
+              <span className="font-mono text-xs font-bold text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/60 px-2 py-0.5 rounded">
+                {ticket.ticketNumber}
+              </span>
+              <TicketStatusBadge status={ticket.status} />
+              <PriorityBadge priority={ticket.priority} />
+              {ticket.slaBreached && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 uppercase">
+                  <AlertTriangle className="w-3 h-3" /> SLA breached
+                </span>
+              )}
+            </div>
+            <h2 className="text-lg font-bold text-slate-900 dark:text-zinc-100 break-words">{ticket.title}</h2>
           </div>
-
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 shrink-0">
             <button
-              id="close-ticket-detail-drawer"
-              onClick={() => setSelectedTicketId(null)}
-              className="p-1 rounded-lg text-slate-500 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200 cursor-pointer"
+              type="button"
+              onClick={() => { setSelectedTicketId(null); setSelectedTicketEditId(ticket.id); }}
+              className="p-1.5 rounded-lg text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 cursor-pointer"
+              title="Edit ticket"
+            >
+              <Pencil className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={close}
+              className="p-1.5 rounded-lg text-slate-500 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200 hover:bg-slate-300/60 dark:hover:bg-zinc-800 cursor-pointer"
+              title="Close"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
-        {/* Scrollable Content */}
+        {/* Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* Safe Escalation Alert Banner */}
-          {ticket.escalationLevel && ticket.escalationLevel !== 'none' && (
+          {/* Escalation banner */}
+          {isEscalated && (
             <div className="p-4 rounded-xl bg-rose-100/80 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 flex items-start gap-3">
               <ShieldAlert className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
               <div>
-                <h4 className="text-xs font-bold text-rose-900 dark:text-rose-200 uppercase tracking-wide">
-                  Escalated to {(ticket.escalationLevel || '').replace('_', ' ')}
+                <h4 className="text-xs font-bold text-rose-900 dark:text-rose-200 uppercase">
+                  Escalated to {ticket.escalationLevel.replace('_', ' ')}
                 </h4>
-                <p className="text-xs text-rose-800 dark:text-rose-300 mt-0.5">
-                  Reason: {ticket.escalationReason || 'High priority SLA risk or complex stakeholder incident.'}
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* Title & Customer Information */}
-          <div>
-            <h2 className="text-lg font-bold text-slate-900 dark:text-zinc-100 mb-2">
-              {ticket.title}
-            </h2>
-            <div className="p-4 rounded-xl bg-slate-100 dark:bg-zinc-900/60 border border-slate-300 dark:border-zinc-800 text-xs text-slate-800 dark:text-zinc-300 leading-relaxed">
-              {ticket.description}
-            </div>
-          </div>
-
-          {/* Requester & SLA Details */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 rounded-xl border border-slate-300 dark:border-zinc-800 text-xs">
-            <div>
-              <span className="text-slate-500 dark:text-zinc-400 block mb-1">Requester</span>
-              <span className="font-semibold text-slate-900 dark:text-zinc-100 block truncate">
-                {ticket.requesterName}
-              </span>
-              <span className="text-[10px] text-slate-500 dark:text-zinc-400 block truncate">{ticket.requesterEmail}</span>
-            </div>
-
-            <div>
-              <span className="text-slate-500 dark:text-zinc-400 block mb-1">Organization</span>
-              <span className="font-medium text-slate-900 dark:text-zinc-200 block truncate">
-                {ticket.requesterCompany || 'External User'}
-              </span>
-            </div>
-
-            <div>
-              <span className="text-slate-500 dark:text-zinc-400 block mb-1">Category</span>
-              <span className="font-medium text-indigo-600 dark:text-indigo-400 block">
-                {ticket.category}
-              </span>
-            </div>
-
-            <div>
-              <span className="text-slate-500 dark:text-zinc-400 block mb-1">SLA Resolution Target</span>
-              <span className={`font-mono font-medium block ${ticket.slaBreached ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-zinc-300'}`}>
-                {ticket.slaDueTime ? new Date(ticket.slaDueTime).toLocaleDateString() : 'Within 24h'}
-              </span>
-            </div>
-          </div>
-
-          {/* Assignment Control */}
-          <div className="p-4 rounded-xl border border-slate-300 dark:border-zinc-800 flex items-center justify-between gap-4 text-xs">
-            <div>
-              <span className="text-slate-500 dark:text-zinc-400 block mb-0.5">Assigned Agent</span>
-              <div className="flex items-center gap-2">
-                {assignee ? (
-                  <>
-                    <img src={assignee.avatar} alt={assignee.name} className="w-5 h-5 rounded-full object-cover" />
-                    <span className="font-semibold text-slate-900 dark:text-zinc-100">{assignee.name}</span>
-                    <RoleBadge role={assignee.role} size="xs" />
-                  </>
-                ) : (
-                  <span className="text-amber-600 font-medium">Unassigned</span>
+                {ticket.escalationReason && (
+                  <p className="text-xs text-rose-800 dark:text-rose-300 mt-0.5">{ticket.escalationReason}</p>
                 )}
               </div>
             </div>
+          )}
 
-            {canAssignTickets(currentUser) && (
-              <select
-                id="ticket-assign-agent-select"
-                value={ticket.assignedToId || ''}
-                onChange={(e) => assignTicket(ticket.id, e.target.value)}
-                className="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
-              >
-                <option value="">Reassign Agent...</option>
-                {allUsers.map(u => (
-                  <option key={u.id} value={u.id}>
-                    {u.name} ({(u.role || '').replace('_', ' ')})
-                  </option>
-                ))}
-              </select>
+          {/* Description */}
+          <div className="p-4 rounded-xl bg-slate-100 dark:bg-zinc-900/60 border border-slate-300 dark:border-zinc-800 text-xs text-slate-800 dark:text-zinc-300 leading-relaxed whitespace-pre-wrap">
+            {ticket.description || 'No description provided.'}
+          </div>
+
+          {/* Details */}
+          <div className="grid grid-cols-2 gap-4 p-4 rounded-xl bg-slate-100 dark:bg-zinc-900/60 border border-slate-300 dark:border-zinc-800 text-xs">
+            <div>
+              <span className="text-slate-500 dark:text-zinc-400 block mb-1">Category</span>
+              <span className="font-medium text-slate-900 dark:text-zinc-200">{ticket.category || '—'}</span>
+            </div>
+            <div>
+              <span className="text-slate-500 dark:text-zinc-400 block mb-1">Department</span>
+              <span className="font-medium text-slate-900 dark:text-zinc-200 flex items-center gap-1">
+                <Building className="w-3 h-3" /> {ticket.department || '—'}
+              </span>
+            </div>
+            <div>
+              <span className="text-slate-500 dark:text-zinc-400 block mb-1">Requester</span>
+              <span className="font-medium text-slate-900 dark:text-zinc-200 block">
+                {ticket.requesterName || '—'}
+                {ticket.requesterCompany ? ` · ${ticket.requesterCompany}` : ''}
+              </span>
+              {ticket.requesterEmail && (
+                <span className="text-[11px] text-slate-500 dark:text-zinc-400">{ticket.requesterEmail}</span>
+              )}
+            </div>
+            <div>
+              <span className="text-slate-500 dark:text-zinc-400 block mb-1">SLA target</span>
+              <span className={`font-medium flex items-center gap-1 ${ticket.slaBreached ? 'text-rose-600' : 'text-slate-900 dark:text-zinc-200'}`}>
+                <Clock className="w-3 h-3" /> {fmt(ticket.slaDueTime)}
+              </span>
+            </div>
+            <div>
+              <span className="text-slate-500 dark:text-zinc-400 block mb-1">Created</span>
+              <span className="font-medium text-slate-900 dark:text-zinc-200">{fmt(ticket.createdAt)}</span>
+            </div>
+            <div>
+              <span className="text-slate-500 dark:text-zinc-400 block mb-1">First response</span>
+              <span className="font-medium text-slate-900 dark:text-zinc-200">{fmt(ticket.firstResponseAt)}</span>
+            </div>
+            {ticket.resolvedAt && (
+              <div>
+                <span className="text-slate-500 dark:text-zinc-400 block mb-1">Resolved</span>
+                <span className="font-medium text-slate-900 dark:text-zinc-200">{fmt(ticket.resolvedAt)}</span>
+              </div>
+            )}
+            {ticket.closedAt && (
+              <div>
+                <span className="text-slate-500 dark:text-zinc-400 block mb-1">Closed</span>
+                <span className="font-medium text-slate-900 dark:text-zinc-200">{fmt(ticket.closedAt)}</span>
+              </div>
             )}
           </div>
 
-          {/* Escalation Control */}
-          {canEscalateTicket(currentUser, ticket) && (
-            <div className="p-4 rounded-xl bg-amber-100/50 dark:bg-amber-950/20 border border-amber-300 dark:border-amber-900 flex items-center justify-between text-xs">
-              <div>
-                <span className="font-semibold text-amber-900 dark:text-amber-200 block">
-                  Incident Escalation
-                </span>
-                <span className="text-[11px] text-amber-800 dark:text-amber-400">
-                  Escalate this ticket up the hierarchy for urgent management attention.
-                </span>
-              </div>
-              <button
-                id="trigger-escalate-modal-btn"
-                onClick={() => setShowEscalateModal(true)}
-                className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-semibold flex items-center gap-1 shadow-xs cursor-pointer"
+          {/* Assignment */}
+          <div>
+            <h3 className="text-xs font-bold text-slate-800 dark:text-zinc-200 mb-2 flex items-center gap-1.5">
+              <UserIcon className="w-3.5 h-3.5" /> Assigned agent
+            </h3>
+            <div className="flex items-center gap-3">
+              <img
+                src={assignee?.avatar || FALLBACK_AVATAR}
+                alt={assignee?.name || 'Unassigned'}
+                className="w-7 h-7 rounded-full object-cover"
+              />
+              <select
+                id="ticket-assignee-select"
+                value={ticket.assignedToId ?? ''}
+                onChange={(e) => handleAssign(e.target.value)}
+                disabled={!canAssign || isBusy}
+                title={!canAssign ? "You don't have permission to reassign tickets" : undefined}
+                className="flex-1 px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden disabled:opacity-60"
               >
-                <ArrowUpRight className="w-3.5 h-3.5" /> Escalate
-              </button>
+                {!ticket.assignedToId && <option value="">Unassigned</option>}
+                {agents.map(u => (
+                  <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Resolution summary */}
+          {ticket.resolutionSummary && (
+            <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900">
+              <h3 className="text-xs font-bold text-emerald-900 dark:text-emerald-200 mb-1">Resolution</h3>
+              <p className="text-xs text-emerald-800 dark:text-emerald-300 whitespace-pre-wrap">{ticket.resolutionSummary}</p>
             </div>
           )}
 
-          {/* Responses & Private Notes History */}
-          <div className="space-y-4 pt-4 border-t border-slate-300 dark:border-zinc-800">
-            <h3 className="text-xs font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
-              <MessageSquare className="w-4 h-4 text-indigo-500" />
-              Conversation Thread & Internal Notes ({ticketResponses.length})
-            </h3>
-
-            <div className="space-y-3">
-              {ticketResponses.map(resp => (
-                <div
-                  key={resp.id}
-                  className={`p-3.5 rounded-xl border text-xs space-y-1.5 ${
-                    resp.isInternalNote
-                      ? 'bg-amber-100/60 dark:bg-amber-950/30 border-amber-300 dark:border-amber-900/60'
-                      : 'bg-slate-100 dark:bg-zinc-900/50 border-slate-300 dark:border-zinc-800'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <img src={resp.authorAvatar} alt={resp.authorName} className="w-5 h-5 rounded-full object-cover" />
-                      <span className="font-semibold text-slate-900 dark:text-zinc-100">{resp.authorName}</span>
-                      <RoleBadge role={resp.authorRole} size="xs" />
-                      {resp.isInternalNote && (
-                        <span className="flex items-center gap-1 text-[10px] font-bold text-amber-800 dark:text-amber-300 bg-amber-200/80 dark:bg-amber-900/60 px-1.5 py-0.2 rounded">
-                          <Lock className="w-2.5 h-2.5" /> Internal Staff Note
-                        </span>
-                      )}
-                    </div>
-                    <span className="text-[10px] text-slate-500 dark:text-zinc-400">
-                      {new Date(resp.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          {/* Attachments */}
+          {(ticket.attachments || []).length > 0 && (
+            <div>
+              <h3 className="text-xs font-bold text-slate-800 dark:text-zinc-200 mb-2 flex items-center gap-1.5">
+                <Paperclip className="w-3.5 h-3.5" /> Attachments ({ticket.attachments.length})
+              </h3>
+              <ul className="space-y-1.5">
+                {ticket.attachments.map(a => (
+                  <li key={a.id} className="text-xs flex items-center justify-between gap-2 p-2 rounded-lg bg-slate-100 dark:bg-zinc-900/60 border border-slate-300 dark:border-zinc-800">
+                    <span className="truncate font-medium text-slate-800 dark:text-zinc-200">{a.name || 'Attachment'}</span>
+                    <span className="text-[11px] text-slate-500 dark:text-zinc-400 shrink-0">
+                      {a.uploadedByName ? `${a.uploadedByName} · ` : ''}{fmt(a.uploadedAt)}
                     </span>
-                  </div>
-                  <p className="text-slate-800 dark:text-zinc-300 pl-7 leading-relaxed whitespace-pre-wrap">
-                    {resp.content}
-                  </p>
-                </div>
-              ))}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Discussion */}
+          <div>
+            <div className="flex items-center gap-1 mb-3 border-b border-slate-300 dark:border-zinc-800">
+              <button
+                type="button"
+                onClick={() => setTab('public')}
+                className={`px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 border-b-2 -mb-px cursor-pointer ${
+                  tab === 'public'
+                    ? 'border-amber-500 text-amber-700 dark:text-amber-400'
+                    : 'border-transparent text-slate-500 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200'
+                }`}
+              >
+                <MessageSquare className="w-3.5 h-3.5" /> Replies ({publicComments.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setTab('internal')}
+                className={`px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 border-b-2 -mb-px cursor-pointer ${
+                  tab === 'internal'
+                    ? 'border-purple-500 text-purple-700 dark:text-purple-400'
+                    : 'border-transparent text-slate-500 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200'
+                }`}
+              >
+                <Lock className="w-3.5 h-3.5" /> Internal notes ({internalNotes.length})
+              </button>
             </div>
 
-            {/* Reply Composer */}
-            <form onSubmit={handleSendResponse} className="space-y-2 pt-2">
-              <div className="flex items-center justify-between text-xs px-1">
-                <div className="flex items-center gap-4">
-                  <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 dark:text-zinc-300">
-                    <input
-                      type="radio"
-                      name="response-type"
-                      checked={!isInternalNote}
-                      onChange={() => setIsInternalNote(false)}
-                      className="text-indigo-600 focus:ring-0"
-                    />
-                    <Globe className="w-3.5 h-3.5 text-indigo-500" /> Public Customer Reply
-                  </label>
-                  <label className="flex items-center gap-1.5 cursor-pointer text-slate-700 dark:text-zinc-300">
-                    <input
-                      type="radio"
-                      name="response-type"
-                      checked={isInternalNote}
-                      onChange={() => setIsInternalNote(true)}
-                      className="text-amber-600 focus:ring-0"
-                    />
-                    <Lock className="w-3.5 h-3.5 text-amber-500" /> Private Internal Note
-                  </label>
-                </div>
-              </div>
+            <div className="space-y-3 mb-3">
+              {visibleComments.length === 0 ? (
+                <p className="text-xs text-slate-500 dark:text-zinc-500 italic">
+                  {tab === 'internal' ? 'No internal notes yet.' : 'No replies yet.'}
+                </p>
+              ) : (
+                visibleComments.map(c => (
+                  <div
+                    key={c.id}
+                    className={`p-3 rounded-xl border text-xs ${
+                      c.isInternal
+                        ? 'bg-purple-50/70 dark:bg-purple-950/20 border-purple-200 dark:border-purple-900'
+                        : 'bg-slate-100 dark:bg-zinc-900/60 border-slate-300 dark:border-zinc-800'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <img src={c.authorAvatar || FALLBACK_AVATAR} alt="" className="w-5 h-5 rounded-full object-cover" />
+                      <span className="font-semibold text-slate-900 dark:text-zinc-100">{c.authorName || 'Unknown'}</span>
+                      {c.authorRole && <RoleBadge role={c.authorRole} size="xs" />}
+                      <span className="ml-auto text-[10px] text-slate-500 dark:text-zinc-500">{fmt(c.createdAt)}</span>
+                    </div>
+                    <p className="text-slate-800 dark:text-zinc-300 whitespace-pre-wrap">{c.content}</p>
+                  </div>
+                ))
+              )}
+            </div>
 
-              <div className="flex gap-2">
+            {!isClosedOut && (
+              <form onSubmit={handlePost} className="flex items-start gap-2">
                 <textarea
-                  id="ticket-reply-textarea"
                   rows={2}
-                  placeholder={isInternalNote ? 'Write internal note for supervisors & admins...' : 'Type public response to requester...'}
-                  value={responseText}
-                  onChange={(e) => setResponseText(e.target.value)}
-                  className={`flex-1 p-3 text-xs rounded-xl border focus:outline-hidden focus:ring-1 ${
-                    isInternalNote
-                      ? 'border-amber-300 dark:border-amber-800 bg-amber-100/30 dark:bg-amber-950/20 focus:ring-amber-500'
-                      : 'border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-900 dark:text-zinc-100 focus:ring-indigo-500'
-                  }`}
+                  value={commentText}
+                  onChange={(e) => setCommentText(e.target.value)}
+                  disabled={isPosting}
+                  placeholder={tab === 'internal' ? 'Add an internal note (not a reply)...' : 'Write a reply...'}
+                  className="flex-1 px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-amber-500 resize-none disabled:opacity-60"
                 />
                 <button
-                  id="ticket-send-reply-btn"
                   type="submit"
-                  className={`px-4 text-xs font-semibold rounded-xl text-white flex items-center justify-center gap-1 shadow-xs transition cursor-pointer ${
-                    isInternalNote ? 'bg-amber-600 hover:bg-amber-700' : 'bg-indigo-600 hover:bg-indigo-700'
-                  }`}
+                  disabled={isPosting || !commentText.trim()}
+                  className="px-3 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer"
                 >
-                  <Send className="w-3.5 h-3.5" />
-                  Send
+                  <Send className="w-3.5 h-3.5" /> {isPosting ? 'Posting...' : 'Post'}
                 </button>
-              </div>
-            </form>
-          </div>
-        </div>
-
-        {/* Footer Actions */}
-        <div className="p-4 border-t border-slate-300 dark:border-zinc-800 bg-slate-300/40 dark:bg-zinc-950 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-600 dark:text-zinc-400 font-medium">Ticket State:</span>
-            <select
-              id="ticket-status-select"
-              value={ticket.status}
-              onChange={(e) => updateTicketStatus(ticket.id, e.target.value)}
-              className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 font-semibold focus:outline-hidden"
-            >
-              <option value="open">Open</option>
-              <option value="in_progress">In Progress</option>
-              <option value="pending_customer">Pending Customer</option>
-              <option value="escalated">Escalated</option>
-              <option value="resolved">Resolved</option>
-              <option value="closed">Closed</option>
-            </select>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {ticket.status !== 'resolved' && (
-              <button
-                id="ticket-quick-resolve-btn"
-                onClick={() => updateTicketStatus(ticket.id, 'resolved')}
-                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-xs cursor-pointer"
-              >
-                <CheckCircle className="w-3.5 h-3.5" /> Mark Resolved
-              </button>
+              </form>
             )}
           </div>
         </div>
 
-        {/* Escalation Prompt Modal */}
-        {showEscalateModal && (
-          <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="bg-slate-200 dark:bg-zinc-950 rounded-xl p-5 border border-slate-300 dark:border-zinc-800 w-full max-w-md shadow-2xl space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-bold text-slate-900 dark:text-zinc-100 flex items-center gap-2">
-                  <ShieldAlert className="w-4 h-4 text-rose-500" />
-                  Escalate Ticket {ticket.ticketNumber}
-                </h3>
-                <button onClick={() => setShowEscalateModal(false)} className="text-slate-500 dark:text-zinc-400 hover:text-slate-700 dark:hover:text-zinc-200 cursor-pointer">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
+        {/* Footer actions */}
+        <div className="p-4 border-t border-slate-300 dark:border-zinc-800 bg-slate-300/40 dark:bg-zinc-950 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-600 dark:text-zinc-400 font-medium">Status:</span>
+              <select
+                id="ticket-status-select"
+                value={ticket.status}
+                onChange={(e) => handleStatusChange(e.target.value)}
+                disabled={isBusy || ticket.status === 'archived'}
+                className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 font-medium focus:outline-hidden disabled:opacity-60"
+              >
+                {!STATUS_OPTIONS.some(([v]) => v === ticket.status) && (
+                  <option value={ticket.status}>{ticket.status}</option>
+                )}
+                {STATUS_OPTIONS.map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </div>
 
-              <div>
-                <label className="text-xs font-medium text-slate-700 dark:text-zinc-300 block mb-1">
-                  Reason for escalation
-                </label>
-                <textarea
-                  id="escalate-reason-input"
-                  rows={3}
-                  placeholder="Explain why this requires senior management intervention..."
-                  value={escalateReason}
-                  onChange={(e) => setEscalateReason(e.target.value)}
-                  className="w-full p-2.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
-                />
-              </div>
-
-              <div className="flex gap-2 justify-end">
+            <div className="flex items-center gap-2">
+              {canEscalate && !showEscalate && (
                 <button
-                  onClick={() => setShowEscalateModal(false)}
-                  className="px-3 py-1.5 text-xs text-slate-700 dark:text-zinc-300 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
+                  type="button"
+                  id="ticket-escalate-btn"
+                  onClick={() => setShowEscalate(true)}
+                  className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  <ShieldAlert className="w-3.5 h-3.5" /> Escalate
+                </button>
+              )}
+              {isAdminTier && ticket.status !== 'archived' && (
+                <button
+                  type="button"
+                  id="ticket-archive-btn"
+                  onClick={handleArchive}
+                  className="p-1.5 text-slate-500 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 rounded-lg cursor-pointer"
+                  title="Archive ticket"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {resolving && (
+            <div className="space-y-2">
+              <textarea
+                rows={2}
+                value={resolutionSummary}
+                onChange={(e) => setResolutionSummary(e.target.value)}
+                disabled={isBusy}
+                placeholder="Resolution summary (required) — what fixed it?"
+                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden resize-none disabled:opacity-60"
+              />
+              <div className="flex items-center gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => { setResolving(false); setResolutionSummary(''); }}
+                  disabled={isBusy}
+                  className="px-3 py-1.5 text-xs text-slate-600 dark:text-zinc-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer disabled:opacity-60"
                 >
                   Cancel
                 </button>
                 <button
-                  id="confirm-escalate-supervisor-btn"
-                  onClick={() => handleEscalate('supervisor')}
-                  className="px-3 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white rounded-lg cursor-pointer"
+                  type="button"
+                  onClick={confirmResolve}
+                  disabled={isBusy || !resolutionSummary.trim()}
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg text-xs font-semibold cursor-pointer"
                 >
-                  To Supervisor
-                </button>
-                <button
-                  id="confirm-escalate-admin-btn"
-                  onClick={() => handleEscalate('admin')}
-                  className="px-3 py-1.5 text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white rounded-lg cursor-pointer"
-                >
-                  To Admin
+                  {isBusy ? 'Saving...' : 'Mark resolved'}
                 </button>
               </div>
             </div>
-          </div>
-        )}
+          )}
+
+          {showEscalate && (
+            <div className="space-y-2 p-3 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-rose-900 dark:text-rose-200">Escalate to</span>
+                <select
+                  value={escLevel}
+                  onChange={(e) => setEscLevel(e.target.value)}
+                  disabled={isBusy}
+                  className="flex-1 px-2.5 py-1.5 text-xs rounded-lg border border-rose-300 dark:border-rose-800 bg-white dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                >
+                  {ESCALATION_LEVELS.map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+              <textarea
+                rows={2}
+                value={escReason}
+                onChange={(e) => setEscReason(e.target.value)}
+                disabled={isBusy}
+                placeholder="Reason for escalation (required)..."
+                className="w-full px-3 py-2 text-xs rounded-lg border border-rose-300 dark:border-rose-800 bg-white dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden resize-none disabled:opacity-60"
+              />
+              <div className="flex items-center gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => { setShowEscalate(false); setEscReason(''); }}
+                  disabled={isBusy}
+                  className="px-3 py-1.5 text-xs text-slate-600 dark:text-zinc-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmEscalate}
+                  disabled={isBusy || !escReason.trim()}
+                  className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-lg text-xs font-semibold cursor-pointer"
+                >
+                  {isBusy ? 'Escalating...' : 'Confirm escalation'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

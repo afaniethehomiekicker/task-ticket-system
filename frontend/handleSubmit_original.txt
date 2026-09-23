@@ -1,0 +1,23 @@
+const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    if (localTab === "project") {
+      if (!projectClientId) {
+        alert(
+          "Validation Error: A project must be built on top of a client or company profile.",
+        );
+        return;
+      }
+
+      const newProject = {
+        title: projectName,
+        description: projectDescription,
+        budgetHours: prjBudgetHours,
+        startDate: prjStartDate || new Date().toISOString().split("T")[0],
+        dueDate: prjDueDate || new Date().toISOString().split("T")[0],
+        code: `PRJ-${Date.now().toString().slice(-4)}`,
+        department: currentUser?.department || "Engineering",
+        status: "active",
+        priority: "normal",
+        clientId: projectClientId,
+      }

@@ -6,7 +6,9 @@ export const PERMISSION_KEYS = {
   CREATE_TASKS: 'create_tasks',
   APPROVE_WORK: 'approve_work',
   ESCALATE_TICKETS: 'escalate_tickets',
-  ASSIGN_TICKETS: 'assign_tickets'
+  ASSIGN_TICKETS: 'assign_tickets',
+  MANAGE_CLIENTS: 'manage_clients',
+  MANAGE_DEPARTMENTS: 'manage_departments'
 };
 
 export const PERMISSION_LABELS = {
@@ -17,7 +19,9 @@ export const PERMISSION_LABELS = {
   [PERMISSION_KEYS.CREATE_TASKS]: 'Create Tasks',
   [PERMISSION_KEYS.APPROVE_WORK]: 'Approve & Sign-off Tasks',
   [PERMISSION_KEYS.ESCALATE_TICKETS]: 'Escalate Incident Tickets',
-  [PERMISSION_KEYS.ASSIGN_TICKETS]: 'Reassign Tickets & Tasks'
+  [PERMISSION_KEYS.ASSIGN_TICKETS]: 'Reassign Tickets & Tasks',
+  [PERMISSION_KEYS.MANAGE_CLIENTS]: 'Manage Client & Company Profiles',
+  [PERMISSION_KEYS.MANAGE_DEPARTMENTS]: 'Manage Departments'
 };
 
 // Default role -> permission matrix. Super Admin is deliberately excluded —
@@ -31,7 +35,9 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.CREATE_TASKS]: true,
     [PERMISSION_KEYS.APPROVE_WORK]: true,
     [PERMISSION_KEYS.ESCALATE_TICKETS]: true,
-    [PERMISSION_KEYS.ASSIGN_TICKETS]: true
+    [PERMISSION_KEYS.ASSIGN_TICKETS]: true,
+    [PERMISSION_KEYS.MANAGE_CLIENTS]: true,
+    [PERMISSION_KEYS.MANAGE_DEPARTMENTS]: true
   },
   supervisor: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -41,7 +47,9 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.CREATE_TASKS]: true,
     [PERMISSION_KEYS.APPROVE_WORK]: true,
     [PERMISSION_KEYS.ESCALATE_TICKETS]: true,
-    [PERMISSION_KEYS.ASSIGN_TICKETS]: true
+    [PERMISSION_KEYS.ASSIGN_TICKETS]: true,
+    [PERMISSION_KEYS.MANAGE_CLIENTS]: false,
+    [PERMISSION_KEYS.MANAGE_DEPARTMENTS]: false
   },
   staff: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -51,7 +59,9 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.CREATE_TASKS]: false,
     [PERMISSION_KEYS.APPROVE_WORK]: false,
     [PERMISSION_KEYS.ESCALATE_TICKETS]: true,
-    [PERMISSION_KEYS.ASSIGN_TICKETS]: false
+    [PERMISSION_KEYS.ASSIGN_TICKETS]: false,
+    [PERMISSION_KEYS.MANAGE_CLIENTS]: false,
+    [PERMISSION_KEYS.MANAGE_DEPARTMENTS]: false
   }
 };
 
@@ -113,6 +123,24 @@ export function canAssignTickets(user, permissionMatrix = DEFAULT_PERMISSION_MAT
   return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.ASSIGN_TICKETS];
 }
 
+// The backend gates client create/update/delete on manage_clients
+// (routes.go), but the frontend had no matching permission, so every role saw
+// New Client / Edit / Delete and got a 403 on click.
+export function canManageClients(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (!user) return false;
+  if (user.role === 'super_admin') return true;
+  return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.MANAGE_CLIENTS];
+}
+
+// Matches role.go's manage_departments defaults exactly (admin: true,
+// supervisor/staff: false) — used by DepartmentsView.jsx (gates
+// create/edit/delete) and Sidebar.jsx (gates the nav entry).
+export function canManageDepartments(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (!user) return false;
+  if (user.role === 'super_admin') return true;
+  return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.MANAGE_DEPARTMENTS];
+}
+
 export function getRoleBadgeColor(role) {
   switch (role) {
     case 'super_admin':
@@ -139,77 +167,80 @@ export function getRoleDisplayName(role) {
 }
 
 // Visibility filters — control which records a user is allowed to see,
-// layered on top of the action permissions above with strict admin branch isolation.
+// layered on top of the action permissions above.
+//
+// These mirror the backend's visibility rules exactly (backend/visibility.go),
+// which is where they are actually enforced now — the API only returns what
+// these functions would keep. Change one, change the other.
+//
+//   super_admin   everything
+//   admin         their department; an admin with NO department is a system
+//                 admin and sees everything (otherwise such an account would
+//                 see nothing at all)
+//   supervisor    work assigned to them, work assigned to people they
+//                 supervise, work they created
+//   staff/other   work assigned to them, work they created
+//   projects      department / owner (admins) or membership (everyone)
 
-const getManagedUserIds = (adminId, allUsers = []) => {
-  if (!adminId || !Array.isArray(allUsers)) return new Set();
-  return new Set(
-    allUsers
-      .filter(u => u && (u.adminId === adminId || u.id === adminId))
-      .map(u => u.id)
-  );
-};
+const isSystemAdmin = (user) => user.role === 'admin' && !safeLower(user.department);
 
 export function filterProjectsForUser(projects = [], user, allUsers = []) {
   if (!Array.isArray(projects) || !user) return [];
-  if (user.role === 'super_admin') return projects;
+  if (user.role === 'super_admin' || isSystemAdmin(user)) return projects;
+
+  const isMember = (p) => (p.memberIds || []).includes(user.id);
 
   if (user.role === 'admin') {
-    const managedUserIds = getManagedUserIds(user.id, allUsers);
+    const userDept = safeLower(user.department);
     return projects.filter(p => {
       if (!p) return false;
-      return (
-        p.adminId === user.id ||
-        p.createdBy === user.id ||
-        (p.memberIds || []).some(id => managedUserIds.has(id))
-      );
+      return safeLower(p.department) === userDept || p.ownerId === user.id || isMember(p);
     });
   }
 
-  // supervisor / staff — only projects they're a member of
-  return projects.filter(p => p && (p.memberIds || []).includes(user.id));
+  // supervisor / staff / custom roles — only projects they're a member of
+  return projects.filter(p => p && isMember(p));
 }
 
 export const filterTasksForUser = (tasks = [], user, allUsers = []) => {
   if (!Array.isArray(tasks) || !user) return [];
-  if (user.role === 'super_admin') return tasks;
+  if (user.role === 'super_admin' || isSystemAdmin(user)) return tasks;
 
   const userDept = safeLower(user.department);
 
   return tasks.filter(task => {
     if (!task) return false;
-    const taskDept = safeLower(task.department);
 
     if (user.role === 'admin') {
-      return (taskDept && userDept && taskDept === userDept) || task.adminId === user.id;
+      const taskDept = safeLower(task.department);
+      return !!taskDept && taskDept === userDept;
     }
-    if (user.role === 'supervisor') {
-      return task.supervisorId === user.id || task.assignedToId === user.id;
-    }
-    return task.assignedToId === user.id;
+
+    // Assigned to me, or created by me (the creator has to be able to follow
+    // up on what they raised).
+    if (task.assignedToId === user.id || task.creatorId === user.id) return true;
+    // A supervisor also sees their team's work.
+    return user.role === 'supervisor' && task.supervisorId === user.id;
   });
 };
 
 export function filterTicketsForUser(tickets = [], user, allUsers = []) {
   if (!Array.isArray(tickets) || !user) return [];
-  if (user.role === 'super_admin') return tickets;
+  if (user.role === 'super_admin' || isSystemAdmin(user)) return tickets;
 
-  if (user.role === 'admin') {
-    const managedUserIds = getManagedUserIds(user.id, allUsers);
-    return tickets.filter(t => {
-      if (!t) return false;
-      return (
-        t.adminId === user.id ||
-        managedUserIds.has(t.assignedToId) ||
-        managedUserIds.has(t.requesterId)
-      );
-    });
-  }
+  const userDept = safeLower(user.department);
 
-  if (user.role === 'supervisor') {
-    return tickets.filter(t => t && (t.supervisorId === user.id || t.assignedToId === user.id));
-  }
+  return tickets.filter(t => {
+    if (!t) return false;
 
-  // staff — tickets assigned to them
-  return tickets.filter(t => t && t.assignedToId === user.id);
+    if (user.role === 'admin') {
+      const ticketDept = safeLower(t.department);
+      return !!ticketDept && ticketDept === userDept;
+    }
+
+    // Assigned to me, or created by me (the spec has the creator close the
+    // ticket after the client confirms).
+    if (t.assignedToId === user.id || t.createdById === user.id) return true;
+    return user.role === 'supervisor' && t.supervisorId === user.id;
+  });
 }

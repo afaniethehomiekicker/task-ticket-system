@@ -17,9 +17,14 @@ export const AuditLogsView = () => {
 
   const filteredLogs = useMemo(() => {
     return auditLogs.filter(log => {
+      // log.entityId is a number (or null) per normalizeAuditLog —
+      // resource_id on the backend is a uint, never a string. Calling
+      // .toLowerCase() on it directly threw immediately on every real
+      // audit log entry, crashing this entire view the moment any data
+      // loaded. Coerced to a string first.
       const matchSearch = log.actorName.toLowerCase().includes(search.toLowerCase()) ||
                           log.details.toLowerCase().includes(search.toLowerCase()) ||
-                          log.entityId.toLowerCase().includes(search.toLowerCase());
+                          String(log.entityId ?? '').toLowerCase().includes(search.toLowerCase());
       const matchEntity = entityFilter === 'all' || log.entityType === entityFilter;
       const matchAction = actionFilter === 'all' || log.action === actionFilter;
 
@@ -89,10 +94,9 @@ export const AuditLogsView = () => {
         >
           <option value="all">All Entity Types</option>
           <option value="task">Tasks</option>
+          <option value="subtask">Subtasks</option>
           <option value="ticket">Tickets</option>
           <option value="project">Projects</option>
-          <option value="user">Users</option>
-          <option value="system">System</option>
         </select>
 
         <select
@@ -102,13 +106,12 @@ export const AuditLogsView = () => {
           className="px-2.5 py-1 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-800 dark:text-zinc-300 focus:outline-hidden"
         >
           <option value="all">All Actions</option>
-          <option value="create">Created</option>
-          <option value="update">Updated</option>
-          <option value="status_change">Status Change</option>
-          <option value="escalate">Escalated</option>
-          <option value="approve">Approved</option>
-          <option value="reopen">Reopened</option>
-          <option value="reassign">Reassigned</option>
+          <option value="created">Created</option>
+          <option value="updated">Updated</option>
+          <option value="status_changed">Status Change</option>
+          <option value="archived">Archived</option>
+          <option value="commented">Commented</option>
+          <option value="work_log_added">Work Log Added</option>
         </select>
       </div>
 

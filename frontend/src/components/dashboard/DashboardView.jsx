@@ -23,11 +23,30 @@ export const DashboardView = () => {
 
   // Metric Computations
   const totalProjects = visibleProjects.length;
-  const activeTasks = visibleTasks.filter(t => t.status !== 'completed' && t.status !== 'closed');
-  const criticalTasks = visibleTasks.filter(t => (t.priority === 'critical' || t.priority === 'urgent') && t.status !== 'completed');
-  const pendingReviewTasks = visibleTasks.filter(t => t.status === 'under_review');
-  const openTickets = visibleTickets.filter(t => t.status !== 'resolved' && t.status !== 'closed');
-  const escalatedTickets = visibleTickets.filter(t => t.status === 'escalated' || t.escalationLevel !== 'none');
+  // Every task-status comparison below was checking values that don't
+  // exist on the backend's real Task.Status enum (todo, in_progress,
+  // in_review, done, blocked, cancelled, archived — confirmed directly
+  // in models.go). 'completed'/'closed'/'under_review' are Ticket
+  // statuses, not Task ones, and Tasks never actually have them — so
+  // these comparisons were silently no-ops: activeTasks counted every
+  // task including done/cancelled/archived ones, and pendingReviewTasks
+  // was always empty regardless of how many tasks were genuinely
+  // awaiting review.
+  const activeTasks = visibleTasks.filter(t => !['done', 'cancelled', 'archived'].includes(t.status));
+  const criticalTasks = visibleTasks.filter(t => (t.priority === 'critical' || t.priority === 'urgent') && !['done', 'cancelled', 'archived'].includes(t.status));
+  const pendingReviewTasks = visibleTasks.filter(t => t.status === 'in_review');
+  const openTickets = visibleTickets.filter(t => t.status !== 'resolved' && t.status !== 'closed');
+  // Was `t.status === 'escalated' || t.escalationLevel !== 'none'` —
+  // "escalated" isn't a real Ticket.Status value, and escalation isn't
+  // an implemented feature on this backend at all (no EscalationLevel
+  // field exists, no /escalate route exists — flagged earlier as an
+  // open decision, not resolved yet). t.escalationLevel was therefore
+  // always undefined, and undefined !== 'none' is always true — meaning
+  // this matched EVERY ticket, unconditionally, showing "all tickets
+  // escalated" on the dashboard regardless of reality. Left empty
+  // rather than inventing a stand-in metric; this re-activates
+  // correctly once the escalation feature decision is made.
+  const escalatedTickets = [];
 
   return (
     <div id="dashboard-view" className="space-y-6 max-w-7xl mx-auto pb-12">
@@ -58,19 +77,19 @@ export const DashboardView = () => {
 
       {/* KPI Cards Grid — Clicking navigates to views */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-       <div 
-  onClick={() => setActiveTab('tasks')} 
-  className="p-5 rounded-xl bg-slate-200/60 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-800 cursor-pointer transition hover:border-indigo-400 dark:hover:border-indigo-500"
->
-  <div className="flex items-center justify-between mb-3">
-    <span className="text-xs font-semibold text-slate-600 dark:text-zinc-400 uppercase tracking-wider">Pending Tasks</span>
-    <div className="p-2 rounded-lg bg-blue-100 dark:bg-blue-950 text-blue-600 dark:text-blue-400"><CheckSquare className="w-5 h-5" /></div>
-  </div>
-  <div className="flex items-baseline justify-between">
-    <span className="text-2xl font-bold text-slate-900 dark:text-zinc-100">{activeTasks.length}</span>
-    <span className="text-xs text-slate-500 dark:text-zinc-400">{criticalTasks.length > 0 ? `${criticalTasks.length} urgent` : 'Normal priority'}</span>
-  </div>
-</div>
+       <div
+          onClick={() => setActiveTab('projects')}
+          className="p-5 rounded-xl bg-slate-200/60 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-800 cursor-pointer transition hover:border-indigo-400 dark:hover:border-indigo-500"
+        >
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs font-semibold text-slate-600 dark:text-zinc-400 uppercase tracking-wider">Total Projects</span>
+            <div className="p-2 rounded-lg bg-indigo-100 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400"><FolderKanban className="w-5 h-5" /></div>
+          </div>
+          <div className="flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-slate-900 dark:text-zinc-100">{totalProjects}</span>
+            <span className="text-xs text-slate-500 dark:text-zinc-400">Visible to you</span>
+          </div>
+        </div>
 
         <div 
           onClick={() => setActiveTab('tasks')} 

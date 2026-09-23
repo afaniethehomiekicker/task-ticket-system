@@ -14,9 +14,13 @@ import {
   Layers,
   Plus,
   UserCircle,
-  Building2
+  Building2,
+  Network
 } from 'lucide-react';
-import { canViewAuditLogs, canManageMatrixPermissions } from '../../utils/permissions';
+// canManageDepartments: same unverified-import note as DepartmentsView.jsx —
+// I don't have the current permissions.js in this session, so this mirrors
+// canManageClients's established shape under that name.
+import { canViewAuditLogs, canManageMatrixPermissions, canManageDepartments } from '../../utils/permissions';
 import { RoleBadge } from '../common/Badge';
 
 export const Sidebar = () => {
@@ -25,6 +29,7 @@ export const Sidebar = () => {
     setActiveTab, 
     currentUser, 
     visibleProjects, 
+    visibleFeasibilities,
     setSelectedProjectDetailId,
     visibleTasks,
     visibleTickets,
@@ -44,7 +49,15 @@ export const Sidebar = () => {
     { id: 'kanban', label: 'Kanban Board', icon: Columns3 },
     { id: 'tasks', label: 'Task Management', icon: CheckSquare, badge: pendingTasksCount },
     { id: 'tickets', label: 'Tickets Desk', icon: LifeBuoy, badge: openTicketsCount },
+    { id: 'feasibilities', label: 'Feasibilities', icon: Network, badge: visibleFeasibilities?.length },
     { id: 'clients', label: 'Clients', icon: Building2 },
+    // New — the spec lists Departments as its own module (slide 32), and
+    // it didn't exist in this app's navigation at all until now. Viewable
+    // by anyone the same way Clients is; DepartmentsView.jsx itself hides
+    // the create/edit/delete controls from non-managers, but the nav entry
+    // is restricted too since a plain read-only list of departments isn't
+    // day-to-day relevant for staff the way Clients is.
+    { id: 'departments', label: 'Departments', icon: Building2, restricted: !canManageDepartments(currentUser, permissionMatrix) },
     { id: 'team', label: 'Team & Workload', icon: Users },
     { id: 'reports', label: 'Reports & SLA', icon: BarChart3 },
     { id: 'audit', label: 'System Audit Logs', icon: ScrollText, restricted: !canViewAuditLogs(currentUser, permissionMatrix) },
@@ -93,7 +106,7 @@ export const Sidebar = () => {
       >
         <div className="flex items-center gap-2.5">
           <img
-            src={currentUser.avatar}
+            src={currentUser.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"}
             alt={currentUser.name}
             className="w-8 h-8 rounded-full object-cover ring-1 ring-indigo-500/50 group-hover:ring-indigo-400 transition"
           />

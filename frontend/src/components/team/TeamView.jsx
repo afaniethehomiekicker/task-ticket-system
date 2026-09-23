@@ -191,7 +191,7 @@ export const TeamView = () => {
                 <div className="flex items-start justify-between gap-3 mb-4">
                   <div className="flex items-center gap-3">
                     <img
-                      src={user.avatar}
+                      src={user.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"}
                       alt={user.name}
                       className="w-12 h-12 rounded-full object-cover ring-2 ring-indigo-500/20"
                     />
@@ -253,7 +253,22 @@ export const TeamView = () => {
                   onClick={(e) => e.stopPropagation()}
                 >
                   <button
-                    onClick={() => toggleUserActiveStatus(user.id)}
+                    onClick={async () => {
+                      // toggleUserActiveStatus (an alias for
+                      // toggleUserStatus in AppContext.jsx) now only
+                      // updates local state when the backend call
+                      // actually succeeds — previously it was a pure
+                      // local mutation with no backend call at all, so a
+                      // toggle looked like it worked but reverted on the
+                      // next reload. That's fixed at the source now, but
+                      // this click handler still silently did nothing on
+                      // failure with no feedback at all; this gives the
+                      // person a reason when nothing visibly changes.
+                      const result = await toggleUserActiveStatus(user.id);
+                      if (!result) {
+                        alert('Failed to update account status. Please try again.');
+                      }
+                    }}
                     className={`flex items-center gap-1 font-medium transition cursor-pointer ${
                       user.status === 'active' ? 'text-emerald-600 dark:text-emerald-400 hover:text-emerald-700' : 'text-slate-500 hover:text-slate-700 dark:text-zinc-500 dark:hover:text-zinc-300'
                     }`}
@@ -293,7 +308,7 @@ export const TeamView = () => {
           >
             <div className="flex items-center justify-between border-b border-slate-300 dark:border-zinc-800 pb-4">
               <div className="flex items-center gap-3">
-                <img src={selectedMember.avatar} alt={selectedMember.name} className="w-12 h-12 rounded-full object-cover" />
+                <img src={selectedMember.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"} alt={selectedMember.name} className="w-12 h-12 rounded-full object-cover" />
                 <div>
                   <h3 className="text-base font-bold text-slate-900 dark:text-zinc-100">{selectedMember.name}</h3>
                   <p className="text-xs text-slate-500 dark:text-zinc-400">{selectedMember.title} • {selectedMember.department}</p>
