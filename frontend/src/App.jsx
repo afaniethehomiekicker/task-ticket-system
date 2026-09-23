@@ -22,8 +22,7 @@ import { TaskEditModal } from "./components/tasks/TaskEditModal";
 import { ProjectEditModal } from "./components/projects/ProjectEditModal";
 import { TicketEditModal } from "./components/tickets/TicketEditModal";
 import { ClientsView } from "./components/Clients/Clientsview";
-import { DepartmentsView } from "./components/departments/Departmentsview";
-
+import { DepartmentsView } from "./components/departments/DepartmentsView";
 const AppContent = () => {
   const { activeTab, quickCreateOpen, setQuickCreateOpen, currentUser, authToken, dataLoaded } =
     useApp();
