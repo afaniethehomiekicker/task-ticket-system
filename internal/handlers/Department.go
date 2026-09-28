@@ -53,7 +53,15 @@ func auditDepartment(c *gin.Context, action string, id uint, oldVal, newVal inte
 // list to populate a Department dropdown, not just whoever can manage it.
 func GetDepartments(c *gin.Context) {
 	var departments []models.Department
-	if err := database.DB.Order("name ASC").Find(&departments).Error; err != nil {
+	// Active departments by default (every dropdown); ?status=archived lists
+	// the archived ones for the Archive page.
+	q := database.DB.Order("name ASC")
+	if c.Query("status") == "archived" {
+		q = q.Where("status = ?", "archived")
+	} else {
+		q = q.Where("status IS NULL OR status <> ?", "archived")
+	}
+	if err := q.Find(&departments).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch departments"})
 		return
 	}

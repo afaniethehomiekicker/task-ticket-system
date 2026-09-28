@@ -30,9 +30,15 @@ type CreateTaskInput struct {
 	// Sent by the frontend's createTask; previously dropped.
 	Labels         string  `json:"labels"` // comma-separated
 	EstimatedHours float64 `json:"estimated_hours"`
+
+	// Checklist items created with the task, in one step, so the assignee
+	// receives the task complete (the create form had no way to add them).
+	Checklist []string `json:"checklist"`
 }
 
 type UpdateTaskInput struct {
+	// Required when the new status requires a reason (workflow catalog).
+	StatusReason string `json:"status_reason"`
 	Title        string     `json:"title"`
 	Description  string     `json:"description"`
 	Priority     string     `json:"priority"`
@@ -92,8 +98,10 @@ func GetTasks(c *gin.Context) {
 		Preload("Project").
 		Preload("Ticket").
 		Preload("Assignee").
+		Preload("AssignedBy", userBasics).
 		Preload("Creator").
 		Preload("SubTasks.Assignee").
+		Preload("SubTasks.AssignedBy", userBasics).
 		Preload("Comments.User").
 		Preload("Dependencies").
 		Order(safeOrderClause(params.SortBy, params.SortOrder, taskSortColumns, "tasks.created_at"))
@@ -151,6 +159,9 @@ func GetTasks(c *gin.Context) {
 		return
 	}
 
+	redactTasks(c, tasks)       // internal notes only for view_internal_notes
+	applySubtaskViews(c, tasks) // subtask assignees get a reference view
+	reduceProjectsToRef(c, tasks) // project as reference only (spec slide 14)
 	c.JSON(http.StatusOK, gin.H{
 		"tasks": tasks,
 		"pagination": gin.H{
@@ -170,8 +181,10 @@ func GetTask(c *gin.Context) {
 		Preload("Project").
 		Preload("Ticket").
 		Preload("Assignee").
+		Preload("AssignedBy", userBasics).
 		Preload("Creator").
 		Preload("SubTasks.Assignee").
+		Preload("SubTasks.AssignedBy", userBasics).
 		Preload("Comments.User").
 		Preload("Attachments").
 		Preload("WorkLogs.User").
@@ -191,12 +204,28 @@ func GetTask(c *gin.Context) {
 		return
 	}
 
-	// Privacy check (department, project department, or explicit assignment)
+	// Privacy check (department, project department, or explicit assignment).
+	// Someone assigned only a subtask gets the reference view instead.
 	if !userCanAccessTask(c, &task) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: task belongs to different department"})
-		return
+		if !hasSubtaskAssignedIn(task.ID, viewerFrom(c).ID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: task belongs to different department"})
+			return
+		}
+		limitToSubtaskView(&task, viewerFrom(c).ID)
 	}
 
+	redactTask(c, &task) // internal notes only for view_internal_notes
+	if task.AccessLevel == "" {
+		v := viewerFrom(c)
+		var sup *uint
+		if v.Role == "supervisor" {
+			sup = supervisorOf(task.AssigneeID)
+		}
+		if !taskVisibleTo(v, &task, sup) && hasRecordAccess("task", task.ID, v.ID) {
+			task.AccessLevel = "granted"
+		}
+	}
+	reduceProjectToRef(c, &task) // project as reference only (spec slide 14)
 	c.JSON(http.StatusOK, gin.H{"task": task})
 }
 
@@ -225,14 +254,23 @@ func CreateTask(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to that project"})
 		return
 	}
+	if msg := taskAssigneeRoleError(input.AssigneeID); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+	if msg := assigneeError(input.AssigneeID); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
 
 	// Generate task number
-	var maxNum int
-	database.DB.Model(&models.Task{}).
-		Where("task_number ~ '^TSK-[0-9]+$'").
-		Select("COALESCE(MAX(CAST(SUBSTRING(task_number FROM 5) AS INTEGER)), 100000)").
-		Scan(&maxNum)
-	taskNumber := fmt.Sprintf("TSK-%06d", maxNum+1)
+	// Permanent ID from the atomic counter (spec slide 7) — "highest + 1"
+	// could hand the same number to two records created together.
+	taskNumber, idErr := models.NextID(database.DB, "TSK")
+	if idErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to allocate a task ID"})
+		return
+	}
 
 	// Department from project or user
 	department := project.Department
@@ -249,6 +287,12 @@ func CreateTask(c *gin.Context) {
 		ProjectID:   &input.ProjectID,
 		TicketID:    input.TicketID,
 		AssigneeID:  input.AssigneeID,
+		AssignedByID: func() *uint {
+			if input.AssigneeID != nil {
+				return &currentUserID
+			}
+			return nil
+		}(),
 		CreatorID:   &currentUserID,
 		DueDate:     input.DueDate,
 		StartDate:   input.StartDate,
@@ -264,6 +308,19 @@ func CreateTask(c *gin.Context) {
 	if err := database.DB.Create(&task).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create task: " + err.Error()})
 		return
+	}
+
+	// Checklist items sent with the task.
+	for idx, item := range input.Checklist {
+		title := strings.TrimSpace(item)
+		if title == "" {
+			continue
+		}
+		if len(title) > 500 {
+			title = title[:500]
+		}
+		_ = idx
+		database.DB.Create(&models.ChecklistItem{TaskID: task.ID, Title: title})
 	}
 
 	// Optional columns from the frontend's create form. Written separately and
@@ -292,15 +349,10 @@ func CreateTask(c *gin.Context) {
 	utils.LogAudit(currentUserID, "created", "task", task.ID,
 		fmt.Sprintf("Created task %s: %s", task.TaskNumber, task.Title), c.ClientIP(), c.Request.UserAgent())
 
-	// Reload with relations
-	database.DB.
-		Preload("Project").
-		Preload("Assignee").
-		Preload("Creator").
-		Preload("Dependencies").
-		First(&task, task.ID)
-
-	c.JSON(http.StatusCreated, gin.H{"message": "Task created successfully", "task": task})
+	// Reload with every relation the frontend's normalizeTask reads (see
+	// taskWithRelations in task_workflow.go) — the client stores whatever
+	// comes back here as the task.
+	c.JSON(http.StatusCreated, gin.H{"message": "Task created successfully", "task": reloadFullTask(c, task)})
 }
 
 // UpdateTask updates an existing task
@@ -363,6 +415,14 @@ func UpdateTask(c *gin.Context) {
 			c.JSON(code, gin.H{"error": msg})
 			return
 		}
+		if msg := statusReasonError("task", input.Status, input.StatusReason); msg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
+		// Recorded with previous -> new and the reason (spec slide 21).
+		utils.LogAuditWithValues(currentUserID, "status_changed", "task", task.ID,
+			statusChange(task.Status), statusChangeWithReason(input.Status, input.StatusReason),
+			statusChangeDetails("task", task.Status, input.Status, input.StatusReason), c.ClientIP(), c.Request.UserAgent())
 		updates["status"] = input.Status
 		if input.Status == "done" && task.CompletedAt == nil {
 			now := time.Now()
@@ -380,10 +440,37 @@ func UpdateTask(c *gin.Context) {
 		// access to the task could hand it to anyone else.
 		changing := task.AssigneeID == nil || *task.AssigneeID != *input.AssigneeID
 		if changing && !canAssignWork(currentUserRole) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to reassign tasks"})
-			return
+			// The assignee may still pass it to a colleague in their own
+			// department (spec slide 20: transfers).
+			if ok, msg := canTransferOwnWork(c, task.AssigneeID, input.AssigneeID); !ok {
+				if msg == "" {
+					msg = "You don't have permission to reassign tasks"
+				}
+				c.JSON(http.StatusForbidden, gin.H{"error": msg})
+				return
+			}
+		}
+		if changing {
+			if msg := taskAssigneeRoleError(input.AssigneeID); msg != "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+				return
+			}
+		}
+		if changing {
+			if msg := assigneeError(input.AssigneeID); msg != "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+				return
+			}
+			utils.LogAuditWithValues(currentUserID, "transferred", "task", task.ID,
+				map[string]interface{}{"assignee": assigneeLabel(task.AssigneeID)},
+				map[string]interface{}{"assignee": assigneeLabel(input.AssigneeID)},
+				fmt.Sprintf("Task %s transferred: %s -> %s", task.TaskNumber, assigneeLabel(task.AssigneeID), assigneeLabel(input.AssigneeID)),
+				c.ClientIP(), c.Request.UserAgent())
 		}
 		updates["assignee_id"] = *input.AssigneeID
+		if task.AssigneeID == nil || *task.AssigneeID != *input.AssigneeID {
+			updates["assigned_by_id"] = currentUserID // who gave it to them
+		}
 	}
 	if input.DueDate != nil {
 		updates["due_date"] = *input.DueDate
@@ -404,6 +491,7 @@ func UpdateTask(c *gin.Context) {
 		updates["is_pinned"] = *input.IsPinned
 	}
 
+	before := task
 	if len(updates) > 0 {
 		if err := database.DB.Model(&task).Updates(updates).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update task"})
@@ -418,19 +506,22 @@ func UpdateTask(c *gin.Context) {
 		database.DB.Model(&task).Association("Dependencies").Replace(&deps)
 	}
 
-	database.DB.First(&task, id)
+	// Record exactly which fields changed, old -> new (status and assignee
+	// changes have their own entries above).
+	var after models.Task
+	if err := database.DB.First(&after, task.ID).Error; err == nil {
+		if oldV, newV, changed := fieldDiff(before, after, taskDiffFields); len(changed) > 0 {
+			utils.LogAuditWithValues(currentUserID, "updated", "task", task.ID, oldV, newV,
+				fmt.Sprintf("Updated task %s: %s", task.TaskNumber, strings.Join(changed, ", ")),
+				c.ClientIP(), c.Request.UserAgent())
+		}
+	}
 
-	utils.LogAudit(currentUserID, "updated", "task", task.ID,
-		fmt.Sprintf("Updated task %s", task.TaskNumber), c.ClientIP(), c.Request.UserAgent())
-
-	database.DB.
-		Preload("Project").
-		Preload("Assignee").
-		Preload("Creator").
-		Preload("Dependencies").
-		First(&task, id)
-
-	c.JSON(http.StatusOK, gin.H{"message": "Task updated successfully", "task": task})
+	// Full reload. This used to preload only Project/Assignee/Creator/
+	// Dependencies; the frontend REPLACES its copy of the task with this
+	// response, so every edit made the task's sub-tasks, comments and
+	// checklist disappear from the UI until the next page reload.
+	c.JSON(http.StatusOK, gin.H{"message": "Task updated successfully", "task": reloadFullTask(c, task)})
 }
 
 // DeleteTask archives a task — see the matching comment on DeleteProject
@@ -467,9 +558,17 @@ func DeleteTask(c *gin.Context) {
 		return
 	}
 
+	// Archiving twice would overwrite pre_archive_status with "archived",
+	// losing the status Restore needs.
+	if task.Status == "archived" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Already archived"})
+		return
+	}
+
 	now := time.Now()
 	if err := database.DB.Model(&task).Updates(map[string]interface{}{
 		"status":         "archived",
+		"pre_archive_status": task.Status,
 		"archived_at":    now,
 		"archived_by_id": currentUserID,
 	}).Error; err != nil {
@@ -512,6 +611,7 @@ func UpdateTaskStatus(c *gin.Context) {
 
 	var input struct {
 		Status string `json:"status" binding:"required"`
+		Reason string `json:"reason"` // required for some statuses (catalog)
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -525,6 +625,10 @@ func UpdateTaskStatus(c *gin.Context) {
 		c.JSON(code, gin.H{"error": msg})
 		return
 	}
+	if msg := statusReasonError("task", input.Status, input.Reason); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
 
 	// Capture BEFORE Updates(): GORM writes map-update values back into the
 	// model struct, so task.Status is already the new value afterwards and the
@@ -535,7 +639,7 @@ func UpdateTaskStatus(c *gin.Context) {
 		"status": input.Status,
 	}
 
-	if input.Status == "done" && task.CompletedAt == nil {
+	if statusCategory("task", input.Status) == "done" && task.CompletedAt == nil {
 		now := time.Now()
 		updates["completed_at"] = now
 	}
@@ -555,9 +659,8 @@ func UpdateTaskStatus(c *gin.Context) {
 	}
 
 	utils.LogAuditWithValues(currentUserID, "status_changed", "task", task.ID,
-		statusChange(oldStatus), statusChange(input.Status),
-		fmt.Sprintf("Status changed from %s to %s", oldStatus, input.Status), c.ClientIP(), c.Request.UserAgent())
+		statusChange(oldStatus), statusChangeWithReason(input.Status, input.Reason),
+		statusChangeDetails("task", oldStatus, input.Status, input.Reason), c.ClientIP(), c.Request.UserAgent())
 
-	database.DB.First(&task, id)
-	c.JSON(http.StatusOK, gin.H{"message": "Status updated successfully", "task": task})
+	c.JSON(http.StatusOK, gin.H{"message": "Status updated successfully", "task": reloadFullTask(c, task)})
 }

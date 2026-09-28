@@ -121,6 +121,7 @@ func EscalateTicket(c *gin.Context) {
 		Preload("Client").
 		Preload("Project").
 		Preload("AssignedTo").
+		Preload("AssignedBy", userBasics).
 		Preload("CreatedBy").
 		First(&ticket, ticket.ID)
 

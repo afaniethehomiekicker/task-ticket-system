@@ -6,7 +6,10 @@ import (
 
 type AuditLog struct {
 	gorm.Model
-	UserID       uint      `json:"user_id" gorm:"index"`
+	// Who did it. Nil for actions the system performs by itself (e.g. an SLA
+	// breach escalating a ticket) — shown as "system", never attributed to a
+	// person who didn't act.
+	UserID       *uint     `json:"user_id" gorm:"index"`
 	User         *User     `json:"user,omitempty" gorm:"foreignKey:UserID"`
 	Action       string    `json:"action" gorm:"index"`              // created, updated, deleted, status_changed, assigned, commented
 	ResourceType string    `json:"resource_type" gorm:"index"`       // ticket, task, project, client, feasibility, user

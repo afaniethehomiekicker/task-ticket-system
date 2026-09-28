@@ -15,7 +15,7 @@ import {
   Plus,
   UserCircle,
   Building2,
-  Network
+  Network, Archive
 } from 'lucide-react';
 // canManageDepartments: same unverified-import note as DepartmentsView.jsx —
 // I don't have the current permissions.js in this session, so this mirrors
@@ -61,6 +61,9 @@ export const Sidebar = () => {
     { id: 'team', label: 'Team & Workload', icon: Users },
     { id: 'reports', label: 'Reports & SLA', icon: BarChart3 },
     { id: 'audit', label: 'System Audit Logs', icon: ScrollText, restricted: !canViewAuditLogs(currentUser, permissionMatrix) },
+    // Archived records (never deleted) — admins and super admins, the roles
+    // that can archive. Before this, archived work had no place in the UI.
+    { id: 'archive', label: 'Archive', icon: Archive, restricted: !(currentUser.role === 'admin' || currentUser.role === 'super_admin') },
     { id: 'settings', label: 'Settings & Matrix', icon: Settings, restricted: settingsRestricted },
     { id: 'profile', label: 'My Profile', icon: UserCircle },
   ];

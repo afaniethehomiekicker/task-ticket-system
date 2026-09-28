@@ -58,6 +58,39 @@ func main() {
 	// Seed built-in roles and permissions (idempotent)
 	handlers.EnsureBuiltInRolesExist()
 
+	// Seed the spec's default departments — only when the departments table
+	// is empty, so a list an admin has already set up is never touched. This
+	// seeder existed but was never called.
+	handlers.EnsureDefaultDepartmentsExist()
+
+	// One-time: Level1..Level4 departments -> CNOC support tiers L1..L4.
+	// Does nothing once no Level department is left.
+	handlers.MigrateLevelDepartmentsToTiers()
+
+	// Configurable status catalog (spec slide 21): seeds any missing default
+	// statuses and loads the in-memory copy every status check reads.
+	handlers.EnsureWorkflowStatuses()
+
+	// SLA per priority (spec slide 22) and the background monitor that
+	// escalates breached tickets up the chain.
+	handlers.EnsureSLAPolicies()
+
+	// Several clients per project (spec slide 9): copy each project's
+	// existing client into the link table (idempotent).
+	handlers.EnsureProjectClientLinks()
+
+	// Permanent IDs (spec slide 7): counters start after the highest number
+	// in use; users / departments / sub-tasks get their IDs.
+	handlers.EnsureIDCounters()
+
+	// Nothing is hard-deleted (spec slides 4/29): rows deleted before
+	// archiving existed become archived / withdrawn, restorable from the UI.
+	handlers.MigrateSoftDeletedToArchived()
+
+	// Fill "assigned by" and the project budget unit on existing records.
+	handlers.BackfillAssignedByAndBudget()
+	handlers.StartSLAMonitor()
+
 	// Initialize Gin router. gin.New() rather than gin.Default(): Default()
 	// already installs a logger and a recovery handler, and both are added
 	// again below, so every request was being logged twice.

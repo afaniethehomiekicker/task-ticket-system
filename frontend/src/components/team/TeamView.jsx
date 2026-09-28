@@ -2,10 +2,10 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
   Users, Plus, Search, Shield, UserCheck, Mail, Building, 
-  CheckCircle, AlertCircle, Edit, ToggleLeft, ToggleRight, X, Phone
+  CheckCircle, AlertCircle, Edit, ToggleLeft, ToggleRight, X, Phone, Archive
 } from 'lucide-react';
 import { RoleBadge } from '../common/Badge';
-import { canManageUsers } from '../../utils/permissions';
+import { canManageUsers, getRoleDisplayName } from '../../utils/permissions';
 
 export const TeamView = () => {
   const { 
@@ -15,8 +15,23 @@ export const TeamView = () => {
     tickets, 
     toggleUserActiveStatus, 
     createUser, 
-    updateUser 
+    updateUser,
+    changeUserRole,
+    customRoles,
+    departments,
+    permissionMatrix,
+    archiveUser
   } = useApp();
+
+  // L1..L4 are support tiers inside CNOC (spec), not departments. The tier
+  // field only applies to CNOC users; the backend stores it empty otherwise.
+  const SUPPORT_TIERS = ['L1', 'L2', 'L3', 'L4'];
+  const isSupportDept = (name) => (name || '').trim().toLowerCase().startsWith('cnoc');
+
+  const deptFilterOptions = Array.from(new Set([
+    ...(departments || []).map(d => d.name),
+    ...(allUsers || []).map(r => r.department).filter(Boolean),
+  ])).sort((a, b) => a.localeCompare(b));
 
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
@@ -27,25 +42,38 @@ export const TeamView = () => {
   const [isSavingUser, setIsSavingUser] = useState(false);
   const [tempPasswordBanner, setTempPasswordBanner] = useState(null);
 
-  const [formData, setFormData] = useState({
+  // No default avatar: the old stock-photo URL was stored on every new user,
+  // and the backend (correctly) rejects external avatar URLs on edit, so
+  // those users could never be edited again. The UI already falls back to a
+  // placeholder when avatar is empty. No default department either — it was
+  // a hard-coded "Engineering" that isn't one of the managed departments.
+  const EMPTY_FORM = {
     name: '',
     email: '',
     role: 'staff',
-    department: 'Engineering',
+    department: '',
     title: '',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
     adminId: '',
-    supervisorId: ''
-  });
+    supervisorId: '',
+    supportTier: ''
+  };
 
-  const admins = allUsers.filter(u => u.role === 'admin');
-  const supervisors = allUsers.filter(u => u.role === 'supervisor');
+  const [formData, setFormData] = useState(EMPTY_FORM);
+
+  // Active people only, plus whoever is currently linked (so an existing link
+  // to a since-deactivated person still displays instead of blanking).
+  const admins = allUsers.filter(u => u.role === 'admin' &&
+    (u.status === 'active' || String(u.id) === String(formData.adminId)));
+  const supervisors = allUsers.filter(u => u.role === 'supervisor' &&
+    (u.status === 'active' || String(u.id) === String(formData.supervisorId)));
 
   const filteredUsers = allUsers.filter(u => {
     const matchSearch = u.name.toLowerCase().includes(search.toLowerCase()) ||
                         u.email.toLowerCase().includes(search.toLowerCase()) ||
                         u.title.toLowerCase().includes(search.toLowerCase());
     const matchRole = roleFilter === 'all' || u.role === roleFilter;
+    // Archived accounts live in Archive → Users, not on the Team page.
+    if (u.status === 'archived') return false;
     const matchDept = deptFilter === 'all' || u.department === deptFilter;
     return matchSearch && matchRole && matchDept;
   });
@@ -61,33 +89,57 @@ export const TeamView = () => {
     setIsSavingUser(true);
     try {
       if (editingUser) {
-        const { role, email, id, createdAt, updatedAt, ...editableFields } = formData;
-        await updateUser(editingUser.id, editableFields);
+        // Only the fields this form edits. It used to send the whole user
+        // record back (avatar, status, ids...), so a user carrying an old
+        // external avatar URL could never be saved, and the modal closed even
+        // when the save failed.
+        const saved = await updateUser(editingUser.id, {
+          name: formData.name,
+          title: formData.title || '',
+          department: formData.department || '',
+          adminId: formData.adminId || '',
+          supervisorId: formData.supervisorId || '',
+          supportTier: isSupportDept(formData.department) ? (formData.supportTier || '') : '',
+        });
+        if (!saved) return;
+
+        // Role change: separate, audited endpoint, and confirmed first.
+        if (formData.role && formData.role !== editingUser.role) {
+          const ok = window.confirm(
+            `Change ${formData.name}'s role from ${getRoleDisplayName(editingUser.role)} to ${getRoleDisplayName(formData.role)}? ` +
+            'This changes what they can see and do across the whole system.'
+          );
+          if (!ok) return;
+          const changed = await changeUserRole(editingUser.id, formData.role);
+          if (!changed) return;
+        }
+
         setEditingUser(null);
         setShowAddModal(false);
       } else {
-        const result = await createUser(formData);
+        // Explicit fields only — never whatever else happens to be in the
+        // form state.
+        const result = await createUser({
+          name: formData.name,
+          email: formData.email,
+          role: formData.role || 'staff',
+          department: formData.department || '',
+          title: formData.title || '',
+          adminId: formData.adminId || '',
+          supervisorId: formData.supervisorId || '',
+          supportTier: isSupportDept(formData.department) ? (formData.supportTier || '') : '',
+        });
         if (result) {
           setShowAddModal(false);
           if (result.temporaryPassword) {
             setTempPasswordBanner({ name: result.user?.name || formData.name, password: result.temporaryPassword });
           }
         } else {
-          setIsSavingUser(false);
           return;
         }
       }
 
-      setFormData({
-        name: '',
-        email: '',
-        role: 'staff',
-        department: 'Engineering',
-        title: '',
-        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-        adminId: '',
-        supervisorId: ''
-      });
+      setFormData(EMPTY_FORM);
     } finally {
       setIsSavingUser(false);
     }
@@ -96,7 +148,13 @@ export const TeamView = () => {
   const openEditModal = (u, e) => {
     e.stopPropagation();
     setEditingUser(u);
-    setFormData(u);
+    setFormData({
+      ...EMPTY_FORM,
+      ...u,
+      adminId: u.adminId ?? '',
+      supervisorId: u.supervisorId ?? '',
+      supportTier: u.supportTier || '',
+    });
     setShowAddModal(true);
   };
 
@@ -113,11 +171,15 @@ export const TeamView = () => {
           </p>
         </div>
 
-        {canManageUsers(currentUser) && (
+        {canManageUsers(currentUser, permissionMatrix) && (
           <button
             id="add-team-member-btn"
             onClick={() => {
+              // Reset the form: it used to keep whatever user was last opened
+              // with Edit, so "Add" sent that user's old avatar URL (rejected
+              // by the backend) and other leftover fields.
               setEditingUser(null);
+              setFormData(EMPTY_FORM);
               setShowAddModal(true);
             }}
             className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition cursor-pointer"
@@ -161,10 +223,11 @@ export const TeamView = () => {
           className="px-2.5 py-1 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-800 dark:text-zinc-300 focus:outline-hidden"
         >
           <option value="all">All Departments</option>
-          <option value="Executive Management">Executive Management</option>
-          <option value="Engineering">Engineering</option>
-          <option value="Customer Success">Customer Success</option>
-          <option value="Product & Design">Product & Design</option>
+          {/* Managed departments, plus any other value still on existing
+              records (so old data stays filterable). Was a hard-coded list. */}
+          {deptFilterOptions.map(name => (
+            <option key={name} value={name}>{name}</option>
+          ))}
         </select>
       </div>
 
@@ -207,13 +270,26 @@ export const TeamView = () => {
                 </div>
 
                 <div className="space-y-2 text-xs py-3 border-y border-slate-300/60 dark:border-zinc-800/80">
+                  {user.userNumber && (
+                    <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
+                      <span>User ID:</span>
+                      <span className="font-mono">{user.userNumber}</span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
                     <span className="flex items-center gap-1.5"><Mail className="w-3.5 h-3.5" /> Email:</span>
                     <span className="font-mono">{user.email}</span>
                   </div>
                   <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
                     <span className="flex items-center gap-1.5"><Building className="w-3.5 h-3.5" /> Department:</span>
-                    <span className="font-medium">{user.department}</span>
+                    <span className="font-medium">
+                      {user.department}
+                      {user.supportTier && (
+                        <span className="ml-1.5 px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 text-[10px] font-bold">
+                          {user.supportTier}
+                        </span>
+                      )}
+                    </span>
                   </div>
                   {supervisor && (
                     <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
@@ -247,7 +323,7 @@ export const TeamView = () => {
                 </div>
               </div>
 
-              {canManageUsers(currentUser) && (
+              {canManageUsers(currentUser, permissionMatrix) && (
                 <div 
                   className="pt-3 border-t border-slate-300/60 dark:border-zinc-800/80 flex items-center justify-between text-xs"
                   onClick={(e) => e.stopPropagation()}
@@ -284,12 +360,30 @@ export const TeamView = () => {
                     )}
                   </button>
 
-                  <button
-                    onClick={(e) => openEditModal(user, e)}
-                    className="p-1 rounded text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 flex items-center gap-1 cursor-pointer"
-                  >
-                    <Edit className="w-3.5 h-3.5" /> Edit
-                  </button>
+                  <div className="flex items-center gap-1">
+                    {/* Archive instead of delete (spec slides 4/29): they
+                        can't sign in, their name stays on past work, and
+                        they can be restored from Archive → Users. */}
+                    {String(user.id) !== String(currentUser?.id) && (
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (!window.confirm(`Archive ${user.name}? They won't be able to sign in. Their name stays on past work, and you can restore them from Archive → Users.`)) return;
+                          await archiveUser(user.id);
+                        }}
+                        className="p-1 rounded text-slate-500 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 flex items-center gap-1 cursor-pointer"
+                        title="Archive (restorable)"
+                      >
+                        <Archive className="w-3.5 h-3.5" /> Archive
+                      </button>
+                    )}
+                    <button
+                      onClick={(e) => openEditModal(user, e)}
+                      className="p-1 rounded text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 flex items-center gap-1 cursor-pointer"
+                    >
+                      <Edit className="w-3.5 h-3.5" /> Edit
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -428,37 +522,58 @@ export const TeamView = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="font-semibold text-slate-700 dark:text-zinc-300 block mb-1">
-                    Role
-                    {editingUser && (
-                      <span className="font-normal text-slate-500 dark:text-zinc-500 normal-case"> (not editable here)</span>
-                    )}
-                  </label>
+                  <label className="font-semibold text-slate-700 dark:text-zinc-300 block mb-1">Role</label>
+                  {/* Editable on edit too now; a change is confirmed and saved
+                      through the audited role endpoint. Your own role can't be
+                      changed here (the backend refuses it as well). */}
                   <select
                     value={formData.role || 'staff'}
                     onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-                    disabled={!!editingUser}
+                    disabled={!!editingUser && String(editingUser.id) === String(currentUser?.id)}
                     className="w-full p-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden disabled:opacity-60 disabled:cursor-not-allowed"
                   >
-                    <option value="super_admin">Super Admin</option>
-                    <option value="admin">Admin</option>
-                    <option value="supervisor">Supervisor</option>
-                    <option value="staff">Staff</option>
+                    {(customRoles && customRoles.length ? customRoles : ['super_admin', 'admin', 'supervisor', 'staff'])
+                      .filter(r => r !== 'super_admin' || currentUser?.role === 'super_admin')
+                      .map(r => (
+                        <option key={r} value={r}>{getRoleDisplayName(r)}</option>
+                      ))}
                   </select>
-                  {editingUser && (
-                    <p className="text-[10px] text-slate-500 dark:text-zinc-500 mt-1">
-                      Role changes are a separate, deliberate action — not available from this form.
+                  {editingUser && formData.role !== editingUser.role && (
+                    <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
+                      Role will change on save (you'll be asked to confirm).
                     </p>
                   )}
                 </div>
                 <div>
                   <label className="font-semibold text-slate-700 dark:text-zinc-300 block mb-1">Department</label>
-                  <input
-                    type="text"
+                  {/* The managed department list (Departments view), not free text. */}
+                  <select
                     value={formData.department || ''}
                     onChange={(e) => setFormData({ ...formData, department: e.target.value })}
                     className="w-full p-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
-                  />
+                  >
+                    <option value="">No department</option>
+                    {(departments || []).map(d => (
+                      <option key={d.id} value={d.name}>{d.name}</option>
+                    ))}
+                    {/* Keep a legacy value visible instead of silently blanking it. */}
+                    {formData.department && !(departments || []).some(d => d.name === formData.department) && (
+                      <option value={formData.department}>{formData.department} (not in list)</option>
+                    )}
+                  </select>
+                  {isSupportDept(formData.department) && (
+                    <div className="mt-2">
+                      <label className="font-semibold text-slate-700 dark:text-zinc-300 block mb-1">Support Tier</label>
+                      <select
+                        value={formData.supportTier || ''}
+                        onChange={(e) => setFormData({ ...formData, supportTier: e.target.value })}
+                        className="w-full p-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                      >
+                        <option value="">No tier</option>
+                        {SUPPORT_TIERS.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </div>
+                  )}
                 </div>
               </div>
 

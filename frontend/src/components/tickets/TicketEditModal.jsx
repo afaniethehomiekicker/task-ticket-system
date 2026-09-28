@@ -3,8 +3,9 @@ import { useApp } from '../../context/AppContext';
 import { X, Trash2 } from 'lucide-react';
 import AsyncSelect from 'react-select/async';
 
+import { isTaskAssignable } from '../../utils/permissions';
 export const TicketEditModal = () => {
-  const { tickets, selectedTicketEditId, setSelectedTicketEditId, updateTicket, deleteTicket, allUsers, apiFetch } = useApp();
+  const { tickets, selectedTicketEditId, setSelectedTicketEditId, updateTicket, deleteTicket, allUsers, apiFetch, searchAssignees, getStatuses, getStatusLabel } = useApp();
 
   const ticket = (tickets || []).find(t => String(t.id) === String(selectedTicketEditId));
 
@@ -49,39 +50,29 @@ export const TicketEditModal = () => {
     return match ? match.id : rawId;
   };
 
-  // Server-side user search fetching function
+  // Assignee search via the people directory (see searchAssignees in
+  // AppContext). It used to call /api/users, which needs manage_users, so for
+  // staff and supervisors every search was a 403 and the picker silently fell
+  // back to a local list that also offered deactivated users.
   const loadUserOptions = async (inputValue) => {
+    const toOption = (u) => ({
+      value: resolveToCanonicalId(u.id),
+      label: `${u.name} (${u.role || 'staff'})${u.department ? ` · ${u.department}` : ''}`,
+      user: u
+    });
     try {
-      // Was a raw fetch() with no Authorization header — same fix as
-      // QuickCreateModal's loadClientOptions/loadProjectOptions/
-      // loadAssigneeOptions.
-      const res = await apiFetch(`/api/users?search=${encodeURIComponent(inputValue)}`);
-      if (!res.ok) throw new Error('Search failed');
-      const data = await res.json();
-
-      const fetchedUsers = data.users || [];
-      const options = fetchedUsers.map(u => {
-        const rawId = u.id ?? u.ID;
-        return {
-          value: resolveToCanonicalId(rawId),
-          label: `${u.name} (${u.role || 'Staff'}) - ${u.email || ''}`,
-          user: u
-        };
-      });
-
-      return [{ value: '', label: 'Unassigned' }, ...options];
+      const users = await searchAssignees({ search: inputValue || '' });
+      // Staff / supervisors only — admins assign, they aren't assigned.
+      return [{ value: '', label: 'Unassigned' }, ...users.filter(isTaskAssignable).map(toOption)];
     } catch (err) {
-      // Fallback local search filtering if offline
-      const filtered = (allUsers || []).filter(u => 
-        u.name?.toLowerCase().includes(inputValue.toLowerCase()) ||
-        u.email?.toLowerCase().includes(inputValue.toLowerCase())
-      );
-      return [
-        { value: '', label: 'Unassigned' },
-        ...filtered.map(u => ({ value: u.id, label: `${u.name} (${u.role})` }))
-      ];
+      const q = (inputValue || '').toLowerCase();
+      const filtered = (allUsers || [])
+        .filter(u => u.status === 'active' && isTaskAssignable(u))
+        .filter(u => !q || u.name?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q));
+      return [{ value: '', label: 'Unassigned' }, ...filtered.map(toOption)];
     }
   };
+
 
   if (!selectedTicketEditId || !ticket) return null;
 
@@ -203,10 +194,14 @@ export const TicketEditModal = () => {
                 onChange={handleChange}
                 className="w-full px-3 py-2 bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg text-xs text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-indigo-500"
               >
-                <option value="open">Open</option>
-                <option value="in_progress">In Progress</option>
-                <option value="resolved">Resolved</option>
-                <option value="closed">Closed</option>
+                {/* Was a hard-coded list including "open", which isn't a
+                    ticket status at all. Now the configurable catalog. */}
+                {getStatuses('ticket').map(st => (
+                  <option key={st.key} value={st.key}>{st.label}</option>
+                ))}
+                {formData.status && !getStatuses('ticket').some(st => st.key === formData.status) && (
+                  <option value={formData.status}>{getStatusLabel('ticket', formData.status)}</option>
+                )}
               </select>
             </div>
           </div>
@@ -239,16 +234,18 @@ export const TicketEditModal = () => {
             <button
               type="button"
               onClick={async () => {
-                if (!window.confirm('Are you sure you want to delete this ticket? This action cannot be undone.')) {
+                // Archive, not delete — the record stays in the archive and
+                // audit trail. Only closes when the server confirms.
+                if (!window.confirm('Archive this ticket? It stays available in the archive and audit trail.')) {
                   return;
                 }
-                await deleteTicket(selectedTicketEditId);
-                setSelectedTicketEditId(null);
+                const ok = await deleteTicket(selectedTicketEditId);
+                if (ok) setSelectedTicketEditId(null);
               }}
               className="px-3 py-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-950/40 rounded-lg transition cursor-pointer flex items-center gap-1.5"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              Delete Ticket
+              Archive Ticket
             </button>
 
             <div className="flex items-center gap-3">

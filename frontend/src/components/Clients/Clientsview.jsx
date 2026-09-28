@@ -1,9 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
-import { canManageClients } from '../../utils/permissions';
+import { canManageClients, canGrantRecordAccess } from '../../utils/permissions';
+import { RecordAccessPanel } from '../common/RecordAccessPanel';
+import { CustomFieldInputs } from './CustomFieldInputs';
+import { ClientFieldsManager } from './ClientFieldsManager';
+import { Client360View } from './Client360View';
 import { 
   Building2, Search, Mail, Phone, Globe, MapPin, Briefcase, 
-  Pencil, Trash2, X, Check, FolderKanban
+  Pencil, Trash2, X, Check, FolderKanban, UserCheck, Lock, SlidersHorizontal, LayoutDashboard
 } from 'lucide-react';
 
 export const ClientsView = () => {
@@ -14,6 +18,15 @@ export const ClientsView = () => {
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [isSaving, setIsSaving] = useState(false);
+  // Client whose Access panel is open (record-level grants, spec slide 16).
+  const [accessOpenId, setAccessOpenId] = useState(null);
+  // Client 360° view (spec slide 10) and the extra-fields manager (slide 8).
+  const [overviewId, setOverviewId] = useState(null);
+  const [showFieldsManager, setShowFieldsManager] = useState(false);
+  // Sharing a client: "Grant Record Access" plus full access to it
+  // (management, or the person who created it) — same rule as the backend.
+  const canShare = (client) => canGrantRecordAccess(currentUser, permissionMatrix) &&
+    (canManage || String(client.createdById) === String(currentUser?.id));
 
   const filteredClients = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -27,7 +40,9 @@ export const ClientsView = () => {
   }, [clients, search]);
 
   const projectCountFor = (clientId) =>
-    (projects || []).filter(p => String(p.clientId) === String(clientId)).length;
+    // Counts projects shared with other clients too (slide 9).
+    (projects || []).filter(p => String(p.clientId) === String(clientId) ||
+      (p.clientIds || []).some(id => String(id) === String(clientId))).length;
 
   const startEdit = (client) => {
     setEditingId(client.id);
@@ -39,6 +54,12 @@ export const ClientsView = () => {
       website: client.website || '',
       industry: client.industry || '',
       address: client.address || '',
+      city: client.city || '',
+      notes: client.notes || '',
+      clientName: client.clientName || '',
+      cnic: client.cnic || '',
+      mobile: client.mobile || '',
+      customFields: { ...(client.customFields || {}) },
     });
   };
 
@@ -80,6 +101,17 @@ export const ClientsView = () => {
           </p>
         </div>
 
+        <div className="flex gap-2 self-start sm:self-auto">
+        {canManage && (
+          <button
+            type="button"
+            onClick={() => setShowFieldsManager(true)}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-zinc-700 text-slate-700 dark:text-zinc-300 hover:bg-slate-300/60 dark:hover:bg-zinc-800 cursor-pointer"
+            title="Extra client fields (no schema change)"
+          >
+            <SlidersHorizontal className="w-4 h-4" /> Client fields
+          </button>
+        )}
         {canManage && (
           <button
             id="clients-new-btn"
@@ -90,7 +122,11 @@ export const ClientsView = () => {
             New Client
           </button>
         )}
+        </div>
       </div>
+
+      {showFieldsManager && <ClientFieldsManager onClose={() => setShowFieldsManager(false)} />}
+      {overviewId && <Client360View clientId={overviewId} onClose={() => setOverviewId(null)} />}
 
       {/* Search */}
       <div className="relative max-w-sm">
@@ -181,6 +217,19 @@ export const ClientsView = () => {
                       onChange={(e) => setEditForm({ ...editForm, address: e.target.value })}
                       className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden resize-none"
                     />
+                    {/* Spec slide 8 fields */}
+                    <div className="grid grid-cols-2 gap-2">
+                      {[['clientName', 'Client name (person)'], ['cnic', 'CNIC (optional)'], ['mobile', 'Mobile'], ['city', 'City']].map(([k, ph]) => (
+                        <input key={k} type="text" placeholder={ph} value={editForm[k] || ''}
+                          onChange={(e) => setEditForm({ ...editForm, [k]: e.target.value })}
+                          className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden" />
+                      ))}
+                    </div>
+                    <textarea rows={2} placeholder="Notes" value={editForm.notes || ''}
+                      onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                      className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden resize-none" />
+                    <CustomFieldInputs values={editForm.customFields || {}}
+                      onChange={(cf) => setEditForm({ ...editForm, customFields: cf })} />
                     <div className="flex justify-end gap-2 pt-1">
                       <button
                         onClick={cancelEdit}
@@ -207,6 +256,19 @@ export const ClientsView = () => {
                         <h3 className="text-sm font-bold text-slate-900 dark:text-zinc-100 truncate">
                           {client.companyName}
                         </h3>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          {client.clientNumber && (
+                            <span className="text-[10px] font-mono text-slate-500 dark:text-zinc-500">{client.clientNumber}</span>
+                          )}
+                          {client.accessLevel === 'reference' && (
+                            <span
+                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-300/60 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400 text-[9px] font-semibold uppercase"
+                              title="You see this client through work linked to it. Contact details are shown to management or people given access."
+                            >
+                              <Lock className="w-2.5 h-2.5" /> Reference only
+                            </span>
+                          )}
+                        </div>
                         {client.industry && (
                           <span className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">
                             <Briefcase className="w-3 h-3" />
@@ -214,7 +276,28 @@ export const ClientsView = () => {
                           </span>
                         )}
                       </div>
-                      {canManage && <div className="flex items-center gap-1 shrink-0">
+                      {(canManage || canShare(client) || client.accessLevel !== 'reference') && <div className="flex items-center gap-1 shrink-0">
+                        {client.accessLevel !== 'reference' && (
+                          <button
+                            onClick={() => setOverviewId(client.id)}
+                            className="p-1.5 rounded-lg text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 cursor-pointer"
+                            title="Client 360° view"
+                          >
+                            <LayoutDashboard className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {canShare(client) && (
+                          <button
+                            onClick={() => setAccessOpenId(accessOpenId === client.id ? null : client.id)}
+                            className={`p-1.5 rounded-lg cursor-pointer ${accessOpenId === client.id
+                              ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/40'
+                              : 'text-slate-500 dark:text-zinc-400 hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800'}`}
+                            title="Access — share this client with specific people"
+                          >
+                            <UserCheck className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {canManage && (<>
                         <button
                           onClick={() => startEdit(client)}
                           className="p-1.5 text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
@@ -229,6 +312,7 @@ export const ClientsView = () => {
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
+                        </>)}
                       </div>}
                     </div>
 
@@ -273,6 +357,17 @@ export const ClientsView = () => {
                         </div>
                       )}
                     </div>
+
+                    {accessOpenId === client.id && canShare(client) && (
+                      <div className="p-2.5 rounded-lg bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900">
+                        <RecordAccessPanel
+                          kind="clients"
+                          recordId={client.id}
+                          recordLabel={client.companyName}
+                          excludeUserIds={[client.createdById]}
+                        />
+                      </div>
+                    )}
 
                     <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-zinc-500 pt-2 border-t border-slate-300 dark:border-zinc-800">
                       <FolderKanban className="w-3.5 h-3.5" />

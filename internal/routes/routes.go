@@ -70,10 +70,27 @@ func RegisterRoutes(r *gin.Engine) {
 			clients := protected.Group("/clients")
 			{
 				clients.GET("", handlers.GetClients)
-				clients.POST("", middleware.RequirePermission("manage_clients"), handlers.CreateClient)
+				// Name-only search for client pickers (reference fields only).
+				// Registered before "/:id" so "lookup" isn't read as an id.
+				clients.GET("/lookup", handlers.LookupClients)
+				// Admin-configurable extra client fields (spec slide 8).
+				clients.GET("/fields", handlers.GetClientFields)
+				clients.POST("/fields", middleware.RequirePermission("manage_clients"), handlers.CreateClientField)
+				clients.PUT("/fields/:id", middleware.RequirePermission("manage_clients"), handlers.UpdateClientField)
+				// Creating a client is also allowed for anyone who can raise a
+				// feasibility (spec: "+ Add Client" inline, by staff). Editing
+				// and archiving clients stay on manage_clients.
+				clients.POST("", middleware.RequireAnyPermission("manage_clients", "create_feasibilities"), handlers.CreateClient)
 				clients.GET("/:id", handlers.GetClient)
+				// Client 360° view (spec slide 10).
+				clients.GET("/:id/overview", handlers.GetClientOverview)
 				clients.PUT("/:id", middleware.RequirePermission("manage_clients"), handlers.UpdateClient)
 				clients.DELETE("/:id", middleware.RequirePermission("manage_clients"), handlers.DeleteClient)
+				clients.PATCH("/:id/restore", middleware.RequirePermission("manage_clients"), handlers.RestoreClient)
+				// Record-level access grants (spec slide 16).
+				clients.GET("/:id/access", handlers.GetClientAccess)
+				clients.POST("/:id/access", handlers.GrantClientAccess)
+				clients.DELETE("/:id/access/:userId", handlers.RevokeClientAccess)
 			}
 
 			// Department endpoints. GET is open to any authenticated user —
@@ -84,7 +101,8 @@ func RegisterRoutes(r *gin.Engine) {
 				departments.GET("", handlers.GetDepartments)
 				departments.POST("", middleware.RequirePermission("manage_departments"), handlers.CreateDepartment)
 				departments.PUT("/:id", middleware.RequirePermission("manage_departments"), handlers.UpdateDepartment)
-				departments.DELETE("/:id", middleware.RequirePermission("manage_departments"), handlers.DeleteDepartment)
+				departments.DELETE("/:id", middleware.RequirePermission("manage_departments"), handlers.ArchiveDepartment) // archives
+				departments.PATCH("/:id/restore", middleware.RequirePermission("manage_departments"), handlers.RestoreDepartment)
 			}
 
 			// Feasibility endpoints
@@ -98,14 +116,18 @@ func RegisterRoutes(r *gin.Engine) {
 				feasibilities.GET("/:id", handlers.GetFeasibility)
 
 				// Mutations require create_projects permission
-				feasibilities.POST("", middleware.RequirePermission("create_projects"), handlers.CreateFeasibility)
+				// Raising a feasibility request is its own permission (spec: staff
+				// raise them); archive/restore/convert stay on create_projects.
+				feasibilities.POST("", middleware.RequirePermission("create_feasibilities"), handlers.CreateFeasibility)
 				feasibilities.PUT("/:id", handlers.UpdateFeasibility)
 				feasibilities.DELETE("/:id", middleware.RequirePermission("create_projects"), handlers.DeleteFeasibility)
+				feasibilities.PATCH("/:id/restore", middleware.RequirePermission("create_projects"), handlers.RestoreFeasibility)
 
 				// Vendor management
 				feasibilities.POST("/:id/vendors", handlers.AddFeasibilityVendor)
 				feasibilities.PUT("/:id/vendors/:vendorId", handlers.UpdateFeasibilityVendor)
-				feasibilities.DELETE("/:id/vendors/:vendorId", handlers.DeleteFeasibilityVendor)
+				feasibilities.DELETE("/:id/vendors/:vendorId", handlers.DeleteFeasibilityVendor) // withdraws
+				feasibilities.PATCH("/:id/vendors/:vendorId/reinstate", handlers.ReinstateFeasibilityVendor)
 
 				// Conversion to Project
 				feasibilities.POST("/:id/convert", middleware.RequirePermission("create_projects"), handlers.ConvertFeasibilityToProject)
@@ -119,6 +141,7 @@ func RegisterRoutes(r *gin.Engine) {
 				projects.GET("/:id", handlers.GetProject)
 				projects.PUT("/:id", handlers.UpdateProject)
 				projects.DELETE("/:id", handlers.DeleteProject)
+				projects.PATCH("/:id/restore", handlers.RestoreProject)
 				projects.GET("/:id/stats", handlers.GetProjectStats)
 
 				// Project members
@@ -138,11 +161,20 @@ func RegisterRoutes(r *gin.Engine) {
 				tickets.GET("/:id", handlers.GetTicket)
 				tickets.PUT("/:id", handlers.UpdateTicket)
 				tickets.DELETE("/:id", handlers.DeleteTicket)
+				// Per-record history (spec slide 20 accountability chain).
+				tickets.GET("/:id/timeline", handlers.GetTicketTimeline)
+				// CNOC flow (spec slide 19): route on, return to origin, reopen.
+				tickets.POST("/:id/route", handlers.RouteTicket)
+				tickets.POST("/:id/return", handlers.ReturnTicket)
+				tickets.POST("/:id/reopen", handlers.ReopenTicket)
+				tickets.PATCH("/:id/restore", handlers.RestoreTicket)
 				tickets.PATCH("/:id/status", handlers.UpdateTicketStatus)
 				// Was ungated — same issue as CreateTask above.
 				// canAssignTickets() in permissions.js checks the matrix
 				// client-side; nothing enforced it server-side.
-				tickets.POST("/:id/assign", middleware.RequirePermission("assign_tickets"), handlers.AssignTicket)
+				// Checked in the handler: assign_tickets, OR the current assignee
+				// transferring within their department (transfer_assigned_work).
+				tickets.POST("/:id/assign", handlers.AssignTicket)
 				tickets.PATCH("/:id/escalate", handlers.EscalateTicket)
 
 				// Ticket comments
@@ -158,6 +190,18 @@ func RegisterRoutes(r *gin.Engine) {
 			}
 
 			// Task endpoints
+			// Configurable status catalog (spec slide 21). Everyone reads it; only
+			// the Super Admin changes it (slide 5: Super Admin configures the system).
+			workflow := protected.Group("/workflow")
+			{
+				workflow.GET("/statuses", handlers.GetWorkflowStatuses)
+				workflow.POST("/statuses", middleware.RequireRole("super_admin"), handlers.CreateWorkflowStatus)
+				workflow.PUT("/statuses/:id", middleware.RequireRole("super_admin"), handlers.UpdateWorkflowStatus)
+				// Configurable SLA per priority (spec slide 22).
+				workflow.GET("/sla", handlers.GetSLAPolicies)
+				workflow.PUT("/sla/:id", middleware.RequireRole("super_admin"), handlers.UpdateSLAPolicy)
+			}
+
 			tasks := protected.Group("/tasks")
 			{
 				tasks.GET("", handlers.GetTasks)
@@ -169,6 +213,12 @@ func RegisterRoutes(r *gin.Engine) {
 				tasks.GET("/:id", handlers.GetTask)
 				tasks.PUT("/:id", handlers.UpdateTask)
 				tasks.DELETE("/:id", handlers.DeleteTask)
+				tasks.PATCH("/:id/restore", handlers.RestoreTask)
+				// Record-level access grants (spec slide 16).
+				tasks.GET("/:id/timeline", handlers.GetTaskTimeline)
+				tasks.GET("/:id/access", handlers.GetTaskAccess)
+				tasks.POST("/:id/access", handlers.GrantTaskAccess)
+				tasks.DELETE("/:id/access/:userId", handlers.RevokeTaskAccess)
 				tasks.PATCH("/:id/status", handlers.UpdateTaskStatus)
 
 				// Review workflow: todo/in_progress -> in_review -> done
@@ -213,7 +263,8 @@ func RegisterRoutes(r *gin.Engine) {
 				users.POST("", handlers.AdminCreateUser)
 				users.GET("/:id", handlers.GetUser)
 				users.PUT("/:id", handlers.AdminUpdateUser)
-				users.DELETE("/:id", handlers.AdminDeleteUser)
+				users.DELETE("/:id", handlers.ArchiveUser) // archives — nothing is hard-deleted (spec slide 29)
+				users.PATCH("/:id/restore", handlers.RestoreUser)
 				users.PATCH("/:id/status", handlers.ToggleUserStatus)
 				users.PUT("/:id/role", handlers.UpdateUserRole)
 			}

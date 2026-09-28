@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Building2, Plus, Pencil, Trash2, X, Check, Users2, Info } from 'lucide-react';
+import { Building2, Plus, Pencil, Archive, X, Check, Users2, Info } from 'lucide-react';
 // ASSUMPTION, unverified — I don't have the current permissions.js in this
 // session, so this import mirrors the established canManageClients pattern
 // (same file, same shape) exactly, under the name canManageDepartments. If
@@ -67,7 +67,10 @@ export const DepartmentsView = () => {
   };
 
   const handleDelete = async (dept) => {
-    if (!window.confirm(`Delete department "${dept.name}"? This only works if nothing currently uses it — you'll be told if something does.`)) return;
+    // Archive, not delete: it leaves every dropdown but keeps its name and
+    // DEP- ID, and can be restored from Archive → Departments. Refused while
+    // it still has people or open work.
+    if (!window.confirm(`Archive department "${dept.name}"? It can be restored later from Archive → Departments. This only works if it has no people or open work.`)) return;
     await deleteDepartment(dept.id);
   };
 
@@ -166,6 +169,7 @@ export const DepartmentsView = () => {
                       <div className="min-w-0">
                         <h3 className="text-sm font-bold text-slate-900 dark:text-zinc-100 truncate flex items-center gap-1.5">
                           <Users2 className="w-3.5 h-3.5 text-slate-400" /> {dept.name}
+                          {dept.deptNumber && <span className="ml-1.5 font-mono text-[10px] text-slate-500 dark:text-zinc-500">{dept.deptNumber}</span>}
                         </h3>
                         {dept.description && (
                           <p className="text-xs text-slate-500 dark:text-zinc-400 mt-0.5">{dept.description}</p>
@@ -176,8 +180,8 @@ export const DepartmentsView = () => {
                           <button onClick={() => startEdit(dept)} className="p-1.5 text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer" title="Edit">
                             <Pencil className="w-3.5 h-3.5" />
                           </button>
-                          <button onClick={() => handleDelete(dept)} className="p-1.5 text-slate-500 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer" title="Delete">
-                            <Trash2 className="w-3.5 h-3.5" />
+                          <button onClick={() => handleDelete(dept)} className="p-1.5 text-slate-500 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer" title="Archive (restorable)">
+                            <Archive className="w-3.5 h-3.5" />
                           </button>
                         </div>
                       )}

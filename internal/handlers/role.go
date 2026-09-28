@@ -24,6 +24,10 @@ var AllPermissionKeys = []string{
 	"manage_clients",
 	"assign_tickets",
 	"manage_departments",
+	"view_internal_notes",
+	"create_feasibilities",
+	"grant_record_access",
+	"transfer_assigned_work",
 }
 
 var PermissionLabels = map[string]string{
@@ -37,6 +41,10 @@ var PermissionLabels = map[string]string{
 	"manage_clients":            "Manage Client & Company Profiles",
 	"assign_tickets":            "Reassign Tickets & Tasks",
 	"manage_departments":        "Manage Departments",
+	"view_internal_notes":       "View & Write Internal Notes",
+	"create_feasibilities":      "Create Feasibility Requests",
+	"grant_record_access":       "Grant Record Access",
+	"transfer_assigned_work":    "Transfer My Work Within Department",
 }
 
 var roleKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -80,6 +88,10 @@ func seedDefaultPermissions() {
 		"manage_clients":            true,
 		"assign_tickets":            true,
 		"manage_departments":        true,
+		"view_internal_notes":       true,
+		"create_feasibilities":      true,
+		"grant_record_access":       true,
+		"transfer_assigned_work":    true,
 	}
 	// Supervisor defaults
 	supervisorPerms := map[string]bool{
@@ -93,6 +105,10 @@ func seedDefaultPermissions() {
 		"manage_clients":            false,
 		"assign_tickets":            true,
 		"manage_departments":        false,
+		"view_internal_notes":       true,
+		"create_feasibilities":      true,
+		"grant_record_access":       false,
+		"transfer_assigned_work":    true,
 	}
 	// Staff defaults
 	staffPerms := map[string]bool{
@@ -106,6 +122,10 @@ func seedDefaultPermissions() {
 		"manage_clients":            false,
 		"assign_tickets":            false,
 		"manage_departments":        false,
+		"view_internal_notes":       false,
+		"create_feasibilities":      true,
+		"grant_record_access":       false,
+		"transfer_assigned_work":    true,
 	}
 
 	rolePerms := map[string]map[string]bool{

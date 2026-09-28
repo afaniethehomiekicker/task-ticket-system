@@ -8,7 +8,11 @@ export const PERMISSION_KEYS = {
   ESCALATE_TICKETS: 'escalate_tickets',
   ASSIGN_TICKETS: 'assign_tickets',
   MANAGE_CLIENTS: 'manage_clients',
-  MANAGE_DEPARTMENTS: 'manage_departments'
+  MANAGE_DEPARTMENTS: 'manage_departments',
+  VIEW_INTERNAL_NOTES: 'view_internal_notes',
+  CREATE_FEASIBILITIES: 'create_feasibilities',
+  GRANT_RECORD_ACCESS: 'grant_record_access',
+  TRANSFER_ASSIGNED_WORK: 'transfer_assigned_work'
 };
 
 export const PERMISSION_LABELS = {
@@ -21,7 +25,11 @@ export const PERMISSION_LABELS = {
   [PERMISSION_KEYS.ESCALATE_TICKETS]: 'Escalate Incident Tickets',
   [PERMISSION_KEYS.ASSIGN_TICKETS]: 'Reassign Tickets & Tasks',
   [PERMISSION_KEYS.MANAGE_CLIENTS]: 'Manage Client & Company Profiles',
-  [PERMISSION_KEYS.MANAGE_DEPARTMENTS]: 'Manage Departments'
+  [PERMISSION_KEYS.MANAGE_DEPARTMENTS]: 'Manage Departments',
+  [PERMISSION_KEYS.VIEW_INTERNAL_NOTES]: 'View & Write Internal Notes',
+  [PERMISSION_KEYS.CREATE_FEASIBILITIES]: 'Create Feasibility Requests',
+  [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: 'Grant Record Access',
+  [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: 'Transfer My Work Within Department'
 };
 
 // Default role -> permission matrix. Super Admin is deliberately excluded —
@@ -37,7 +45,11 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.ESCALATE_TICKETS]: true,
     [PERMISSION_KEYS.ASSIGN_TICKETS]: true,
     [PERMISSION_KEYS.MANAGE_CLIENTS]: true,
-    [PERMISSION_KEYS.MANAGE_DEPARTMENTS]: true
+    [PERMISSION_KEYS.MANAGE_DEPARTMENTS]: true,
+    [PERMISSION_KEYS.VIEW_INTERNAL_NOTES]: true,
+    [PERMISSION_KEYS.CREATE_FEASIBILITIES]: true,
+    [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: true,
+    [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true
   },
   supervisor: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -49,7 +61,11 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.ESCALATE_TICKETS]: true,
     [PERMISSION_KEYS.ASSIGN_TICKETS]: true,
     [PERMISSION_KEYS.MANAGE_CLIENTS]: false,
-    [PERMISSION_KEYS.MANAGE_DEPARTMENTS]: false
+    [PERMISSION_KEYS.MANAGE_DEPARTMENTS]: false,
+    [PERMISSION_KEYS.VIEW_INTERNAL_NOTES]: true,
+    [PERMISSION_KEYS.CREATE_FEASIBILITIES]: true,
+    [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: false,
+    [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true
   },
   staff: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -61,7 +77,11 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.ESCALATE_TICKETS]: true,
     [PERMISSION_KEYS.ASSIGN_TICKETS]: false,
     [PERMISSION_KEYS.MANAGE_CLIENTS]: false,
-    [PERMISSION_KEYS.MANAGE_DEPARTMENTS]: false
+    [PERMISSION_KEYS.MANAGE_DEPARTMENTS]: false,
+    [PERMISSION_KEYS.VIEW_INTERNAL_NOTES]: false,
+    [PERMISSION_KEYS.CREATE_FEASIBILITIES]: true,
+    [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: false,
+    [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true
   }
 };
 
@@ -126,6 +146,54 @@ export function canAssignTickets(user, permissionMatrix = DEFAULT_PERMISSION_MAT
 // The backend gates client create/update/delete on manage_clients
 // (routes.go), but the frontend had no matching permission, so every role saw
 // New Client / Edit / Delete and got a 403 on click.
+// Private management comments / internal notes (spec: visible only to
+// authorized management). The backend strips them from every response for
+// anyone without this permission; this only decides what UI to show.
+export function canViewInternalNotes(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (!user) return false;
+  if (user.role === 'super_admin') return true;
+  return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.VIEW_INTERNAL_NOTES];
+}
+
+// Raising a feasibility request (spec: staff raise them). Archive / restore /
+// convert-to-project stay on create_projects.
+export function canCreateFeasibility(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (!user) return false;
+  if (user.role === 'super_admin') return true;
+  return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.CREATE_FEASIBILITIES];
+}
+
+// Explicitly sharing one record (e.g. pulling a staff member from another
+// department into one task) — spec slide 6/16. Admins by default.
+export function canGrantRecordAccess(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (!user) return false;
+  if (user.role === 'super_admin') return true;
+  return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.GRANT_RECORD_ACCESS];
+}
+
+// Passing work assigned to YOU to a colleague in your own department (spec
+// slide 20: "Transferred to L2", "Staff A ... assigns to Staff B"). Separate
+// from canAssignTickets, which reassigns anyone's work.
+export function canTransferOwnWork(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (!user) return false;
+  if (user.role === 'super_admin') return true;
+  return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK];
+}
+
+// Active colleagues in the user's own department (transfer targets).
+export function sameDepartmentUsers(user, users = []) {
+  const dept = (user?.department || '').trim().toLowerCase();
+  if (!dept) return [];
+  return users.filter(u => u.status === 'active' &&
+    (u.department || '').trim().toLowerCase() === dept);
+}
+
+// Admins and super admins assign tasks to their team; they can't be assigned
+// a task or sub-task themselves (the backend enforces the same rule).
+export function isTaskAssignable(user) {
+  return !!user && user.role !== 'admin' && user.role !== 'super_admin';
+}
+
 export function canManageClients(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
   if (!user) return false;
   if (user.role === 'super_admin') return true;
@@ -210,10 +278,22 @@ export const filterTasksForUser = (tasks = [], user, allUsers = []) => {
 
   return tasks.filter(task => {
     if (!task) return false;
+    // Parent of a sub-task assigned to this user: the server already decided
+    // they may see it (as a reference view).
+    if (task.accessLevel === 'subtask' || task.accessLevel === 'granted') return true;
 
     if (user.role === 'admin') {
+      // Same rule as the server (visibility.go): their department's tasks,
+      // tasks they created, and tasks assigned to people in their
+      // department — wherever the task's project lives. This mirror only
+      // allowed the first, so a task an admin assigned inside a project from
+      // another department (or with none) vanished from their own list even
+      // though the server sent it.
       const taskDept = safeLower(task.department);
-      return !!taskDept && taskDept === userDept;
+      if (taskDept && taskDept === userDept) return true;
+      if (String(task.creatorId) === String(user.id)) return true;
+      const assignee = (allUsers || []).find(u => String(u.id) === String(task.assignedToId));
+      return !!assignee && !!userDept && safeLower(assignee.department) === userDept;
     }
 
     // Assigned to me, or created by me (the creator has to be able to follow
@@ -234,8 +314,15 @@ export function filterTicketsForUser(tickets = [], user, allUsers = []) {
     if (!t) return false;
 
     if (user.role === 'admin') {
+      // Mirrors the server: their department's tickets, tickets their
+      // department raised (routed elsewhere), tickets they created, and
+      // tickets assigned to their people.
       const ticketDept = safeLower(t.department);
-      return !!ticketDept && ticketDept === userDept;
+      if (ticketDept && ticketDept === userDept) return true;
+      if (userDept && safeLower(t.originDepartment) === userDept) return true;
+      if (String(t.createdById) === String(user.id)) return true;
+      const assignee = (allUsers || []).find(u => String(u.id) === String(t.assignedToId));
+      return !!assignee && !!userDept && safeLower(assignee.department) === userDept;
     }
 
     // Assigned to me, or created by me (the spec has the creator close the
@@ -243,4 +330,31 @@ export function filterTicketsForUser(tickets = [], user, allUsers = []) {
     if (t.assignedToId === user.id || t.createdById === user.id) return true;
     return user.role === 'supervisor' && t.supervisorId === user.id;
   });
+}
+// "5 days (40 h)" / "40 h" — a project's budget as entered, with hours.
+export function formatBudget(project) {
+  if (!project) return '—';
+  const hours = Number(project.budgetHours) || 0;
+  const value = Number(project.budgetValue) || 0;
+  if (project.budgetUnit === 'days' && value) {
+    return `${value} day${value === 1 ? '' : 's'} (${hours} h)`;
+  }
+  return `${hours} h`;
+}
+
+// Name of whoever assigned the work: from the record, else the people list.
+export function assignedByName(record, users = []) {
+  if (!record || !record.assignedById) return '';
+  if (record.assignedByName) return record.assignedByName;
+  return (users || []).find(u => String(u.id) === String(record.assignedById))?.name || '';
+}
+
+// Readable date for display: "28 Oct 2026". Accepts "2026-10-28" or a full
+// timestamp ("2026-10-28T05:00:00+05:00"), which was being shown raw.
+export function formatDate(value) {
+  if (!value) return '';
+  const m = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 }

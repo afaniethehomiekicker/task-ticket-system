@@ -148,14 +148,18 @@ func GetFeasibilities(c *gin.Context) {
 	query := database.DB.
 		Preload("Client").
 		Preload("AssignedUser").
+		Preload("CreatedBy").
 		Preload("Vendors").
 		Preload("Attachments").
 		Preload("ConvertedProject")
 
+	// Only what the caller may see (see feasibilityScopeClause).
+	query = applyFeasibilityScope(query, viewerFrom(c))
+
 	if searchQuery != "" {
 		likeQuery := "%" + strings.ToLower(searchQuery) + "%"
 		query = query.Where(
-			"LOWER(feasibility_number) LIKE ? OR LOWER(product) LIKE ? OR LOWER(city) LIKE ? OR LOWER(requirement_details) LIKE ?",
+			"(LOWER(feasibility_number) LIKE ? OR LOWER(product) LIKE ? OR LOWER(city) LIKE ? OR LOWER(requirement_details) LIKE ?)",
 			likeQuery, likeQuery, likeQuery, likeQuery,
 		)
 	}
@@ -188,11 +192,16 @@ func GetFeasibility(c *gin.Context) {
 	if err := database.DB.
 		Preload("Client").
 		Preload("AssignedUser").
+		Preload("CreatedBy").
 		Preload("Vendors").
 		Preload("Attachments").
 		Preload("ConvertedProject").
 		First(&feasibility, idParam).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Feasibility not found"})
+		return
+	}
+	if !userCanAccessFeasibility(c, &feasibility) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"feasibility": feasibility})
@@ -218,15 +227,25 @@ func CreateFeasibility(c *gin.Context) {
 		return
 	}
 
+	if msg := assigneeError(input.AssignedUserID); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+	if !departmentIsKnown(input.AssignedDept) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown department"})
+		return
+	}
+
 	// Auto-generate FeasibilityNumber if not provided
 	feasNum := input.FeasibilityNumber
 	if feasNum == "" {
-		var maxNum int
-		database.DB.Unscoped().Model(&models.Feasibility{}).
-			Where("feasibility_number ~ '^FEA-[0-9]+$'").
-			Select("COALESCE(MAX(CAST(SUBSTRING(feasibility_number FROM 5) AS INTEGER)), 100000)").
-			Scan(&maxNum)
-		feasNum = fmt.Sprintf("FEA-%06d", maxNum+1)
+		// Permanent ID from the atomic counter (spec slide 7).
+		nextID, idErr := models.NextID(database.DB, "FEA")
+		if idErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to allocate a feasibility ID"})
+			return
+		}
+		feasNum = nextID
 	}
 
 	feasibility := models.Feasibility{
@@ -245,6 +264,10 @@ func CreateFeasibility(c *gin.Context) {
 		Notes:              input.Notes,
 		TargetDate:         input.TargetDate,
 	}
+	creator := callerID(c)
+	if creator != 0 {
+		feasibility.CreatedByID = &creator
+	}
 
 	if feasibility.Priority == "" {
 		feasibility.Priority = "normal"
@@ -254,7 +277,7 @@ func CreateFeasibility(c *gin.Context) {
 	}
 
 	// Create feasibility first
-	if result := database.DB.Omit("Client", "AssignedUser", "Vendors", "Attachments", "ConvertedProject").Create(&feasibility); result.Error != nil {
+	if result := database.DB.Omit("Client", "AssignedUser", "CreatedBy", "Vendors", "Attachments", "ConvertedProject").Create(&feasibility); result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create feasibility: " + result.Error.Error()})
 		return
 	}
@@ -280,6 +303,7 @@ func CreateFeasibility(c *gin.Context) {
 	database.DB.
 		Preload("Client").
 		Preload("AssignedUser").
+		Preload("CreatedBy").
 		Preload("Vendors").
 		Preload("Attachments").
 		Preload("ConvertedProject").
@@ -303,10 +327,18 @@ func UpdateFeasibility(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Feasibility not found"})
 		return
 	}
+	// Anyone who can see it can work on it (assignee, creator, supervisor of
+	// the assignee, department admin) — this used to be open to everyone.
+	if !userCanAccessFeasibility(c, &feasibility) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
 
 	updates := map[string]interface{}{}
-	if input.FeasibilityNumber != "" {
-		updates["feasibility_number"] = input.FeasibilityNumber
+	// FEA- numbers are permanent IDs (spec) — they could be edited here.
+	if input.FeasibilityNumber != "" && input.FeasibilityNumber != feasibility.FeasibilityNumber {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "The feasibility number can't be changed"})
+		return
 	}
 	if input.ClientID != nil {
 		updates["client_id"] = *input.ClientID
@@ -329,11 +361,40 @@ func UpdateFeasibility(c *gin.Context) {
 	if input.RequirementDetails != "" {
 		updates["requirement_details"] = input.RequirementDetails
 	}
-	if input.AssignedDept != "" {
+	// Changing who (or which department) handles it is a reassignment: it
+	// needs "Reassign Tickets & Tasks", the same rule as tasks and tickets.
+	// assigned_user_id 0 clears the assignee.
+	deptChanging := input.AssignedDept != "" && !strings.EqualFold(strings.TrimSpace(input.AssignedDept), strings.TrimSpace(feasibility.AssignedDept))
+	var newAssignee *uint
+	assigneeChanging := false
+	if input.AssignedUserID != nil {
+		if *input.AssignedUserID != 0 {
+			newAssignee = input.AssignedUserID
+		}
+		assigneeChanging = (feasibility.AssignedUserID == nil) != (newAssignee == nil) ||
+			(feasibility.AssignedUserID != nil && newAssignee != nil && *feasibility.AssignedUserID != *newAssignee)
+	}
+	if (deptChanging || assigneeChanging) && !canAssignWork(viewerFrom(c).Role) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to reassign feasibilities"})
+		return
+	}
+	if deptChanging {
+		if !departmentIsKnown(input.AssignedDept) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown department"})
+			return
+		}
 		updates["assigned_dept"] = input.AssignedDept
 	}
-	if input.AssignedUserID != nil {
-		updates["assigned_user_id"] = *input.AssignedUserID
+	if assigneeChanging {
+		if msg := assigneeError(newAssignee); msg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
+		if newAssignee == nil {
+			updates["assigned_user_id"] = nil
+		} else {
+			updates["assigned_user_id"] = *newAssignee
+		}
 	}
 	if input.Priority != "" {
 		updates["priority"] = input.Priority
@@ -392,6 +453,7 @@ func UpdateFeasibility(c *gin.Context) {
 	database.DB.
 		Preload("Client").
 		Preload("AssignedUser").
+		Preload("CreatedBy").
 		Preload("Vendors").
 		Preload("Attachments").
 		Preload("ConvertedProject").
@@ -412,10 +474,22 @@ func DeleteFeasibility(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "Feasibility already deleted"})
 		return
 	}
+	if !userCanAccessFeasibility(c, &feasibility) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
+	// Archiving twice would overwrite pre_archive_status with "archived",
+	// losing the status Restore needs.
+	if feasibility.Status == "archived" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Already archived"})
+		return
+	}
 
 	now := time.Now()
 	if err := database.DB.Model(&feasibility).Updates(map[string]interface{}{
 		"status":         "archived",
+		"pre_archive_status": feasibility.Status,
 		"archived_at":    now,
 		"archived_by_id": callerID(c),
 	}).Error; err != nil {
@@ -441,6 +515,10 @@ func AddFeasibilityVendor(c *gin.Context) {
 	var feasibility models.Feasibility
 	if err := database.DB.First(&feasibility, idParam).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Feasibility not found"})
+		return
+	}
+	if !userCanAccessFeasibility(c, &feasibility) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
 
@@ -471,7 +549,10 @@ func AddFeasibilityVendor(c *gin.Context) {
 	auditFeasibility(c, "vendor_added", feasibility.ID, fmt.Sprintf("Added vendor %s to %s", vendor.VendorName, feasibility.FeasibilityNumber))
 
 	database.DB.Preload("Vendors").First(&feasibility, feasibility.ID)
-	c.JSON(http.StatusCreated, gin.H{"message": "Vendor added successfully", "feasibility": feasibility})
+	// "vendor" is the one just created; "feasibility" carries the full,
+	// current vendor list. The frontend used to look for "vendor", didn't
+	// find it, and fell back to appending the first vendor again.
+	c.JSON(http.StatusCreated, gin.H{"message": "Vendor added successfully", "vendor": vendor, "feasibility": feasibility})
 }
 
 // UpdateFeasibilityVendor updates a vendor's status/response/evidence
@@ -482,6 +563,16 @@ func UpdateFeasibilityVendor(c *gin.Context) {
 	var input UpdateFeasibilityVendorInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var parent models.Feasibility
+	if err := database.DB.First(&parent, idParam).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Feasibility not found"})
+		return
+	}
+	if !userCanAccessFeasibility(c, &parent) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
 
@@ -551,18 +642,34 @@ func DeleteFeasibilityVendor(c *gin.Context) {
 	idParam := c.Param("id")
 	vendorIdParam := c.Param("vendorId")
 
+	var parent models.Feasibility
+	if err := database.DB.First(&parent, idParam).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Feasibility not found"})
+		return
+	}
+	if !userCanAccessFeasibility(c, &parent) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+
 	var vendor models.FeasibilityVendor
 	if err := database.DB.Where("id = ? AND feasibility_id = ?", vendorIdParam, idParam).First(&vendor).Error; err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "Vendor already deleted"})
 		return
 	}
 
-	if err := database.DB.Delete(&vendor).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete vendor"})
+	// Withdrawn, not deleted: the vendor stays on the feasibility with its
+	// quotes / responses (greyed out) and can be reinstated.
+	now := time.Now()
+	by := callerID(c)
+	if err := database.DB.Model(&vendor).Updates(map[string]interface{}{
+		"withdrawn": true, "withdrawn_at": now, "withdrawn_by_id": by,
+	}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to withdraw vendor"})
 		return
 	}
-	auditFeasibility(c, "vendor_removed", vendor.FeasibilityID, fmt.Sprintf("Removed vendor %s", vendor.VendorName))
-	c.JSON(http.StatusOK, gin.H{"message": "Vendor deleted successfully"})
+	auditFeasibility(c, "vendor_withdrawn", vendor.FeasibilityID, fmt.Sprintf("Withdrew vendor %s (kept, can be reinstated)", vendor.VendorName))
+	c.JSON(http.StatusOK, gin.H{"message": "Vendor withdrawn"})
 }
 
 // ConvertFeasibilityToProject converts a feasible feasibility into a Project
@@ -581,6 +688,10 @@ func ConvertFeasibilityToProject(c *gin.Context) {
 		Preload("Vendors").
 		First(&feasibility, idParam).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Feasibility not found"})
+		return
+	}
+	if !userCanAccessFeasibility(c, &feasibility) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
 
@@ -654,16 +765,23 @@ func ConvertFeasibilityToProject(c *gin.Context) {
 		// auto-generated project codes, so a conversion could collide with an
 		// existing project and fail. Use the same max+1 numbering as
 		// CreateProject.
-		var maxNum int
-		tx.Unscoped().Model(&models.Project{}).
-			Where("code ~ '^PRJ-[0-9]+$'").
-			Select("COALESCE(MAX(CAST(SUBSTRING(code FROM 5) AS INTEGER)), 0)").
-			Scan(&maxNum)
-		project.Code = fmt.Sprintf("PRJ-%06d", maxNum+1)
+		// Permanent ID from the atomic counter (spec slide 7).
+		code, idErr := models.NextID(tx, "PRJ")
+		if idErr != nil {
+			return idErr
+		}
+		project.Code = code
 
 		if err := tx.Create(&project).Error; err != nil {
 			return err
+		}		// Link the feasibility's client in the project's client list too
+		// (slide 9: projects can have several clients).
+		if project.ClientID != nil {
+			if err := setProjectClients(tx, &project, []uint{*project.ClientID}); err != nil {
+				return err
+			}
 		}
+
 
 		// Link feasibility to project
 		convertedAt := time.Now()
@@ -701,6 +819,7 @@ func ConvertFeasibilityToProject(c *gin.Context) {
 	database.DB.
 		Preload("Client").
 		Preload("AssignedUser").
+		Preload("CreatedBy").
 		Preload("Vendors").
 		Preload("Attachments").
 		Preload("ConvertedProject").
@@ -729,4 +848,32 @@ func GetFeasibilityVendorStatuses(c *gin.Context) {
 func GetFeasibilityStatuses(c *gin.Context) {
 	statuses := []string{"draft", "in_progress", "feasible", "not_feasible", "converted", "cancelled", "archived"}
 	c.JSON(http.StatusOK, gin.H{"statuses": statuses})
+}
+
+// ReinstateFeasibilityVendor brings a withdrawn vendor back.
+func ReinstateFeasibilityVendor(c *gin.Context) {
+	var parent models.Feasibility
+	if err := database.DB.First(&parent, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Feasibility not found"})
+		return
+	}
+	if !userCanAccessFeasibility(c, &parent) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
+	}
+	var vendor models.FeasibilityVendor
+	if err := database.DB.Where("id = ? AND feasibility_id = ?", c.Param("vendorId"), parent.ID).First(&vendor).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Vendor not found"})
+		return
+	}
+	if err := database.DB.Model(&vendor).Updates(map[string]interface{}{
+		"withdrawn": false, "withdrawn_at": nil, "withdrawn_by_id": nil,
+	}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reinstate vendor"})
+		return
+	}
+	utils.LogAudit(callerID(c), "vendor_reinstated", "feasibility", parent.ID,
+		fmt.Sprintf("Reinstated vendor %s on %s", vendor.VendorName, parent.FeasibilityNumber), c.ClientIP(), c.Request.UserAgent())
+	database.DB.First(&vendor, vendor.ID)
+	c.JSON(http.StatusOK, gin.H{"message": "Vendor reinstated", "vendor": vendor})
 }

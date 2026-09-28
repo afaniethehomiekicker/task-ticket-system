@@ -13,6 +13,8 @@ import {
   UserCheck,
 } from "lucide-react";
 import { RoleBadge } from "../common/Badge";
+import { WorkflowStatusesPanel } from "./WorkflowStatusesPanel";
+import { SLAPoliciesPanel } from "./SLAPoliciesPanel";
 import { PERMISSION_KEYS, PERMISSION_LABELS } from "../../utils/permissions";
 
 export const SettingsView = () => {
@@ -96,6 +98,12 @@ export const SettingsView = () => {
           </button>
         )}
       </div>
+
+      {/* Configurable statuses (spec slide 21) — Super Admin only. */}
+      {isSuperAdmin && <WorkflowStatusesPanel />}
+
+      {/* Configurable SLA per priority + escalation timing (spec slide 22). */}
+      {isSuperAdmin && <SLAPoliciesPanel />}
 
       {/* Role & Permission Hierarchy Matrix */}
       <div className="bg-slate-200/60 dark:bg-zinc-950 rounded-xl border border-slate-300 dark:border-zinc-800 p-6 shadow-2xs space-y-4">

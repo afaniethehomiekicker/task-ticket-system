@@ -41,12 +41,14 @@ func GetDashboardStats(c *gin.Context) {
 	projectQuery.Session(&gorm.Session{}).Where("projects.status != ?", "archived").Count(&stats.TotalProjects)
 	projectQuery.Session(&gorm.Session{}).Where("projects.status = ?", "active").Count(&stats.ActiveProjects)
 	taskQuery.Session(&gorm.Session{}).Where("tasks.status != ?", "archived").Count(&stats.TotalTasks)
-	taskQuery.Session(&gorm.Session{}).Where("tasks.status = ?", "todo").Count(&stats.PendingTasks)
-	taskQuery.Session(&gorm.Session{}).Where("tasks.status = ?", "done").Count(&stats.CompletedTasks)
+	taskQuery.Session(&gorm.Session{}).Where("tasks.status IN ?", statusKeysIn("task", "open")).Count(&stats.PendingTasks)
+	taskQuery.Session(&gorm.Session{}).Where("tasks.status IN ?", statusKeysIn("task", "done")).Count(&stats.CompletedTasks)
 	ticketQuery.Session(&gorm.Session{}).Where("tickets.status != ?", "archived").Count(&stats.TotalTickets)
-	ticketQuery.Session(&gorm.Session{}).Where("tickets.status IN ?", []string{"new", "assigned", "in_progress", "pending"}).Count(&stats.OpenTickets)
+	// Open = anything not finished/cancelled, by catalog category (waiting,
+	// reopened and custom statuses used to drop out of this count).
+	ticketQuery.Session(&gorm.Session{}).Where("tickets.status IN ?", statusKeysIn("ticket", "open", "active", "waiting", "review")).Count(&stats.OpenTickets)
 	ticketQuery.Session(&gorm.Session{}).Where("tickets.priority = ? AND tickets.status != ?", "critical", "archived").Count(&stats.CriticalTickets)
-	ticketQuery.Session(&gorm.Session{}).Where("tickets.sla_deadline < ? AND tickets.status NOT IN ?", time.Now(), []string{"resolved", "closed", "archived"}).Count(&stats.OverdueTickets)
+	ticketQuery.Session(&gorm.Session{}).Where("tickets.sla_deadline < ? AND tickets.status NOT IN ?", time.Now(), statusKeysClosedOrArchived("ticket")).Count(&stats.OverdueTickets)
 
 	c.JSON(http.StatusOK, gin.H{"stats": stats})
 }
@@ -98,8 +100,10 @@ func GetWorkloadReport(c *gin.Context) {
 
 	query := database.DB.Model(&models.User{}).
 		Select("users.id as user_id, users.name as user_name, users.role, users.department, COALESCE(task_counts.cnt, 0) as task_count, COALESCE(ticket_counts.cnt, 0) as ticket_count").
-		Joins("LEFT JOIN (SELECT assignee_id, count(*) as cnt FROM tasks WHERE status NOT IN ('done', 'cancelled', 'archived') AND deleted_at IS NULL GROUP BY assignee_id) task_counts ON users.id = task_counts.assignee_id").
-		Joins("LEFT JOIN (SELECT assigned_to_id, count(*) as cnt FROM tickets WHERE status NOT IN ('resolved', 'closed', 'archived') AND deleted_at IS NULL GROUP BY assigned_to_id) ticket_counts ON users.id = ticket_counts.assigned_to_id").
+		Joins("LEFT JOIN (SELECT assignee_id, count(*) as cnt FROM tasks WHERE status NOT IN ? AND deleted_at IS NULL GROUP BY assignee_id) task_counts ON users.id = task_counts.assignee_id", statusKeysClosedOrArchived("task")).
+		// Open work only, by catalog category (cancelled tickets used to count
+		// as workload).
+		Joins("LEFT JOIN (SELECT assigned_to_id, count(*) as cnt FROM tickets WHERE status NOT IN ? AND deleted_at IS NULL GROUP BY assigned_to_id) ticket_counts ON users.id = ticket_counts.assigned_to_id", statusKeysClosedOrArchived("ticket")).
 		Where("users.status = ?", "active")
 
 	switch {
@@ -121,7 +125,7 @@ func GetWorkloadReport(c *gin.Context) {
 func GetSLABreaches(c *gin.Context) {
 	query := applyTicketScope(
 		database.DB.Model(&models.Ticket{}).
-			Where("tickets.sla_deadline < ? AND tickets.status NOT IN (?)", time.Now(), []string{"resolved", "closed", "archived"}),
+			Where("tickets.sla_deadline < ? AND tickets.status NOT IN (?)", time.Now(), statusKeysClosedOrArchived("ticket")),
 		viewerFrom(c))
 
 	var breaches []models.Ticket

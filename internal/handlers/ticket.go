@@ -28,11 +28,34 @@ type CreateTicketInput struct {
 	ProjectID    *uint `json:"project_id"`
 	AssignedToID *uint `json:"assigned_to_id"`
 
-	// SLA
-	SLAHours int `json:"sla_hours"` // e.g., 4, 8, 24
+	// SLA. Either may be sent; sla_minutes wins. If neither is sent the
+	// deadline comes from the ticket's priority (defaultSLAMinutes), so
+	// every ticket gets one — the spec requires SLA tracking on all of them.
+	SLAHours   int `json:"sla_hours"`   // e.g., 4, 8, 24
+	SLAMinutes int `json:"sla_minutes"` // e.g., 30 for critical
+}
+
+// defaultSLAMinutes is the resolution SLA per priority, taken from the
+// spec's example table (Critical 30 min, High 1 h, Normal 4 h). Low isn't
+// in the spec; 24 h is a placeholder. Phase 2 moves this into a Super
+// Admin–editable setting; until then it lives here.
+var defaultSLAMinutes = map[string]int{
+	"critical": 30,
+	"high":     60,
+	"normal":   240,
+	"low":      1440,
+}
+
+func validTicketPriority(p string) bool {
+	_, ok := defaultSLAMinutes[p]
+	return ok
 }
 
 type UpdateTicketInput struct {
+	// Required when the new status requires a reason (workflow catalog).
+	StatusReason string `json:"status_reason"`
+	// Saved with the ticket; also counts as the reason when resolving.
+	ResolutionSummary string `json:"resolution_summary"`
 	Title        string `json:"title"`
 	Description  string `json:"description"`
 	Category     string `json:"category"`
@@ -88,6 +111,7 @@ func GetTickets(c *gin.Context) {
 		Preload("Client").
 		Preload("Project").
 		Preload("AssignedTo").
+		Preload("AssignedBy", userBasics).
 		Preload("CreatedBy").
 		Preload("Comments.User").
 		Order(safeOrderClause(params.SortBy, params.SortOrder, ticketSortColumns, "tickets.created_at"))
@@ -144,6 +168,7 @@ func GetTickets(c *gin.Context) {
 		return
 	}
 
+	redactTickets(c, tickets) // internal notes only for view_internal_notes
 	c.JSON(http.StatusOK, gin.H{
 		"tickets": tickets,
 		"pagination": gin.H{
@@ -163,6 +188,7 @@ func GetTicket(c *gin.Context) {
 		Preload("Client").
 		Preload("Project").
 		Preload("AssignedTo").
+		Preload("AssignedBy", userBasics).
 		Preload("CreatedBy").
 		Preload("Comments.User").
 		Preload("Attachments").
@@ -185,6 +211,7 @@ func GetTicket(c *gin.Context) {
 		return
 	}
 
+	redactTicket(c, &ticket) // internal notes only for view_internal_notes
 	c.JSON(http.StatusOK, gin.H{"ticket": ticket})
 }
 
@@ -202,12 +229,13 @@ func CreateTicket(c *gin.Context) {
 	currentUserDept := userDeptVal.(string)
 
 	// Generate ticket number
-	var maxNum int
-	database.DB.Model(&models.Ticket{}).
-		Where("ticket_number ~ '^TKT-[0-9]+$'").
-		Select("COALESCE(MAX(CAST(SUBSTRING(ticket_number FROM 5) AS INTEGER)), 100000)").
-		Scan(&maxNum)
-	ticketNumber := fmt.Sprintf("TKT-%06d", maxNum+1)
+	// Permanent ID from the atomic counter (spec slide 7) — "highest + 1"
+	// could hand the same number to two records created together.
+	ticketNumber, idErr := models.NextID(database.DB, "TKT")
+	if idErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to allocate a ticket ID"})
+		return
+	}
 
 	// Default department to user's department if not provided
 	department := input.Department
@@ -215,11 +243,56 @@ func CreateTicket(c *gin.Context) {
 		department = currentUserDept
 	}
 
-	// Calculate SLA deadline
-	var slaDeadline *time.Time
-	if input.SLAHours > 0 {
-		deadline := time.Now().Add(time.Duration(input.SLAHours) * time.Hour)
-		slaDeadline = &deadline
+	priority := strings.ToLower(strings.TrimSpace(input.Priority))
+	if priority == "" {
+		priority = "normal"
+	}
+	if !validTicketPriority(priority) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid priority (use low, normal, high or critical)"})
+		return
+	}
+	if input.SLAMinutes < 0 || input.SLAHours < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "SLA cannot be negative"})
+		return
+	}
+
+	// SLA deadline: explicit minutes, else explicit hours, else the
+	// priority default. It used to be set only when sla_hours was sent,
+	// and the frontend never sent it, so no ticket ever had a deadline and
+	// nothing could ever show as breached.
+	slaMinutes := input.SLAMinutes
+	if slaMinutes == 0 && input.SLAHours > 0 {
+		slaMinutes = input.SLAHours * 60
+	}
+	if slaMinutes == 0 {
+		// Configurable per priority (Settings -> SLA, spec slide 22).
+		slaMinutes = slaMinutesForPriority(priority)
+	}
+	deadline := time.Now().Add(time.Duration(slaMinutes) * time.Minute)
+	slaDeadline := &deadline
+
+	if msg := taskAssigneeRoleError(input.AssignedToID); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+	if msg := assigneeError(input.AssignedToID); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+	// The client this ticket is for (slide 19: a customer query becomes a
+	// ticket). Must exist and not be archived.
+	if input.ClientID != nil && *input.ClientID != 0 {
+		var cl models.Client
+		if err := database.DB.Select("id", "status").First(&cl, *input.ClientID).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Client not found"})
+			return
+		}
+		if cl.Status == "archived" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "That client is archived"})
+			return
+		}
+	} else {
+		input.ClientID = nil
 	}
 
 	ticket := models.Ticket{
@@ -227,22 +300,33 @@ func CreateTicket(c *gin.Context) {
 		Title:        input.Title,
 		Description:  input.Description,
 		Category:     input.Category,
-		Priority:     input.Priority,
+		Priority:     priority,
 		Severity:     input.Severity,
 		Source:       input.Source,
 		Status:       "new",
 		Department:   department,
+		// Where the ticket came from — the creator's own department (e.g.
+		// CNOC), so it can be routed on and returned (spec slide 19).
+		OriginDepartment: func() string {
+			if strings.TrimSpace(currentUserDept) != "" {
+				return currentUserDept
+			}
+			return department
+		}(),
 		ClientID:     input.ClientID,
 		ProjectID:    input.ProjectID,
 		AssignedToID: input.AssignedToID,
+		AssignedByID: func() *uint {
+			if input.AssignedToID != nil {
+				return &currentUserID
+			}
+			return nil
+		}(),
 		CreatedByID:  &currentUserID,
 		SLADeadline:  slaDeadline,
 	}
 
 	// Set defaults
-	if ticket.Priority == "" {
-		ticket.Priority = "normal"
-	}
 	if ticket.Severity == "" {
 		ticket.Severity = "minor"
 	}
@@ -250,10 +334,14 @@ func CreateTicket(c *gin.Context) {
 		ticket.Category = "incident"
 	}
 
-	// If assigned, set first response SLA based on priority
+	// Created with an assignee = already routed, so it starts as "assigned".
+	// It used to stay "new" and, worse, got first_response_at stamped with
+	// the creation time — assigning a ticket isn't responding to it, so the
+	// first-response SLA read as met instantly for every pre-assigned ticket.
+	// First response is now set only by a real response: the first public
+	// reply (AddTicketComment) or the ticket moving to in_progress/resolved.
 	if input.AssignedToID != nil {
-		now := time.Now()
-		ticket.FirstResponseAt = &now
+		ticket.Status = "assigned"
 	}
 
 	if err := database.DB.Create(&ticket).Error; err != nil {
@@ -269,6 +357,7 @@ func CreateTicket(c *gin.Context) {
 		Preload("Client").
 		Preload("Project").
 		Preload("AssignedTo").
+		Preload("AssignedBy", userBasics).
 		Preload("CreatedBy").
 		First(&ticket, ticket.ID)
 
@@ -318,6 +407,15 @@ func UpdateTicket(c *gin.Context) {
 	}
 	if input.Priority != "" {
 		updates["priority"] = input.Priority
+		// A priority change re-targets the SLA from the ticket's creation time
+		// (e.g. normal -> critical pulls the deadline in), unless it's finished.
+		if input.Priority != ticket.Priority && !isFinishedTicketStatus(ticket.Status) {
+			if !validTicketPriority(input.Priority) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid priority (use low, normal, high or critical)"})
+				return
+			}
+			updates["sla_deadline"] = ticket.CreatedAt.Add(time.Duration(slaMinutesForPriority(input.Priority)) * time.Minute)
+		}
 	}
 	if input.Severity != "" {
 		updates["severity"] = input.Severity
@@ -338,26 +436,21 @@ func UpdateTicket(c *gin.Context) {
 			return
 		}
 		updates["status"] = input.Status
-		// Auto-set timestamps on status transitions
-		switch input.Status {
-		case "resolved":
-			now := time.Now()
-			updates["resolved_at"] = now
-			// Was `if ticket.ResolvedAt == nil` — which OVERWROTE an existing
-			// first_response_at with the resolution time, wrecking the
-			// first-response SLA figure for every resolved ticket.
-			if ticket.FirstResponseAt == nil {
-				updates["first_response_at"] = now
-			}
-		case "closed":
-			now := time.Now()
-			updates["closed_at"] = now
-		case "in_progress":
-			if ticket.FirstResponseAt == nil {
-				now := time.Now()
-				updates["first_response_at"] = now
-			}
+		reason := input.StatusReason
+		if strings.TrimSpace(reason) == "" && input.Status == "resolved" {
+			reason = input.ResolutionSummary // the resolution counts as the reason
 		}
+		if msg := statusReasonError("ticket", input.Status, reason); msg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
+		applyTicketStatusSideEffects(&ticket, input.Status, updates)
+		if strings.TrimSpace(input.ResolutionSummary) != "" {
+			updates["resolution_summary"] = strings.TrimSpace(input.ResolutionSummary)
+		}
+		utils.LogAuditWithValues(viewerFrom(c).ID, "status_changed", "ticket", ticket.ID,
+			statusChange(ticket.Status), statusChangeWithReason(input.Status, reason),
+			statusChangeDetails("ticket", ticket.Status, input.Status, reason), c.ClientIP(), c.Request.UserAgent())
 	}
 	if input.Department != "" && (currentUserRole == "super_admin" || currentUserRole == "admin") {
 		updates["department"] = input.Department
@@ -367,10 +460,35 @@ func UpdateTicket(c *gin.Context) {
 		// gated on it); this endpoint let anyone with access do it anyway.
 		changing := ticket.AssignedToID == nil || *ticket.AssignedToID != *input.AssignedToID
 		if changing && !canAssignWork(currentUserRole) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to reassign tickets"})
-			return
+			if ok, msg := canTransferOwnWork(c, ticket.AssignedToID, input.AssignedToID); !ok {
+				if msg == "" {
+					msg = "You don't have permission to reassign tickets"
+				}
+				c.JSON(http.StatusForbidden, gin.H{"error": msg})
+				return
+			}
+		}
+		if changing {
+			if msg := taskAssigneeRoleError(input.AssignedToID); msg != "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+				return
+			}
+		}
+		if changing {
+			if msg := assigneeError(input.AssignedToID); msg != "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+				return
+			}
+			utils.LogAuditWithValues(viewerFrom(c).ID, "transferred", "ticket", ticket.ID,
+				map[string]interface{}{"assignee": assigneeLabel(ticket.AssignedToID)},
+				map[string]interface{}{"assignee": assigneeLabel(input.AssignedToID)},
+				fmt.Sprintf("Ticket %s transferred: %s -> %s", ticket.TicketNumber, assigneeLabel(ticket.AssignedToID), assigneeLabel(input.AssignedToID)),
+				c.ClientIP(), c.Request.UserAgent())
 		}
 		updates["assigned_to_id"] = *input.AssignedToID
+		if ticket.AssignedToID == nil || *ticket.AssignedToID != *input.AssignedToID {
+			updates["assigned_by_id"] = viewerFrom(c).ID // who gave it to them
+		}
 	}
 	if input.ProjectID != nil {
 		updates["project_id"] = *input.ProjectID
@@ -379,6 +497,7 @@ func UpdateTicket(c *gin.Context) {
 		updates["is_pinned"] = *input.IsPinned
 	}
 
+	before := ticket
 	if len(updates) > 0 {
 		if err := database.DB.Model(&ticket).Updates(updates).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update ticket"})
@@ -389,14 +508,23 @@ func UpdateTicket(c *gin.Context) {
 	// Reload for audit
 	database.DB.First(&ticket, id)
 
-	utils.LogAudit(currentUserID, "updated", "ticket", ticket.ID,
-		fmt.Sprintf("Updated ticket %s", ticket.TicketNumber), c.ClientIP(), c.Request.UserAgent())
+	// Record exactly which fields changed, old -> new (status and assignee
+	// changes have their own entries above).
+	var after models.Ticket
+	if err := database.DB.First(&after, ticket.ID).Error; err == nil {
+		if oldV, newV, changed := fieldDiff(before, after, ticketDiffFields); len(changed) > 0 {
+			utils.LogAuditWithValues(currentUserID, "updated", "ticket", ticket.ID, oldV, newV,
+				fmt.Sprintf("Updated ticket %s: %s", ticket.TicketNumber, strings.Join(changed, ", ")),
+				c.ClientIP(), c.Request.UserAgent())
+		}
+	}
 
 	// Reload with relations
 	database.DB.
 		Preload("Client").
 		Preload("Project").
 		Preload("AssignedTo").
+		Preload("AssignedBy", userBasics).
 		Preload("CreatedBy").
 		First(&ticket, id)
 
@@ -435,9 +563,17 @@ func DeleteTicket(c *gin.Context) {
 		return
 	}
 
+	// Archiving twice would overwrite pre_archive_status with "archived",
+	// losing the status Restore needs.
+	if ticket.Status == "archived" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Already archived"})
+		return
+	}
+
 	now := time.Now()
 	if err := database.DB.Model(&ticket).Updates(map[string]interface{}{
 		"status":         "archived",
+		"pre_archive_status": ticket.Status,
 		"archived_at":    now,
 		"archived_by_id": currentUserID,
 	}).Error; err != nil {
@@ -477,25 +613,25 @@ func UpdateTicketStatus(c *gin.Context) {
 	var input struct {
 		Status            string `json:"status" binding:"required"`
 		ResolutionSummary string `json:"resolution_summary"`
+		Reason            string `json:"reason"` // required for some statuses (catalog)
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Validate status transition
-	validStatuses := []string{"new", "assigned", "in_progress", "pending", "resolved", "closed", "cancelled"}
-	// "archived" deliberately excluded — see the comment in UpdateTicket
-	// above; only DeleteTicket's permission-gated path can set it.
-	valid := false
-	for _, s := range validStatuses {
-		if s == input.Status {
-			valid = true
-			break
-		}
-	}
-	if !valid {
+	// Validate against the configurable catalog ("archived" is never in it —
+	// only DeleteTicket's permission-gated path can set that).
+	if !validGenericTicketStatus(input.Status) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status"})
+		return
+	}
+	reason := input.Reason
+	if strings.TrimSpace(reason) == "" && input.Status == "resolved" {
+		reason = input.ResolutionSummary // the resolution counts as the reason
+	}
+	if msg := statusReasonError("ticket", input.Status, reason); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
 
@@ -508,21 +644,7 @@ func UpdateTicketStatus(c *gin.Context) {
 		"status": input.Status,
 	}
 
-	now := time.Now()
-	switch input.Status {
-	case "assigned":
-		if ticket.FirstResponseAt == nil {
-			updates["first_response_at"] = now
-		}
-	case "in_progress":
-		if ticket.FirstResponseAt == nil {
-			updates["first_response_at"] = now
-		}
-	case "resolved":
-		updates["resolved_at"] = now
-	case "closed":
-		updates["closed_at"] = now
-	}
+	applyTicketStatusSideEffects(&ticket, input.Status, updates)
 
 	if input.ResolutionSummary != "" {
 		updates["resolution_summary"] = input.ResolutionSummary
@@ -534,8 +656,8 @@ func UpdateTicketStatus(c *gin.Context) {
 	}
 
 	utils.LogAuditWithValues(currentUserID, "status_changed", "ticket", ticket.ID,
-		statusChange(oldStatus), statusChange(input.Status),
-		fmt.Sprintf("Status changed from %s to %s", oldStatus, input.Status), c.ClientIP(), c.Request.UserAgent())
+		statusChange(oldStatus), statusChangeWithReason(input.Status, reason),
+		statusChangeDetails("ticket", oldStatus, input.Status, reason), c.ClientIP(), c.Request.UserAgent())
 
 	database.DB.First(&ticket, id)
 	c.JSON(http.StatusOK, gin.H{"message": "Status updated successfully", "ticket": ticket})
@@ -582,21 +704,38 @@ func AssignTicket(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Assignee not found"})
 		return
 	}
+	if assignee.Role == "admin" || assignee.Role == "super_admin" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": assignee.Name + " is an admin — admins assign work to staff and supervisors and can't be assigned it themselves"})
+		return
+	}
+	if assignee.Status != "active" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "That user is deactivated and can't be assigned work"})
+		return
+	}
 
-	if currentUserRole != "super_admin" && currentUserRole != "admin" {
-		if assignee.Department != currentUserDept {
+	if !canAssignWork(currentUserRole) {
+		target := input.AssignedToID
+		if ok, msg := canTransferOwnWork(c, ticket.AssignedToID, &target); !ok {
+			if msg == "" {
+				msg = "You don't have permission to reassign tickets"
+			}
+			c.JSON(http.StatusForbidden, gin.H{"error": msg})
+			return
+		}
+	} else if currentUserRole != "super_admin" && currentUserRole != "admin" {
+		if !strings.EqualFold(strings.TrimSpace(assignee.Department), strings.TrimSpace(currentUserDept)) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Can only assign to users in your department"})
 			return
 		}
 	}
+	previous := assigneeLabel(ticket.AssignedToID)
 
+	// No first_response_at here: routing a ticket to someone isn't a
+	// response to the customer (see CreateTicket).
 	updates := map[string]interface{}{
 		"assigned_to_id": input.AssignedToID,
+		"assigned_by_id": currentUserID, // who gave it to them
 		"status":         "assigned",
-	}
-	if ticket.FirstResponseAt == nil {
-		now := time.Now()
-		updates["first_response_at"] = now
 	}
 
 	if err := database.DB.Model(&ticket).Updates(updates).Error; err != nil {
@@ -604,20 +743,57 @@ func AssignTicket(c *gin.Context) {
 		return
 	}
 
-	utils.LogAudit(currentUserID, "assigned", "ticket", ticket.ID,
-		fmt.Sprintf("Assigned ticket %s to user %d", ticket.TicketNumber, input.AssignedToID), c.ClientIP(), c.Request.UserAgent())
+	// Previous -> new assignee, by name (spec: "Transferred: previous -> new
+	// assignee").
+	utils.LogAuditWithValues(currentUserID, "assigned", "ticket", ticket.ID,
+		map[string]interface{}{"assignee": previous}, map[string]interface{}{"assignee": assignee.Name},
+		fmt.Sprintf("Ticket %s assigned: %s -> %s", ticket.TicketNumber, previous, assignee.Name),
+		c.ClientIP(), c.Request.UserAgent())
 
-	database.DB.Preload("AssignedTo").First(&ticket, id)
+	database.DB.Preload("AssignedTo").Preload("AssignedBy", userBasics).First(&ticket, id)
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket assigned successfully", "ticket": ticket})
 }
 
 // validGenericTicketStatus lists the statuses PUT /tickets/:id may set — the
 // same set UpdateTicketStatus accepts. "escalated" is deliberately absent
 // (escalation is its own action with a required reason) and so is "archived".
-func validGenericTicketStatus(s string) bool {
-	switch s {
-	case "new", "assigned", "in_progress", "pending", "resolved", "closed", "cancelled":
+func validGenericTicketStatus(s string) bool { return isValidStatus("ticket", s) }
+
+// applyTicketStatusSideEffects sets the timestamps a status change implies,
+// by catalog category so renamed / added statuses behave the same:
+//   - first response: moving into active work or to resolved (not merely
+//     assigned — see CreateTicket)
+//   - "resolved" stamps resolved_at, "closed" stamps closed_at
+//   - "reopened" clears both, since the ticket is open again
+func applyTicketStatusSideEffects(ticket *models.Ticket, status string, updates map[string]interface{}) {
+	now := time.Now()
+	cat := statusCategory("ticket", status)
+	applySLATracking(ticket, status, updates, now)
+	if status == "reopened" {
+		// The client says it isn't fixed: a fresh SLA clock and escalation
+		// chain for the renewed work.
+		updates["sla_deadline"] = now.Add(time.Duration(slaMinutesForPriority(ticket.Priority)) * time.Minute)
+		updates["auto_escalation_step"] = 0
+	}
+	switch status {
+	case "resolved":
+		updates["resolved_at"] = now
+	case "closed":
+		updates["closed_at"] = now
+	case "reopened":
+		updates["resolved_at"] = nil
+		updates["closed_at"] = nil
+	}
+	if ticket.FirstResponseAt == nil && status != "reopened" && (cat == "active" || status == "resolved") {
+		updates["first_response_at"] = now
+	}
+}
+
+// isFinishedTicketStatus: done, cancelled or archived.
+func isFinishedTicketStatus(status string) bool {
+	if status == "archived" {
 		return true
 	}
-	return false
+	cat := statusCategory("ticket", status)
+	return cat == "done" || cat == "cancelled"
 }

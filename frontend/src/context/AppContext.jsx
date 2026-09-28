@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import {
   filterProjectsForUser, filterTasksForUser, filterTicketsForUser,
-  DEFAULT_PERMISSION_MATRIX, getRoleDisplayName
+  DEFAULT_PERMISSION_MATRIX, getRoleDisplayName, canViewAuditLogs
 } from '../utils/permissions';
 import confetti from 'canvas-confetti';
 
@@ -32,6 +32,10 @@ const normalizeUser = (raw) => {
   if (!raw) return null;
   return {
     id: raw.id ?? raw.ID,
+    userNumber: raw.user_number || '', // USR-000001 (spec slide 7)
+    archivedAt: raw.archived_at || null,
+    archivedById: raw.archived_by_id ?? null,
+    preArchiveStatus: raw.pre_archive_status || '',
     name: raw.name || '',
     email: raw.email || '',
     avatar: raw.avatar || '',
@@ -40,9 +44,13 @@ const normalizeUser = (raw) => {
     title: raw.title || '',
     phone: raw.phone || '',
     status: raw.status || 'active',
-    managerId: raw.manager_id ?? null,
     supervisorId: raw.supervisor_id ?? null,
-    adminId: raw.admin_id ?? null,
+    // CNOC support tier (L1..L4); empty for everyone outside CNOC.
+    supportTier: raw.support_tier || '',
+    // The user's Admin is stored in users.manager_id (there is no admin_id
+    // column). Reading admin_id left this null for every user, so the
+    // "Admin" reporting line never showed anywhere.
+    adminId: raw.manager_id ?? raw.admin_id ?? null,
     createdAt: raw.created_at || raw.CreatedAt || null,
   };
 };
@@ -69,6 +77,9 @@ const normalizeProject = (raw) => {
     description: raw.description || '',
     department: raw.department || '',
     status: raw.status || 'planning',
+    archivedAt: raw.archived_at || null,
+    archivedById: raw.archived_by_id ?? null,
+    preArchiveStatus: raw.pre_archive_status || '',
     priority: raw.priority || 'normal',
     startDate: raw.start_date || '',
     dueDate: raw.due_date || '',
@@ -76,11 +87,26 @@ const normalizeProject = (raw) => {
     adminId: raw.admin_id ?? null,
     clientId: raw.client_id ?? null,
     clientName: raw.client?.company_name || '',
+    // Every linked client (spec slide 9); clientId above is the primary one.
+    clients: (raw.clients || []).map(c => ({
+      id: c.ID ?? c.id,
+      companyName: c.company_name || '',
+      clientNumber: c.client_number || '',
+    })),
+    clientIds: (raw.clients || []).map(c => c.ID ?? c.id).filter(v => v !== undefined && v !== null),
     memberIds,
     supervisorIds,
+    // Calculated by the server from the project's tasks (finished / all,
+    // excluding cancelled and archived).
     progress: raw.progress ?? 0,
+    tasksTotal: raw.tasks_total ?? 0,
+    tasksDone: raw.tasks_done ?? 0,
     progressOverride: !!raw.progress_override,
     budgetHours: raw.budget_hours ?? 0,
+    // Budget as entered, in hours or days (1 day = 8 h). budgetHours is the
+    // same budget in hours.
+    budgetValue: raw.budget_value ?? raw.budget_hours ?? 0,
+    budgetUnit: raw.budget_unit || 'hours',
     spentHours: raw.spent_hours ?? 0,
     isPinned: !!raw.is_pinned,
     tags: typeof raw.tags === 'string'
@@ -158,6 +184,9 @@ const normalizeSubTask = (raw) => {
   if (!raw) return null;
   return {
     id: raw.id ?? raw.ID,
+    subtaskNumber: raw.subtask_number || '', // STK-000001 (spec slide 7)
+    assignedById: raw.assigned_by_id ?? null,
+    assignedByName: raw.assigned_by?.name || '',
     title: raw.title || '',
     status: raw.status || 'todo',
     priority: raw.priority || 'normal',
@@ -180,13 +209,22 @@ const normalizeTask = (raw) => {
     description: raw.description || '',
     department: raw.department || '',
     status: raw.status || 'todo',
+    // Who gave it to the current assignee.
+    assignedById: raw.assigned_by_id ?? null,
+    assignedByName: raw.assigned_by?.name || '',
+    // 'subtask' = reference view: caller sees this task only via a sub-task
+    // assigned to them (see limitToSubtaskView in visibility.go).
+    accessLevel: raw.access_level || 'full',
+    archivedAt: raw.archived_at || null,
+    archivedById: raw.archived_by_id ?? null,
+    preArchiveStatus: raw.pre_archive_status || '',
     priority: raw.priority || 'normal',
     labels,
     projectId: raw.project_id ?? null,
     assignedToId: raw.assignee_id ?? null,
     creatorId: raw.creator_id ?? null,
     supervisorId: raw.assignee?.supervisor_id ?? null,
-    adminId: raw.assignee?.admin_id ?? null,
+    adminId: raw.assignee?.manager_id ?? null, // see normalizeUser
     progress: raw.progress ?? 0,
     startDate: toDateOnly(raw.start_date),
     dueDate: toDateOnly(raw.due_date),
@@ -245,21 +283,37 @@ const normalizeTicket = (raw) => {
     priority: raw.priority || 'normal',
     severity: raw.severity || 'normal',
     status: raw.status || 'new',
+    // Who gave it to the current assignee.
+    assignedById: raw.assigned_by_id ?? null,
+    assignedByName: raw.assigned_by?.name || '',
+    archivedAt: raw.archived_at || null,
+    archivedById: raw.archived_by_id ?? null,
+    preArchiveStatus: raw.pre_archive_status || '',
     // The Ticket model has no requester_* columns; the linked Client is the
     // real source (GetTickets preloads it), so fall back to that.
     requesterName: raw.requester_name || raw.client?.contact_person || '',
     requesterEmail: raw.requester_email || raw.client?.email || '',
     requesterCompany: raw.requester_company || raw.client?.company_name || '',
+    clientId: raw.client_id ?? null,
+    // CNOC flow (spec slide 19): where it came from, and who handed it back.
+    originDepartment: raw.origin_department || '',
+    returnedById: raw.returned_by_id ?? null,
+    returnedFromDept: raw.returned_from_dept || '',
     projectId: raw.project_id ?? null,
     assignedToId: raw.assigned_to_id ?? null,
     createdById: raw.created_by_id ?? null,
     supervisorId: raw.assigned_to?.supervisor_id ?? null,
-    adminId: raw.assigned_to?.admin_id ?? null,
+    adminId: raw.assigned_to?.manager_id ?? null, // see normalizeUser
     dueDate: raw.due_date || '',
     slaDeadline: raw.sla_deadline || null,
     responseSlaMinutes: raw.response_sla_minutes ?? 0,
     resolutionSlaMinutes: raw.resolution_sla_minutes ?? 0,
     firstResponseAt: raw.first_response_at || null,
+    // SLA tracking (spec slide 22): acknowledged? work started? and the
+    // automatic escalation step (0 none, 1 dept head, 2 dept admin, 3 super admin).
+    acknowledgedAt: raw.acknowledged_at || null,
+    workStartedAt: raw.work_started_at || null,
+    autoEscalationStep: raw.auto_escalation_step ?? 0,
     resolvedAt: raw.resolved_at || null,
     closedAt: raw.closed_at || null,
     escalationLevel: raw.escalation_level || 'none',
@@ -318,8 +372,26 @@ const normalizeClient = (raw) => {
   return {
     id: raw.id ?? raw.ID,
     companyName: raw.company_name || '',
+    // Spec slide 8 fields + admin-defined extras (empty for reference-only
+    // viewers — the server doesn't send them).
+    clientName: raw.client_name || '',
+    cnic: raw.cnic || '',
+    mobile: raw.mobile || '',
+    customFields: raw.custom_fields || {},
+    clientNumber: raw.client_number || '',
+    city: raw.city || '',
+    status: raw.status || 'active',
+    // 'reference' = the user sees this client only through related work:
+    // name and ID, no contact details (server strips them).
+    accessLevel: raw.access_level || 'full',
+    createdById: raw.created_by_id ?? null,
+    archivedAt: raw.archived_at || null,
+    archivedById: raw.archived_by_id ?? null,
+    preArchiveStatus: raw.pre_archive_status || '',
     contactPerson: raw.contact_person || '',
     email: raw.email || '',
+    notes: raw.notes || '',
+    country: raw.country || '',
     phone: raw.phone || '',
     website: raw.website || '',
     industry: raw.industry || '',
@@ -335,6 +407,9 @@ const normalizeFeasibilityVendor = (raw) => {
   return {
     id: raw.id ?? raw.ID,
     vendorName: raw.vendor_name || '',
+    // Withdrawn vendors stay on the feasibility (greyed out), reinstatable.
+    withdrawn: !!raw.withdrawn,
+    withdrawnAt: raw.withdrawn_at || null,
     contactPerson: raw.contact_person || '',
     contactEmail: raw.contact_email || '',
     contactPhone: raw.contact_phone || '',
@@ -374,7 +449,8 @@ const normalizeAuditLog = (raw) => {
   return {
     id: raw.id ?? raw.ID,
     userId: raw.user_id ?? null,
-    actorName: raw.user?.name || 'Unknown',
+    // No user = done by the system itself (e.g. SLA auto-escalation).
+    actorName: raw.user?.name || (raw.user_id == null ? 'System' : 'Unknown'),
     actorRole: raw.user?.role || '',
     action: raw.action || '',
     entityType: raw.resource_type || '',
@@ -406,6 +482,9 @@ const normalizeFeasibility = (raw) => {
     assignedUser: raw.assigned_user ? normalizeUser(raw.assigned_user) : null,
     priority: raw.priority || 'normal',
     status: raw.status || 'draft',
+    archivedAt: raw.archived_at || null,
+    archivedById: raw.archived_by_id ?? null,
+    preArchiveStatus: raw.pre_archive_status || '',
     notes: raw.notes || '',
     targetDate: raw.target_date || '',
     completedAt: raw.completed_at ?? null,
@@ -429,6 +508,10 @@ const normalizeDepartment = (raw) => {
     id: raw.id ?? raw.ID,
     name: raw.name || '',
     description: raw.description || '',
+    deptNumber: raw.dept_number || '', // DEP-000001 (spec slide 7)
+    status: raw.status || 'active',
+    archivedAt: raw.archived_at || null,
+    archivedById: raw.archived_by_id ?? null,
   };
 };
 
@@ -501,6 +584,10 @@ export const AppProvider = ({ children }) => {
   const [notifications, setNotifications] = useState([]);
 
   const [activeTab, setActiveTab] = useState('dashboard');
+  // A filter another screen asks Task Management to open with (e.g. the
+  // dashboard's "Reviews Pending" card -> tasks awaiting review). Task
+  // Management applies it once and clears it.
+  const [taskListPreset, setTaskListPreset] = useState(null);
   const [darkMode, setDarkModeState] = useState(false);
   const [permissionMatrix, setPermissionMatrix] = useState(DEFAULT_PERMISSION_MATRIX);
 
@@ -543,6 +630,352 @@ export const AppProvider = ({ children }) => {
     return { ok: true, json: async () => ({ ...firstData, [key]: all }) };
   };
 
+  // Archived records. Nothing is ever hard-deleted, but the app only loads
+  // active records at startup, so archived ones had no place in the UI at all
+  // (spec: archived work must stay visible to authorized management). Loaded
+  // on demand by the Archive view; the backend applies the same visibility
+  // rules as the normal lists.
+  const ARCHIVE_SOURCES = {
+    projects: ['/api/projects', 'projects', normalizeProject],
+    tasks: ['/api/tasks', 'tasks', normalizeTask],
+    tickets: ['/api/tickets', 'tickets', normalizeTicket],
+    feasibilities: ['/api/feasibilities', 'feasibilities', normalizeFeasibility],
+    clients: ['/api/clients', 'clients', normalizeClient],
+    users: ['/api/users', 'users', normalizeUser],
+    departments: ['/api/departments', 'departments', normalizeDepartment],
+  };
+
+  const fetchArchived = async (kind) => {
+    const source = ARCHIVE_SOURCES[kind];
+    if (!source) return [];
+    const [path, key, normalize] = source;
+    const PAGE_SIZE = 200;
+    const MAX_PAGES = 50;
+    let all = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const res = await apiFetch(`${path}?status=archived&page=${page}&limit=${PAGE_SIZE}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Failed to load archived ${kind}`);
+      all = all.concat(Array.isArray(data[key]) ? data[key] : []);
+      // Clients/feasibilities aren't paginated server-side (no pagination
+      // block) — one request returns everything.
+      const pages = data.pagination?.pages || 1;
+      if (page >= pages) break;
+    }
+    return all.map(normalize).filter(Boolean);
+  };
+
+  // Undo an archive (PATCH /:id/restore). The server returns the record to the
+  // status it had before archiving; the restored record is added back into
+  // the matching active list so it shows up immediately.
+  const RESTORE_TARGETS = {
+    projects: ['/api/projects', 'project', normalizeProject, setProjects],
+    tasks: ['/api/tasks', 'task', normalizeTask, setTasks],
+    tickets: ['/api/tickets', 'ticket', normalizeTicket, setTickets],
+    feasibilities: ['/api/feasibilities', 'feasibility', normalizeFeasibility, setFeasibilities],
+    clients: ['/api/clients', 'client', normalizeClient, setClients],
+    users: ['/api/users', 'user', normalizeUser, setAllUsers],
+    departments: ['/api/departments', 'department', normalizeDepartment, setDepartments],
+  };
+
+  const restoreArchived = async (kind, id) => {
+    const target = RESTORE_TARGETS[kind];
+    const backendId = getBackendId(id);
+    if (!target || !backendId) return null;
+    const [path, key, normalize, setList] = target;
+    let restored = null;
+    try {
+      const res = await apiFetch(`${path}/${backendId}/restore`, { method: 'PATCH' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || 'Failed to restore.');
+        return null;
+      }
+      restored = normalize(data[key]);
+    } catch (err) {
+      console.error(`Failed to restore ${kind}:`, err);
+      alert('Failed to restore. Please check your connection and try again.');
+      return null;
+    }
+    if (restored) {
+      setList(prev => [restored, ...(prev || []).filter(r => String(r.id) !== String(restored.id))]);
+    }
+    logAudit();
+    return restored || true;
+  };
+
+  // Assignee search for every user picker. Uses the people directory, which
+  // every logged-in user may read (scoped server-side: admins see everyone,
+  // others their own department) and which returns active users only. The
+  // pickers used to call /api/users, which needs manage_users — so for staff
+  // and supervisors every search failed with 403.
+  const searchAssignees = async ({ search = '', department = '' } = {}) => {
+    const params = new URLSearchParams();
+    if (search.trim()) params.set('search', search.trim());
+    if (department) params.set('department', department);
+    const res = await apiFetch(`/api/directory/users${params.toString() ? `?${params}` : ''}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'User search failed');
+    return (data.users || []).map(normalizeUser).filter(Boolean);
+  };
+
+  // ---- Configurable status catalog (spec slide 21) ----
+  // Loaded from /api/workflow/statuses; every status dropdown, filter, badge
+  // and Kanban column reads from it, so statuses the Super Admin renames, adds
+  // or disables show up everywhere without code changes.
+  const [workflowStatuses, setWorkflowStatuses] = useState([]);
+
+  const loadWorkflowStatuses = async () => {
+    try {
+      const res = await apiFetch('/api/workflow/statuses');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return;
+      setWorkflowStatuses((data.statuses || []).map(r => ({
+        id: r.id,
+        entity: r.entity,
+        key: r.key,
+        label: r.label,
+        category: r.category,
+        reasonRequired: !!r.reason_required,
+        enabled: !!r.enabled,
+        sortOrder: r.sort_order ?? 0,
+        system: !!r.system,
+      })));
+    } catch (err) {
+      console.warn('Failed to load workflow statuses:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (currentUserId) loadWorkflowStatuses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUserId]);
+
+  // Enabled statuses for 'ticket' | 'task', in display order.
+  const getStatuses = (entity, { includeDisabled = false } = {}) =>
+    workflowStatuses
+      .filter(st => st.entity === entity && (includeDisabled || st.enabled))
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
+
+  const getStatusDef = (entity, key) =>
+    workflowStatuses.find(st => st.entity === entity && st.key === key) || null;
+
+  const getStatusLabel = (entity, key) => {
+    if (key === 'archived') return 'Archived';
+    return getStatusDef(entity, key)?.label || (key || '').replace(/_/g, ' ');
+  };
+
+  const getStatusCategory = (entity, key) => {
+    if (key === 'archived') return 'archived';
+    return getStatusDef(entity, key)?.category || '';
+  };
+
+  // Asks for the reason a status requires. Returns the reason, '' when none
+  // is needed, or null when the user cancelled (the change must not happen).
+  const askStatusReason = (entity, key, provided = '') => {
+    const def = getStatusDef(entity, key);
+    if (!def?.reasonRequired || (provided || '').trim()) return (provided || '').trim();
+    const answer = window.prompt(`A reason is required to set the status to "${def.label}". Reason:`);
+    if (answer === null) return null;
+    const trimmed = answer.trim();
+    if (!trimmed) {
+      alert('A reason is required for this status change.');
+      return null;
+    }
+    return trimmed;
+  };
+
+  const createWorkflowStatus = async (data) => {
+    try {
+      const res = await apiFetch('/api/workflow/statuses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entity: data.entity,
+          label: data.label,
+          category: data.category,
+          reason_required: !!data.reasonRequired,
+        })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to add status.');
+        return false;
+      }
+      await loadWorkflowStatuses();
+      return true;
+    } catch (err) {
+      alert('Failed to add status. Please check your connection and try again.');
+      return false;
+    }
+  };
+
+  const updateWorkflowStatus = async (id, patch) => {
+    const wire = {};
+    if (patch.label !== undefined) wire.label = patch.label;
+    if (patch.category !== undefined) wire.category = patch.category;
+    if (patch.reasonRequired !== undefined) wire.reason_required = !!patch.reasonRequired;
+    if (patch.enabled !== undefined) wire.enabled = !!patch.enabled;
+    if (patch.sortOrder !== undefined) wire.sort_order = Number(patch.sortOrder) || 0;
+    try {
+      const res = await apiFetch(`/api/workflow/statuses/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(wire)
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to update status.');
+        return false;
+      }
+      await loadWorkflowStatuses();
+      return true;
+    } catch (err) {
+      alert('Failed to update status. Please check your connection and try again.');
+      return false;
+    }
+  };
+
+  // ---- SLA policies (spec slide 22), Super Admin configures ----
+  const fetchSLAPolicies = async () => {
+    const res = await apiFetch('/api/workflow/sla');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to load SLA policies');
+    return (data.policies || []).map(p => ({
+      id: p.id,
+      priority: p.priority,
+      resolutionMinutes: p.resolution_minutes,
+      escalationStepMinutes: p.escalation_step_minutes,
+    }));
+  };
+
+  const updateSLAPolicy = async (id, patch) => {
+    const wire = {};
+    if (patch.resolutionMinutes !== undefined) wire.resolution_minutes = Number(patch.resolutionMinutes);
+    if (patch.escalationStepMinutes !== undefined) wire.escalation_step_minutes = Number(patch.escalationStepMinutes);
+    try {
+      const res = await apiFetch(`/api/workflow/sla/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(wire)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || 'Failed to update SLA.');
+        return false;
+      }
+      return true;
+    } catch (err) {
+      alert('Failed to update SLA. Please check your connection and try again.');
+      return false;
+    }
+  };
+
+  // ---- CNOC flow actions (spec slide 19) ----
+  // action: 'route' | 'return' | 'reopen'. Replaces the ticket with the
+  // server's copy on success.
+  const ticketFlowAction = async (ticketId, action, body) => {
+    const id = getBackendId(ticketId);
+    if (!id) return false;
+    try {
+      const res = await apiFetch(`/api/tickets/${id}/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || 'That action failed.');
+        return false;
+      }
+      const saved = data.ticket ? normalizeTicket(data.ticket) : null;
+      if (saved) setTickets(prev => prev.map(t => String(t.id) === String(ticketId) ? saved : t));
+      logAudit();
+      return true;
+    } catch (err) {
+      alert('That action failed. Please check your connection and try again.');
+      return false;
+    }
+  };
+  const routeTicket = (ticketId, { department, assignedToId, note }) =>
+    ticketFlowAction(ticketId, 'route', {
+      department, note, assigned_to_id: getBackendId(assignedToId) || null,
+    });
+  const returnTicket = (ticketId, note) => ticketFlowAction(ticketId, 'return', { note });
+  const reopenTicket = (ticketId, reason) => ticketFlowAction(ticketId, 'reopen', { reason });
+
+  // ---- Admin-configurable client fields (spec slide 8) ----
+  const [clientFields, setClientFields] = useState([]);
+
+  const loadClientFields = async () => {
+    try {
+      const res = await apiFetch('/api/clients/fields');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return;
+      setClientFields((data.fields || []).map(f => ({
+        id: f.id,
+        key: f.key,
+        label: f.label,
+        fieldType: f.field_type,
+        options: (f.options || '').split('\n').map(o => o.trim()).filter(Boolean),
+        required: !!f.required,
+        enabled: !!f.enabled,
+        sortOrder: f.sort_order ?? 0,
+      })).sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id));
+    } catch (err) {
+      console.warn('Failed to load client fields:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (currentUserId) loadClientFields();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUserId]);
+
+  const saveClientField = async (id, data) => {
+    const wire = {};
+    if (data.label !== undefined) wire.label = data.label;
+    if (data.fieldType !== undefined) wire.field_type = data.fieldType;
+    if (data.options !== undefined) wire.options = Array.isArray(data.options) ? data.options.join('\n') : data.options;
+    if (data.required !== undefined) wire.required = !!data.required;
+    if (data.enabled !== undefined) wire.enabled = !!data.enabled;
+    if (data.sortOrder !== undefined) wire.sort_order = Number(data.sortOrder) || 0;
+    try {
+      const res = await apiFetch(id ? `/api/clients/fields/${id}` : '/api/clients/fields', {
+        method: id ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(wire)
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to save field.');
+        return false;
+      }
+      await loadClientFields();
+      return true;
+    } catch (err) {
+      alert('Failed to save field. Please check your connection and try again.');
+      return false;
+    }
+  };
+
+  // Client 360° view data (spec slide 10).
+  const fetchClientOverview = async (clientId) => {
+    const id = getBackendId(clientId);
+    const res = await apiFetch(`/api/clients/${id}/overview`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to load client');
+    return {
+      client: normalizeClient(data.client),
+      counts: data.counts || {},
+      projects: (data.projects || []).map(normalizeProject).filter(Boolean),
+      tickets: (data.tickets || []).map(normalizeTicket).filter(Boolean),
+      feasibilities: (data.feasibilities || []).map(normalizeFeasibility).filter(Boolean),
+      recentTasks: (data.recent_tasks || []).map(normalizeTask).filter(Boolean),
+      activity: (data.activity || []).map(normalizeAuditLog).filter(Boolean),
+    };
+  };
+
   const [customRoles, setCustomRoles] = useState(['super_admin', 'admin', 'supervisor', 'staff']);
 
   const fetchedForTokenRef = useRef(null);
@@ -568,7 +1001,12 @@ export const AppProvider = ({ children }) => {
     const fetchInitialData = async () => {
       try {
         const [usersRes, projectsRes, tasksRes, ticketsRes, clientsRes, feasibilitiesRes, rolesRes, permMatrixRes, departmentsRes] = await Promise.allSettled([
-          apiFetch('/api/users'),
+          // The people directory, not /api/users: /api/users needs
+          // manage_users, so for everyone else it failed with a 403 on every
+          // page load before falling back to this. The directory returns
+          // everyone to admins and their department to everyone else;
+          // include_inactive keeps names resolvable on older work.
+          apiFetch('/api/directory/users?include_inactive=true'),
           fetchAllPages('/api/projects', 'projects'),
           fetchAllPages('/api/tasks', 'tasks'),
           fetchAllPages('/api/tickets', 'tickets'),
@@ -588,7 +1026,10 @@ export const AppProvider = ({ children }) => {
           // currentUser (looked up in allUsers) null. The directory endpoint
           // returns the same people without needing manage_users.
           try {
-            const dirRes = await apiFetch('/api/directory/users');
+            // include_inactive: this is the lookup list for NAMES everywhere
+            // (who created / is assigned to existing work), so deactivated
+            // people must still resolve. Pickers use searchAssignees().
+            const dirRes = await apiFetch('/api/directory/users?include_inactive=true');
             if (dirRes.ok) {
               const dirData = await dirRes.json();
               setAllUsers((dirData.users || []).map(normalizeUser).filter(Boolean));
@@ -682,31 +1123,66 @@ export const AppProvider = ({ children }) => {
     fetchInitialData();
   }, [authToken]);
 
-  useEffect(() => {
-    if (!currentUserId) return;
-    const activeUser = findUserByAnyId(allUsers, currentUserId);
-    if (!activeUser || (activeUser.role !== 'super_admin' && activeUser.role !== 'admin')) return;
+  // Audit logs come ONLY from the server (GET /api/audit). Previously:
+  //  - the response was read as data.logs, but the backend sends
+  //    data.audit_logs, so nothing ever loaded;
+  //  - it was requested only for admin/super_admin by role, while the backend
+  //    gates on the view_audit_logs permission;
+  //  - logAudit() pushed made-up browser-only entries into the same list,
+  //    which vanished on reload and mixed with real ones.
+  const [auditPagination, setAuditPagination] = useState({ page: 0, pages: 0, total: 0 });
+  const [auditLoading, setAuditLoading] = useState(false);
+  const auditQueryRef = useRef({});
+  const auditRefreshTimerRef = useRef(null);
 
-    const fetchAuditLogs = async () => {
-      try {
-        // Was "/api/audit-logs" — the actual registered route is
-        // "/api/audit" (see routes.go: protected.Group("/audit")). Also
-        // dropped the manually-set "x-user-role" header — the backend's
-        // RequirePermission middleware reads role from the verified JWT
-        // exclusively now, never from a client-supplied header, so this
-        // was sending information nothing on the other end reads at all.
-        const res = await apiFetch('/api/audit');
-        if (res.ok) {
-          const data = await res.json();
-          if (data.logs && data.logs.length > 0) setAuditLogs(data.logs.map(normalizeAuditLog).filter(Boolean));
-        }
-      } catch (err) {
-        console.warn('Failed to fetch audit logs from backend:', err);
+  const fetchAuditLogs = async ({ page = 1, append = false, search, action, resourceType, resourceId } = {}) => {
+    // Remember the filters so background refreshes (see logAudit) keep them.
+    if (!append) auditQueryRef.current = { search, action, resourceType, resourceId };
+    const q = append ? auditQueryRef.current : { search, action, resourceType, resourceId };
+    const params = new URLSearchParams({ page: String(page), limit: '50' });
+    if (q.search) params.set('search', q.search);
+    if (q.action) params.set('action', q.action);
+    if (q.resourceType) params.set('resource_type', q.resourceType);
+    if (q.resourceId) params.set('resource_id', String(q.resourceId));
+
+    setAuditLoading(true);
+    try {
+      const res = await apiFetch(`/api/audit?${params.toString()}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        console.warn('Audit logs request refused:', data.error);
+        return false;
       }
-    };
+      const rows = (data.audit_logs || []).map(normalizeAuditLog).filter(Boolean);
+      setAuditLogs(prev => append ? [...prev, ...rows] : rows);
+      setAuditPagination({
+        page: data.pagination?.page || page,
+        pages: data.pagination?.pages || 0,
+        total: data.pagination?.total || 0,
+      });
+      return true;
+    } catch (err) {
+      console.warn('Failed to fetch audit logs from backend:', err);
+      return false;
+    } finally {
+      setAuditLoading(false);
+    }
+  };
 
-    fetchAuditLogs();
-  }, [currentUserId, allUsers]);
+  const currentUserForAudit = findUserByAnyId(allUsers, currentUserId);
+  const mayViewAudit = !!currentUserForAudit && canViewAuditLogs(currentUserForAudit, permissionMatrix);
+
+  // Load (or clear) when the user or their permission changes — not on every
+  // change to the user list, which is what the old dependency on allUsers did.
+  useEffect(() => {
+    if (!mayViewAudit) {
+      setAuditLogs([]);
+      setAuditPagination({ page: 0, pages: 0, total: 0 });
+      return;
+    }
+    fetchAuditLogs({ page: 1 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUserId, mayViewAudit]);
 
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -791,13 +1267,18 @@ export const AppProvider = ({ children }) => {
     }
   };
 
-  const logAudit = (entry) => {
-    const newLog = {
-      ...entry,
-      id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      timestamp: new Date().toISOString()
-    };
-    setAuditLogs(prev => [newLog, ...prev]);
+  // The backend writes the real audit entry for every action it performs.
+  // Call sites still call logAudit(...) after a successful change; that now
+  // just schedules a refresh of the first page from the server (debounced,
+  // and after a short delay because the backend writes audit rows
+  // asynchronously). The entry argument is ignored — it used to be inserted
+  // as a fake, unsaved log line.
+  const logAudit = (_entry) => {
+    if (!mayViewAudit) return;
+    if (auditRefreshTimerRef.current) clearTimeout(auditRefreshTimerRef.current);
+    auditRefreshTimerRef.current = setTimeout(() => {
+      fetchAuditLogs({ page: 1, ...auditQueryRef.current });
+    }, 800);
   };
 
   const pushNotification = (notif) => {
@@ -866,7 +1347,7 @@ export const AppProvider = ({ children }) => {
   const createProject = async (data) => {
     if (!data.clientId && !data.companyId) {
       alert('Validation Error: A project must be built on top of a client or company profile.');
-      return;
+      return null;
     }
 
     const memberIds = Array.from(new Set([
@@ -880,16 +1361,6 @@ export const AppProvider = ({ children }) => {
 
     // Determine project type: 'general' or 'ticketing'
     const projectType = data.projectType || 'general';
-
-    const basePayload = {
-      ...data,
-      memberIds,
-      adminId: resolvedAdminId,
-      createdBy: currentUser?.id ?? null,
-      progress: 0,
-      spentHours: 0,
-      projectType,
-    };
 
     // Build wire payload matching new backend
     const wirePayload = {
@@ -910,9 +1381,13 @@ export const AppProvider = ({ children }) => {
       start_date: toRFC3339(data.startDate) || toRFC3339(new Date()),
       due_date: toRFC3339(data.dueDate),
       client_id: getBackendId(data.clientId) || null,
+      // All clients (slide 9); the first is the primary.
+      client_ids: (data.clientIds || (data.clientId ? [data.clientId] : []))
+        .map(getBackendId).filter(Boolean),
       owner_id: data.ownerId ?? currentUser?.id ?? null,
       admin_id: data.adminId ?? resolvedAdminId,
       budget_hours: data.budgetHours ?? 0,
+      ...(data.budgetValue !== undefined ? { budget_value: Number(data.budgetValue) || 0, budget_unit: data.budgetUnit || 'hours' } : {}),
       member_ids: memberIds,
       supervisor_ids: data.supervisorIds || [],
     };
@@ -922,27 +1397,28 @@ export const AppProvider = ({ children }) => {
       delete wirePayload.budget_hours;
     }
 
-    let savedProject = null;
+    // No local fallback: a failed create used to add a fake `prj_` project
+    // that vanished on reload (and whose id getBackendId() could turn into
+    // a real, unrelated project id).
+    let newProject = null;
     try {
       const res = await apiFetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(wirePayload)
       });
-      if (res.ok) {
-        const resData = await res.json();
-        savedProject = normalizeProject(resData.project);
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to create project.');
+        return null;
       }
+      newProject = normalizeProject(resData.project);
     } catch (err) {
       console.error('Failed to sync createProject to API:', err);
+      alert('Failed to create project. Please check your connection and try again.');
+      return null;
     }
-
-    const newProject = savedProject || {
-      ...basePayload,
-      id: `prj_${Date.now().toString(36)}`,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
+    if (!newProject) return null;
 
     setProjects(prev => [newProject, ...prev]);
 
@@ -969,6 +1445,8 @@ export const AppProvider = ({ children }) => {
         });
       }
     });
+
+    return newProject;
   };
 
   // Adding/removing a project MEMBER is not part of updateProject below —
@@ -1091,9 +1569,13 @@ export const AppProvider = ({ children }) => {
     if (updates.startDate !== undefined) wirePayload.start_date = toRFC3339(updates.startDate);
     if (updates.dueDate !== undefined) wirePayload.due_date = toRFC3339(updates.dueDate);
     if (updates.clientId !== undefined) wirePayload.client_id = getBackendId(updates.clientId);
+    // Replaces the project's whole client list (first = primary).
+    if (updates.clientIds !== undefined) wirePayload.client_ids = (updates.clientIds || []).map(getBackendId).filter(Boolean);
     if (updates.ownerId !== undefined) wirePayload.owner_id = getBackendId(updates.ownerId);
     if (updates.adminId !== undefined) wirePayload.admin_id = getBackendId(updates.adminId);
     if (updates.budgetHours !== undefined) wirePayload.budget_hours = updates.budgetHours;
+    if (updates.budgetValue !== undefined) wirePayload.budget_value = Number(updates.budgetValue) || 0;
+    if (updates.budgetUnit !== undefined) wirePayload.budget_unit = updates.budgetUnit;
     if (updates.progress !== undefined) wirePayload.progress = updates.progress;
     if (updates.isPinned !== undefined) wirePayload.is_pinned = updates.isPinned;
 
@@ -1148,30 +1630,27 @@ export const AppProvider = ({ children }) => {
     setProjects(prev => prev.map(p => String(p.id) === String(id) ? { ...p, isPinned: !p.isPinned } : p));
   };
 
+  // Archives (the backend never hard-deletes). Only removed from the UI when
+  // the server confirms — it used to vanish locally even on a 403.
   const deleteProject = async (id) => {
     const targetId = getBackendId(id);
-    if (targetId) {
-      try {
-        await apiFetch(`/api/projects/${targetId}`, { method: 'DELETE' });
-      } catch (err) {
-        console.error('Failed to sync deleteProject to API:', err);
+    if (!targetId) return false;
+    try {
+      const res = await apiFetch(`/api/projects/${targetId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to archive project.');
+        return false;
       }
+    } catch (err) {
+      console.error('Failed to sync deleteProject to API:', err);
+      alert('Failed to archive project. Please check your connection and try again.');
+      return false;
     }
 
-    const prj = projects.find(p => String(p.id) === String(id));
     setProjects(prev => prev.filter(p => String(p.id) !== String(id)));
-    if (prj) {
-      logAudit({
-        actorId: currentUser?.id,
-        actorName: currentUser?.name,
-        actorRole: currentUser?.role,
-        action: 'PROJECT_DELETED',
-        entityType: 'project',
-        entityId: id,
-        entityTitle: prj.title,
-        details: `Archived/Deleted project ${prj.title}`
-      });
-    }
+    logAudit();
+    return true;
   };
 
   const createDepartment = async (data) => {
@@ -1273,7 +1752,7 @@ export const AppProvider = ({ children }) => {
         const res = await apiFetch(`/api/departments/${targetId}`, { method: 'DELETE' });
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
-          alert(errData.error || 'Failed to delete department.');
+          alert(errData.error || 'Failed to archive department.');
           return false;
         }
       } catch (err) {
@@ -1289,11 +1768,11 @@ export const AppProvider = ({ children }) => {
         actorId: currentUser?.id,
         actorName: currentUser?.name,
         actorRole: currentUser?.role,
-        action: 'DEPARTMENT_DELETED',
+        action: 'DEPARTMENT_ARCHIVED',
         entityType: 'department',
         entityId: id,
         entityTitle: dept.name,
-        details: `Deleted department ${dept.name}`
+        details: `Archived department ${dept.name}`
       });
     }
     return true;
@@ -1308,6 +1787,13 @@ export const AppProvider = ({ children }) => {
       website: data.website || '',
       industry: data.industry || '',
       address: data.address || '',
+      city: data.city || '',
+      country: data.country || '',
+      notes: data.notes || '',
+      client_name: data.clientName || '',
+      cnic: data.cnic || '',
+      mobile: data.mobile || '',
+      custom_fields: data.customFields || {},
     };
 
     let savedClient = null;
@@ -1365,6 +1851,10 @@ export const AppProvider = ({ children }) => {
     if (updates.country !== undefined) wirePayload.country = updates.country;
     if (updates.notes !== undefined) wirePayload.notes = updates.notes;
     if (updates.status !== undefined) wirePayload.status = updates.status;
+    if (updates.clientName !== undefined) wirePayload.client_name = updates.clientName;
+    if (updates.cnic !== undefined) wirePayload.cnic = updates.cnic;
+    if (updates.mobile !== undefined) wirePayload.mobile = updates.mobile;
+    if (updates.customFields !== undefined) wirePayload.custom_fields = updates.customFields;
 
     let succeeded = false;
     let savedClient = null;
@@ -1536,7 +2026,8 @@ export const AppProvider = ({ children }) => {
     if (updates.clientId !== undefined) wirePayload.client_id = getBackendId(updates.clientId);
     if (updates.requirementDetails !== undefined) wirePayload.requirement_details = updates.requirementDetails;
     if (updates.assignedDept !== undefined) wirePayload.assigned_dept = updates.assignedDept;
-    if (updates.assignedUserId !== undefined) wirePayload.assigned_user_id = getBackendId(updates.assignedUserId);
+    // 0 = unassign (null reads as "not sent" on the backend).
+    if (updates.assignedUserId !== undefined) wirePayload.assigned_user_id = getBackendId(updates.assignedUserId) ?? 0;
     if (updates.priority !== undefined) wirePayload.priority = updates.priority;
     if (updates.status !== undefined) wirePayload.status = updates.status;
     if (updates.targetDate !== undefined) wirePayload.target_date = updates.targetDate;
@@ -1610,14 +2101,22 @@ export const AppProvider = ({ children }) => {
         return null;
       }
       const resData = await res.json();
-      const newVendor = normalizeFeasibilityVendor(resData.feasibility?.vendors?.find(v => v.id === resData.vendor?.id) || resData.vendor);
+      // Take the server's full vendor list as the truth. This used to pick
+      // the new vendor out with `v.id === resData.vendor?.id`: vendors are
+      // serialized with "ID" (not "id") and resData.vendor didn't exist, so
+      // it compared undefined === undefined, matched the FIRST vendor every
+      // time, and appended a duplicate of it instead of the new one.
+      const serverVendors = Array.isArray(resData.feasibility?.vendors)
+        ? resData.feasibility.vendors.map(normalizeFeasibilityVendor).filter(Boolean)
+        : null;
+      const newVendor = normalizeFeasibilityVendor(resData.vendor);
       setFeasibilities(prev => prev.map(f => {
-        if (String(f.id) === String(feasibilityId)) {
-          return { ...f, vendors: [...(f.vendors || []), newVendor], updatedAt: new Date().toISOString() };
-        }
-        return f;
+        if (String(f.id) !== String(feasibilityId)) return f;
+        const vendors = serverVendors
+          || (newVendor ? [...(f.vendors || []), newVendor] : (f.vendors || []));
+        return { ...f, vendors, updatedAt: new Date().toISOString() };
       }));
-      return newVendor;
+      return newVendor || true;
     } catch (err) {
       console.error('Failed to sync addFeasibilityVendor to API:', err);
       alert('Failed to add vendor. Please check your connection and try again.');
@@ -1670,21 +2169,31 @@ export const AppProvider = ({ children }) => {
     if (!targetFeasId || !targetVendorId) return;
 
     try {
-      await apiFetch(`/api/feasibilities/${targetFeasId}/vendors/${targetVendorId}`, { method: 'DELETE' });
+      const res = await apiFetch(`/api/feasibilities/${targetFeasId}/vendors/${targetVendorId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to remove vendor.');
+        return false;
+      }
     } catch (err) {
       console.error('Failed to sync deleteFeasibilityVendor to API:', err);
+      alert('Failed to remove vendor. Please check your connection and try again.');
+      return false;
     }
 
     setFeasibilities(prev => prev.map(f => {
       if (String(f.id) === String(feasibilityId)) {
         return {
           ...f,
-          vendors: (f.vendors || []).filter(v => String(v.id) !== String(vendorId)),
+          // Withdrawn, not removed (spec: nothing is hard-deleted).
+          vendors: (f.vendors || []).map(v => String(v.id) === String(vendorId)
+            ? { ...v, withdrawn: true, withdrawnAt: new Date().toISOString() } : v),
           updatedAt: new Date().toISOString()
         };
       }
       return f;
     }));
+    return true;
   };
 
   // Backend route exists (DELETE /api/feasibilities/:id, gated by
@@ -1795,6 +2304,25 @@ export const AppProvider = ({ children }) => {
     });
   };
 
+  // Re-read one project so its progress (calculated from its tasks on the
+  // server) updates as soon as a task changes, not only after a reload.
+  const refreshProjectProgress = async (projectId) => {
+    const id = getBackendId(projectId);
+    if (!id) return;
+    try {
+      const res = await apiFetch(`/api/projects/${id}`);
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      if (!data.project) return;
+      const fresh = normalizeProject(data.project);
+      setProjects(prev => prev.map(p => String(p.id) === String(projectId)
+        ? { ...p, progress: fresh.progress, tasksTotal: fresh.tasksTotal, tasksDone: fresh.tasksDone }
+        : p));
+    } catch {
+      // Best effort — the next reload shows it anyway.
+    }
+  };
+
   const createTask = async (data) => {
     const count = (tasks || []).length + 101;
     const taskNumber = data.taskNumber || `TSK-${count}`;
@@ -1828,6 +2356,8 @@ export const AppProvider = ({ children }) => {
       priority: basePayload.priority || 'normal',
       labels: Array.isArray(basePayload.labels) ? basePayload.labels.join(',') : (basePayload.labels || ''),
       project_id: getBackendId(basePayload.projectId) || null,
+      // Checklist items created with the task (one request).
+      checklist: Array.isArray(basePayload.checklistItems) ? basePayload.checklistItems : [],
       ticket_id: getBackendId(basePayload.ticketId) || null,
       assignee_id: assignee?.id ?? getBackendId(basePayload.assignedToId) ?? null,
       creator_id: currentUser?.id ?? null,
@@ -1888,6 +2418,9 @@ export const AppProvider = ({ children }) => {
         entityId: newTask.id
       });
     }
+
+    refreshProjectProgress(newTask?.projectId);
+    return newTask;
   };
 
   const updateTask = async (id, updates) => {
@@ -1904,7 +2437,15 @@ export const AppProvider = ({ children }) => {
     if (updates.title !== undefined) wireUpdates.title = updates.title;
     if (updates.description !== undefined) wireUpdates.description = updates.description;
     if (updates.priority !== undefined) wireUpdates.priority = updates.priority;
-    if (updates.status !== undefined) wireUpdates.status = updates.status;
+    if (updates.status !== undefined) {
+      wireUpdates.status = updates.status;
+      const current = (tasks || []).find(t => String(t.id) === String(id));
+      if (!current || current.status !== updates.status) {
+        const reason = askStatusReason('task', updates.status, updates.statusReason || '');
+        if (reason === null) return null;
+        if (reason) wireUpdates.status_reason = reason;
+      }
+    }
     if (updates.assignedToId !== undefined && updates.assignedToId !== '' && updates.assignedToId !== null) {
       wireUpdates.assignee_id = getBackendId(updates.assignedToId);
     }
@@ -1960,41 +2501,42 @@ export const AppProvider = ({ children }) => {
       });
     }
 
+    refreshProjectProgress((tasks.find(t => String(t.id) === String(id)) || {}).projectId);
     return savedTask || true;
   };
 
-  const updateTaskStatus = async (id, newStatus) => {
+  // reason: required for some statuses (catalog); asked for here if missing.
+  const updateTaskStatus = async (id, newStatus, reason = '') => {
     const task = (tasks || []).find(t => String(t.id) === String(id));
-    if (!task) return;
-
-    let progress = task.progress;
-    if (newStatus === 'done') {
-      progress = 100;
-    } else if (newStatus === 'todo') {
-      progress = 0;
-    } else if (newStatus === 'in_progress' && progress === 0) {
-      progress = 25;
-    }
+    if (!task) return false;
+    if (task.status === newStatus) return true;
+    const finalReason = askStatusReason('task', newStatus, reason);
+    if (finalReason === null) return false;
 
     const targetId = getBackendId(id);
+    let savedTask = null;
     if (targetId) {
       try {
         const res = await apiFetch(`/api/tasks/${targetId}/status`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: newStatus })
+          body: JSON.stringify({ status: newStatus, reason: finalReason })
         });
+        const resData = await res.json().catch(() => ({}));
         if (!res.ok) {
           // The response used to be ignored, so a rejected change still
           // showed as applied until the next reload.
-          const errData = await res.json().catch(() => ({}));
-          alert(errData.error || 'Failed to update task status.');
-          return;
+          alert(resData.error || 'Failed to update task status.');
+          return false;
         }
+        // The backend now returns the full task (all relations), so it's
+        // used as-is. The old local progress guess (in_progress -> 25%)
+        // didn't match anything the server stores.
+        savedTask = resData.task ? normalizeTask(resData.task) : null;
       } catch (err) {
         console.error('Failed to sync updateTaskStatus to API:', err);
         alert('Failed to update task status. Please check your connection and try again.');
-        return;
+        return false;
       }
     }
 
@@ -2003,15 +2545,8 @@ export const AppProvider = ({ children }) => {
     }
 
     setTasks(prev => (prev || []).map(t => {
-      if (String(t.id) === String(id)) {
-        return {
-          ...t,
-          status: newStatus,
-          progress,
-          updatedAt: new Date().toISOString()
-        };
-      }
-      return t;
+      if (String(t.id) !== String(id)) return t;
+      return savedTask || { ...t, status: newStatus, updatedAt: new Date().toISOString() };
     }));
 
     if (currentUser) {
@@ -2037,6 +2572,8 @@ export const AppProvider = ({ children }) => {
         entityId: id
       });
     }
+    refreshProjectProgress(task.projectId);
+    return true;
   };
 
   const submitTaskForReview = async (id, notes) => {
@@ -2139,6 +2676,7 @@ export const AppProvider = ({ children }) => {
       entityType: 'task',
       entityId: id
     });
+    refreshProjectProgress((tasks.find(t => String(t.id) === String(id)) || {}).projectId);
   };
 
   const reopenTask = async (id, notes) => {
@@ -2186,6 +2724,7 @@ export const AppProvider = ({ children }) => {
       entityType: 'task',
       entityId: id
     });
+    refreshProjectProgress((tasks.find(t => String(t.id) === String(id)) || {}).projectId);
   };
 
   const toggleChecklistItem = async (taskId, checklistId) => {
@@ -2193,12 +2732,18 @@ export const AppProvider = ({ children }) => {
     let savedItem = null;
     try {
       const res = await apiFetch(`/api/checklists/${targetId}/toggle`, { method: 'PATCH' });
-      if (res.ok) {
-        const resData = await res.json();
-        savedItem = normalizeChecklistItem(resData.checklist);
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // Used to fall through and tick the box locally anyway, so a refused
+        // toggle looked saved until the next reload.
+        alert(resData.error || 'Failed to update checklist item.');
+        return;
       }
+      savedItem = normalizeChecklistItem(resData.checklist);
     } catch (err) {
       console.error('Failed to sync toggleChecklistItem to API:', err);
+      alert('Failed to update checklist item. Please check your connection and try again.');
+      return;
     }
 
     setTasks(prev => prev.map(t => {
@@ -2265,9 +2810,12 @@ export const AppProvider = ({ children }) => {
     }));
   };
 
-  const addSubTask = async (taskId, title, assignedToId, priority = 'normal', dueDate = new Date().toISOString().split('T')[0], type = 'flowchart') => {
+  // assignedToId / dueDate are optional. It used to always assign the
+  // sub-task to whoever created it (the form had no assignee picker), so a
+  // sub-task could never be handed to anyone else.
+  const addSubTask = async (taskId, title, assignedToId = null, priority = 'normal', dueDate = '') => {
     const targetTaskId = getBackendId(taskId);
-    const resolvedAssigneeId = getBackendId(assignedToId) || getBackendId(currentUser?.id) || null;
+    const resolvedAssigneeId = getBackendId(assignedToId) || null;
 
     let savedSub = null;
     try {
@@ -2282,20 +2830,19 @@ export const AppProvider = ({ children }) => {
           task_id: targetTaskId,
           assignee_id: resolvedAssigneeId,
           priority,
-          deadline: dueDate,
-          estimated_hours: 4,
+          deadline: dueDate || '',
         })
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
         alert(resData.error || 'Failed to add subtask.');
-        return;
+        return null;
       }
       savedSub = normalizeSubTask(resData.subtask);
     } catch (err) {
       console.error('Failed to sync addSubTask to API:', err);
       alert('Failed to add subtask. Please check your connection and try again.');
-      return;
+      return null;
     }
 
     setTasks(prev => prev.map(t => {
@@ -2308,6 +2855,158 @@ export const AppProvider = ({ children }) => {
       }
       return t;
     }));
+    return savedSub;
+  };
+
+  // Reassign (or clear, with an empty value) a sub-task's assignee. The
+  // backend requires the "Reassign Tickets & Tasks" permission and logs the
+  // change. Returns true on success.
+  const updateSubTaskAssignee = async (taskId, subTaskId, assigneeId) => {
+    const targetSubTaskId = getBackendId(subTaskId);
+    if (!targetSubTaskId) return false;
+    let savedSub = null;
+    try {
+      const res = await apiFetch(`/api/tasks/subtasks/${targetSubTaskId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        // 0 = unassign (null would read as "not sent" on the backend).
+        body: JSON.stringify({ assignee_id: getBackendId(assigneeId) || 0 })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to reassign sub-task.');
+        return false;
+      }
+      savedSub = normalizeSubTask(resData.subtask);
+    } catch (err) {
+      console.error('Failed to reassign sub-task:', err);
+      alert('Failed to reassign sub-task. Please check your connection and try again.');
+      return false;
+    }
+    setTasks(prev => prev.map(t => {
+      if (String(t.id) !== String(taskId)) return t;
+      return {
+        ...t,
+        subTasks: (t.subTasks || []).map(st => String(st.id) === String(subTaskId) ? (savedSub || st) : st),
+        updatedAt: new Date().toISOString()
+      };
+    }));
+    logAudit();
+    return true;
+  };
+
+  // ---- Record-level access grants on a task (spec slide 16) ----
+  const normalizeGrant = (g) => g && ({
+    id: g.id,
+    userId: g.user_id,
+    userName: g.user?.name || '',
+    userDepartment: g.user?.department || '',
+    grantedById: g.granted_by_id,
+    grantedByName: g.granted_by?.name || '',
+    createdAt: g.created_at,
+  });
+
+  // kind: 'tasks' | 'clients' (the API path segment).
+  const fetchRecordAccess = async (kind, recordId) => {
+    const id = getBackendId(recordId);
+    if (!id) return [];
+    const res = await apiFetch(`/api/${kind}/${id}/access`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to load access list');
+    return (data.access || []).map(normalizeGrant).filter(Boolean);
+  };
+
+  const grantRecordAccess = async (kind, recordId, userId) => {
+    const id = getBackendId(recordId);
+    const uid = getBackendId(userId);
+    if (!id || !uid) return null;
+    try {
+      const res = await apiFetch(`/api/${kind}/${id}/access`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: uid })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || 'Failed to grant access.');
+        return null;
+      }
+      logAudit();
+      return normalizeGrant(data.access);
+    } catch (err) {
+      console.error('Failed to grant access:', err);
+      alert('Failed to grant access. Please check your connection and try again.');
+      return null;
+    }
+  };
+
+  const revokeRecordAccess = async (kind, recordId, userId) => {
+    const id = getBackendId(recordId);
+    const uid = getBackendId(userId);
+    if (!id || !uid) return false;
+    try {
+      const res = await apiFetch(`/api/${kind}/${id}/access/${uid}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || 'Failed to revoke access.');
+        return false;
+      }
+      logAudit();
+      return true;
+    } catch (err) {
+      console.error('Failed to revoke access:', err);
+      alert('Failed to revoke access. Please check your connection and try again.');
+      return false;
+    }
+  };
+
+  const fetchTaskAccess = (taskId) => fetchRecordAccess('tasks', taskId);
+  const grantTaskAccess = (taskId, userId) => grantRecordAccess('tasks', taskId, userId);
+  const revokeTaskAccess = (taskId, userId) => revokeRecordAccess('tasks', taskId, userId);
+
+  // Bring a withdrawn feasibility vendor back.
+  const reinstateFeasibilityVendor = async (feasibilityId, vendorId) => {
+    const fid = getBackendId(feasibilityId);
+    const vid = getBackendId(vendorId);
+    if (!fid || !vid) return false;
+    try {
+      const res = await apiFetch(`/api/feasibilities/${fid}/vendors/${vid}/reinstate`, { method: 'PATCH' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || 'Failed to reinstate vendor.');
+        return false;
+      }
+    } catch (err) {
+      alert('Failed to reinstate vendor. Please check your connection and try again.');
+      return false;
+    }
+    setFeasibilities(prev => prev.map(f => String(f.id) !== String(feasibilityId) ? f : {
+      ...f,
+      vendors: (f.vendors || []).map(v => String(v.id) === String(vendorId) ? { ...v, withdrawn: false, withdrawnAt: null } : v),
+    }));
+    logAudit();
+    return true;
+  };
+
+  // Archive a user (replaces delete: they can't sign in, their name stays on
+  // past work). Refused by the server while they still have open work.
+  const archiveUser = async (userId) => {
+    const id = getBackendId(userId);
+    if (!id) return false;
+    try {
+      const res = await apiFetch(`/api/users/${id}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || 'Failed to archive user.');
+        return false;
+      }
+    } catch (err) {
+      alert('Failed to archive user. Please check your connection and try again.');
+      return false;
+    }
+    setAllUsers(prev => prev.map(u => String(u.id) === String(userId) ? { ...u, status: 'archived' } : u));
+    logAudit();
+    return true;
   };
 
   const updateSubTaskStatus = async (taskId, subTaskId, status) => {
@@ -2325,12 +3024,12 @@ export const AppProvider = ({ children }) => {
       } else {
         const errData = await res.json().catch(() => ({}));
         alert(errData.error || 'Failed to update sub-task status.');
-        return;
+        return false;
       }
     } catch (err) {
       console.error('Failed to sync subtask status to API:', err);
       alert('Failed to update sub-task status. Please check your connection and try again.');
-      return;
+      return false;
     }
 
     setTasks(prev => prev.map(t => {
@@ -2346,6 +3045,7 @@ export const AppProvider = ({ children }) => {
       }
       return t;
     }));
+    return true;
   };
 
   const addTaskComment = async (taskId, content, isInternal = false) => {
@@ -2368,13 +3068,13 @@ export const AppProvider = ({ children }) => {
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
         alert(resData.error || 'Failed to post comment.');
-        return;
+        return null;
       }
       savedComment = normalizeComment(resData.comment);
     } catch (err) {
       console.error('Failed to sync comment to API:', err);
       alert('Failed to post comment. Please check your connection and try again.');
-      return;
+      return null;
     }
 
     setTasks(prev => prev.map(t => {
@@ -2389,7 +3089,9 @@ export const AppProvider = ({ children }) => {
     }));
 
     const task = tasks.find(t => String(t.id) === String(taskId));
-    if (task && String(task.assignedToId) !== String(currentUser?.id)) {
+    // No "new comment" notification for an internal note: the assignee may
+    // not be allowed to see it.
+    if (task && !isInternal && String(task.assignedToId) !== String(currentUser?.id)) {
       pushNotification({
         recipientId: task.assignedToId,
         title: 'New Comment on Task',
@@ -2399,32 +3101,31 @@ export const AppProvider = ({ children }) => {
         entityId: taskId
       });
     }
+    return savedComment;
   };
 
+  // Archives the task. Only removed from the UI when the server confirms —
+  // it used to vanish locally even when the request was refused.
   const deleteTask = async (id) => {
     const targetId = getBackendId(id);
-    if (targetId) {
-      try {
-        await apiFetch(`/api/tasks/${targetId}`, { method: 'DELETE' });
-      } catch (err) {
-        console.error('Failed to sync deleteTask to API:', err);
+    if (!targetId) return false;
+    try {
+      const res = await apiFetch(`/api/tasks/${targetId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.error || 'Failed to archive task.');
+        return false;
       }
+    } catch (err) {
+      console.error('Failed to sync deleteTask to API:', err);
+      alert('Failed to archive task. Please check your connection and try again.');
+      return false;
     }
 
-    const task = tasks.find(t => String(t.id) === String(id));
     setTasks(prev => prev.filter(t => String(t.id) !== String(id)));
-    if (task) {
-      logAudit({
-        actorId: currentUser?.id,
-        actorName: currentUser?.name,
-        actorRole: currentUser?.role,
-        action: 'TASK_DELETED',
-        entityType: 'task',
-        entityId: id,
-        entityTitle: `${task.taskNumber}: ${task.title}`,
-        details: `Deleted task ${task.taskNumber}`
-      });
-    }
+    logAudit();
+    refreshProjectProgress((tasks.find(t => String(t.id) === String(id)) || {}).projectId);
+    return true;
   };
 
   const addTaskDependency = async (taskId, dependsOnTaskId) => {
@@ -2458,12 +3159,16 @@ export const AppProvider = ({ children }) => {
     let savedTask = null;
     try {
       const res = await apiFetch(`/api/tasks/${targetId}/dependencies/${dependsOnId}`, { method: 'DELETE' });
-      if (res.ok) {
-        const resData = await res.json();
-        savedTask = normalizeTask(resData.task);
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to remove dependency.');
+        return;
       }
+      savedTask = resData.task ? normalizeTask(resData.task) : null;
     } catch (err) {
       console.error('Failed to sync removeTaskDependency to API:', err);
+      alert('Failed to remove dependency. Please check your connection and try again.');
+      return;
     }
 
     setTasks(prev => prev.map(t => {
@@ -2475,105 +3180,52 @@ export const AppProvider = ({ children }) => {
 
   const createTicket = async (data) => {
     const assignee = findUserByAnyId(allUsers, data.assignedToId);
-    const supervisorId = assignee?.supervisorId ?? data.supervisorId ?? null;
-    const adminId = assignee?.adminId ?? data.adminId ?? null;
 
-    // Determine if this is a Support/TT (ticketing) type
-    const isSupportTT = data.projectType === 'ticketing';
-
-    const basePayload = {
-      ...data,
-      supervisorId,
-      adminId,
-      labels: data.labels || [],
-    };
-
+    // Only fields CreateTicketInput (ticket.go) binds. This used to send
+    // due_date / response_sla_minutes / requester_* / status, none of which
+    // the backend reads — so no ticket ever got an SLA deadline. The SLA is
+    // now either sent explicitly (slaMinutes) or derived server-side from
+    // the priority.
     const wirePayload = {
-      ticket_number: basePayload.ticketNumber || undefined,
-      title: basePayload.title,
-      description: basePayload.description,
-      department: basePayload.department || currentUser?.department || '',
-      category: basePayload.category || 'incident',
-      priority: basePayload.priority || 'normal',
-      severity: basePayload.severity || 'minor',
-      status: basePayload.status || 'open',
-      requester_name: basePayload.requesterName || '',
-      requester_email: basePayload.requesterEmail || '',
-      requester_company: basePayload.requesterCompany || '',
-      project_id: getBackendId(basePayload.projectId) || null,
-      assigned_to_id: assignee?.id ?? getBackendId(basePayload.assignedToId) ?? null,
-      due_date: toRFC3339(basePayload.dueDate),
-      response_sla_minutes: basePayload.responseSlaMinutes ?? 0,
-      resolution_sla_minutes: basePayload.resolutionSlaMinutes ?? 0,
-      labels: Array.isArray(basePayload.labels) ? basePayload.labels.join(',') : (basePayload.labels || ''),
+      title: data.title,
+      description: data.description || '',
+      department: data.department || currentUser?.department || '',
+      category: data.category || 'incident',
+      priority: data.priority || 'normal',
+      project_id: getBackendId(data.projectId) || null,
+      client_id: getBackendId(data.clientId) || null,
+      assigned_to_id: assignee?.id ?? getBackendId(data.assignedToId) ?? null,
     };
+    if (data.severity) wirePayload.severity = data.severity;
+    if (data.source) wirePayload.source = data.source;
+    if (Number(data.slaMinutes) > 0) wirePayload.sla_minutes = Number(data.slaMinutes);
 
-    // Strip fields not applicable to Support/TT tickets
-    if (isSupportTT) {
-      // For Support/TT, department comes from the project or user's department
-      wirePayload.department = wirePayload.department || currentUser?.department || 'Support';
-    }
-
-    let savedTicket = null;
+    // No local fallback. It used to invent a ticket with a fake `tck_` id when
+    // the request failed, and ALWAYS spawn a local-only "Resolve:" task with a
+    // fake `tsk_` id that was never saved. getBackendId() pulls the digits out
+    // of those ids, so acting on the phantom task could hit a real, unrelated
+    // task on the server.
+    let newTicket = null;
     try {
       const res = await apiFetch('/api/tickets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(wirePayload)
       });
-      if (res.ok) {
-        const resData = await res.json();
-        savedTicket = normalizeTicket(resData.ticket);
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to create ticket.');
+        return null;
       }
+      newTicket = normalizeTicket(resData.ticket);
     } catch (err) {
       console.error('Failed to sync createTicket to API:', err);
+      alert('Failed to create ticket. Please check your connection and try again.');
+      return null;
     }
-
-    const newTicket = savedTicket || {
-      ...basePayload,
-      id: `tck_${Date.now().toString(36)}`,
-      ticketNumber: basePayload.ticketNumber || `TCK-${tickets.length + 1041}`,
-      internalNotes: [],
-      comments: [],
-      responses: [],
-      attachments: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-
-    const taskCount = (tasks || []).length + 101;
-    const taskNumber = `TSK-${taskCount}`;
-    const newTaskId = `tsk_${Date.now().toString(36)}`;
-
-    const spawnedTask = {
-      id: newTaskId,
-      taskNumber,
-      title: `Resolve: ${newTicket.title}`,
-      description: `Auto-generated from ticket ${newTicket.ticketNumber}`,
-      status: 'todo',
-      priority: newTicket.priority || 'normal',
-      projectId: newTicket.projectId || null,
-      ticketId: newTicket.id,
-      assignedToId: newTicket.assignedToId,
-      supervisorId,
-      adminId,
-      isPinned: true,
-      subTasks: [
-        { id: `sub_${Date.now()}_1`, title: 'Analyze requirements & draft flow chart design', type: 'flowchart', completed: false },
-        { id: `sub_${Date.now()}_2`, title: 'Implementation & technical review', type: 'development', completed: false }
-      ],
-      labels: [],
-      checklists: [],
-      comments: [],
-      dueDate: new Date().toISOString().split('T')[0],
-      progress: 0,
-      actualHours: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
+    if (!newTicket) return null;
 
     setTickets(prev => [newTicket, ...prev]);
-    setTasks(prev => [spawnedTask, ...(prev || [])]);
 
     logAudit({
       actorId: currentUser?.id,
@@ -2583,7 +3235,7 @@ export const AppProvider = ({ children }) => {
       entityType: 'ticket',
       entityId: newTicket.id,
       entityTitle: `${newTicket.ticketNumber}: ${newTicket.title}`,
-      details: `Created new ${newTicket.priority} ticket requested by ${newTicket.requesterName} and spawned task ${taskNumber}`
+      details: `Created new ${newTicket.priority} ticket ${newTicket.ticketNumber}`
     });
 
     if (newTicket.assignedToId && String(newTicket.assignedToId) !== String(currentUser?.id)) {
@@ -2596,6 +3248,8 @@ export const AppProvider = ({ children }) => {
         entityId: newTicket.id
       });
     }
+
+    return newTicket;
   };
 
   const updateTicket = async (id, updates) => {
@@ -2616,6 +3270,14 @@ export const AppProvider = ({ children }) => {
     ['title', 'description', 'category', 'priority', 'severity', 'status', 'department'].forEach(key => {
       if (updates[key] !== undefined) wire[key] = updates[key];
     });
+    if (updates.status !== undefined) {
+      const current = tickets.find(t => String(t.id) === String(id));
+      if (!current || current.status !== updates.status) {
+        const reason = askStatusReason('ticket', updates.status, updates.statusReason || '');
+        if (reason === null) return null;
+        if (reason) wire.status_reason = reason;
+      }
+    }
     if (updates.isPinned !== undefined) wire.is_pinned = !!updates.isPinned;
     if (updates.projectId !== undefined && updates.projectId !== '') wire.project_id = getBackendId(updates.projectId);
     if (hasAssignedProp && apiAssignedId) wire.assigned_to_id = apiAssignedId;
@@ -2669,31 +3331,38 @@ export const AppProvider = ({ children }) => {
     return true;
   };
 
-  const updateTicketStatus = async (id, status, resolutionSummary) => {
+  // reason: required for some statuses (catalog); asked for here if missing.
+  // A resolution summary counts as the reason for "resolved".
+  const updateTicketStatus = async (id, status, resolutionSummary, reason = '') => {
     const ticket = tickets.find(t => String(t.id) === String(id));
-    if (!ticket) return;
+    if (!ticket) return false;
+    const finalReason = askStatusReason('ticket', status,
+      reason || (status === 'resolved' ? (resolutionSummary || '') : ''));
+    if (finalReason === null) return false;
 
     const now = new Date().toISOString();
     const resolvedAt = (status === 'resolved' || status === 'closed') ? (ticket.resolvedAt || now) : undefined;
     const closedAt = status === 'closed' ? (ticket.closedAt || now) : undefined;
 
     const targetId = getBackendId(id);
+    let serverTicket = null;
     if (targetId) {
       try {
         const res = await apiFetch(`/api/tickets/${targetId}/status`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status, resolution_summary: resolutionSummary })
+          body: JSON.stringify({ status, resolution_summary: resolutionSummary, reason: finalReason })
         });
+        const resData = await res.json().catch(() => ({}));
         if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          alert(errData.error || 'Failed to update ticket status.');
-          return;
+          alert(resData.error || 'Failed to update ticket status.');
+          return false;
         }
+        serverTicket = resData.ticket || null;
       } catch (err) {
         console.error('Failed to sync updateTicketStatus to API:', err);
         alert('Failed to update ticket status. Please check your connection and try again.');
-        return;
+        return false;
       }
     }
 
@@ -2702,9 +3371,13 @@ export const AppProvider = ({ children }) => {
         return {
           ...t,
           status,
-          resolvedAt,
-          closedAt,
+          // Server's values (reopening clears them).
+          resolvedAt: serverTicket ? (serverTicket.resolved_at || null) : resolvedAt,
+          closedAt: serverTicket ? (serverTicket.closed_at || null) : closedAt,
           resolutionSummary: resolutionSummary || t.resolutionSummary,
+          // Moving to in_progress/resolved is what sets first response
+          // server-side; mirror the saved value.
+          firstResponseAt: serverTicket?.first_response_at || t.firstResponseAt,
           updatedAt: now
         };
       }
@@ -2725,6 +3398,7 @@ export const AppProvider = ({ children }) => {
       entityTitle: `${ticket.ticketNumber}: ${ticket.title}`,
       details: `Status transitioned to ${status.toUpperCase()}. Resolution: ${resolutionSummary || 'None'}`
     });
+    return true;
   };
 
   const escalateTicket = async (id, level, reason) => {
@@ -2796,6 +3470,7 @@ export const AppProvider = ({ children }) => {
   const postTicketComment = async (ticketId, content, isInternal) => {
     const targetTicketId = getBackendId(ticketId);
     let savedComment = null;
+    let serverFirstResponseAt = null;
     try {
       // Was POSTing to the flat "/api/comments" — the real route is
       // nested under the parent ticket (tickets.POST("/:id/comments",
@@ -2816,6 +3491,7 @@ export const AppProvider = ({ children }) => {
         return null;
       }
       savedComment = normalizeComment(resData.comment);
+      serverFirstResponseAt = resData.first_response_at || null;
     } catch (err) {
       console.error('Failed to sync ticket comment to API:', err);
       alert('Failed to post comment. Please check your connection and try again.');
@@ -2829,7 +3505,10 @@ export const AppProvider = ({ children }) => {
           comments: savedComment.isInternal ? (t.comments || []) : [...(t.comments || []), savedComment],
           internalNotes: savedComment.isInternal ? [...(t.internalNotes || []), savedComment] : (t.internalNotes || []),
           responses: [...(t.responses || []), savedComment],
-          firstResponseAt: t.firstResponseAt || new Date().toISOString(),
+          // Taken from the server, which only sets it for the first PUBLIC
+          // reply. It used to be invented here for any comment (internal
+          // notes included) and was lost on reload.
+          firstResponseAt: serverFirstResponseAt || t.firstResponseAt,
           updatedAt: new Date().toISOString()
         };
       }
@@ -2983,6 +3662,7 @@ export const AppProvider = ({ children }) => {
         details: `Deleted ticket ${ticket.ticketNumber}`
       });
     }
+    return true;
   };
 
   const createUser = async (userData) => {
@@ -2997,6 +3677,7 @@ export const AppProvider = ({ children }) => {
       avatar: userData.avatar || '',
       supervisor_id: getBackendId(userData.supervisorId) || null,
       admin_id: getBackendId(userData.adminId) || null,
+      support_tier: userData.supportTier || '',
     };
 
     let created = null;
@@ -3054,9 +3735,15 @@ export const AppProvider = ({ children }) => {
     // against the real hash.
     if (updates.currentPassword) wirePayload.current_password = updates.currentPassword;
     if (updates.department !== undefined) wirePayload.department = updates.department;
-    if (updates.supervisorId !== undefined) wirePayload.supervisor_id = getBackendId(updates.supervisorId);
-    if (updates.adminId !== undefined) wirePayload.admin_id = getBackendId(updates.adminId);
+    // 0 means "clear this link" to the backend. Sending null (what an empty
+    // "None" selection became) was indistinguishable from "not sent", so a
+    // reporting line could never be removed.
+    if (updates.supervisorId !== undefined) wirePayload.supervisor_id = getBackendId(updates.supervisorId) ?? 0;
+    if (updates.adminId !== undefined) wirePayload.admin_id = getBackendId(updates.adminId) ?? 0;
     if (updates.status !== undefined) wirePayload.status = updates.status;
+    // CNOC support tier (L1..L4). This line was mistakenly put in
+    // updateProject when tiers were added, so editing a user never sent it.
+    if (updates.supportTier !== undefined) wirePayload.support_tier = updates.supportTier || '';
 
     // PUT /api/users/:id needs manage_users, so a regular user editing their
     // OWN profile (name/title/phone/avatar/password) was rejected — and that
@@ -3069,6 +3756,7 @@ export const AppProvider = ({ children }) => {
       updates.department === undefined &&
       updates.supervisorId === undefined &&
       updates.adminId === undefined &&
+      updates.supportTier === undefined &&
       updates.status === undefined;
 
     let savedUser = null;
@@ -3094,7 +3782,7 @@ export const AppProvider = ({ children }) => {
           } else {
             ok = false;
             const errData = await res.json().catch(() => ({}));
-            console.error('updateUser (self) failed:', errData.error);
+            alert(errData.error || 'Failed to update profile.');
           }
         }
 
@@ -3116,6 +3804,7 @@ export const AppProvider = ({ children }) => {
         succeeded = ok;
       } catch (err) {
         console.error('Failed to sync updateUser (self) to API:', err);
+        alert('Failed to update profile. Please check your connection and try again.');
       }
     } else if (targetId) {
       try {
@@ -3129,11 +3818,14 @@ export const AppProvider = ({ children }) => {
           savedUser = normalizeUser(resData.user);
           succeeded = true;
         } else {
+          // Was console-only, so a refused edit closed the form as if it had
+          // been saved.
           const errData = await res.json().catch(() => ({}));
-          console.error('updateUser failed:', errData.error);
+          alert(errData.error || 'Failed to update user.');
         }
       } catch (err) {
         console.error('Failed to sync updateUser to API:', err);
+        alert('Failed to update user. Please check your connection and try again.');
       }
     }
 
@@ -3143,9 +3835,8 @@ export const AppProvider = ({ children }) => {
     // backend actually did. Now local state only changes when the API
     // call genuinely succeeded, matching how every other update function
     // in this file already behaves.
-    if (succeeded) {
-      setAllUsers(prev => prev.map(u => String(u.id) === String(userId) ? (savedUser || u) : u));
-    }
+    if (!succeeded) return null;
+    setAllUsers(prev => prev.map(u => String(u.id) === String(userId) ? (savedUser || u) : u));
 
     logAudit({
       actorId: currentUser?.id,
@@ -3161,7 +3852,37 @@ export const AppProvider = ({ children }) => {
     // Callers previously had no way to tell success from failure at all
     // — updateUser had no return statement, so `await updateUser(...)`
     // always evaluated to undefined regardless of what actually happened.
-    return succeeded ? (savedUser || true) : null;
+    return savedUser || true;
+  };
+
+  // Role changes go through their own audited endpoint (PUT /users/:id/role),
+  // which had no caller anywhere in the UI — a user created with the wrong
+  // role couldn't be fixed without touching the database.
+  const changeUserRole = async (userId, role) => {
+    const targetId = getBackendId(userId);
+    if (!targetId || !role) return null;
+    let saved = null;
+    try {
+      const res = await apiFetch(`/api/users/${targetId}/role`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role })
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(resData.error || 'Failed to change role.');
+        return null;
+      }
+      saved = normalizeUser(resData.user);
+    } catch (err) {
+      console.error('Failed to sync changeUserRole to API:', err);
+      alert('Failed to change role. Please check your connection and try again.');
+      return null;
+    }
+    if (saved) {
+      setAllUsers(prev => prev.map(u => String(u.id) === String(userId) ? saved : u));
+    }
+    return saved || true;
   };
 
   const toggleUserStatus = async (userId) => {
@@ -3425,9 +4146,33 @@ export const AppProvider = ({ children }) => {
         tasks,
         tickets,
         auditLogs,
+        auditPagination,
+        auditLoading,
+        fetchAuditLogs,
+        fetchArchived,
+        workflowStatuses,
+        getStatuses,
+        getStatusLabel,
+        getStatusCategory,
+        askStatusReason,
+        createWorkflowStatus,
+        fetchSLAPolicies,
+        clientFields,
+        saveClientField,
+        fetchClientOverview,
+        routeTicket,
+        returnTicket,
+        reopenTicket,
+        updateSLAPolicy,
+        updateWorkflowStatus,
+        searchAssignees,
+        restoreArchived,
+        canSeeAuditLogs: mayViewAudit,
         notifications,
         activeTab,
         setActiveTab,
+        taskListPreset,
+        setTaskListPreset,
         darkMode,
         setDarkMode,
         selectedProjectId,
@@ -3462,6 +4207,8 @@ export const AppProvider = ({ children }) => {
         addFeasibilityVendor,
         updateFeasibilityVendor,
         deleteFeasibilityVendor,
+        reinstateFeasibilityVendor,
+        archiveUser,
         deleteFeasibility,
         convertFeasibilityToProject,
         createTask,
@@ -3474,6 +4221,13 @@ export const AppProvider = ({ children }) => {
         addChecklistItem,
         addSubTask,
         updateSubTaskStatus,
+        updateSubTaskAssignee,
+        fetchTaskAccess,
+        grantTaskAccess,
+        revokeTaskAccess,
+        fetchRecordAccess,
+        grantRecordAccess,
+        revokeRecordAccess,
         addTaskComment,
         deleteTask,
         addTaskDependency,
@@ -3489,6 +4243,7 @@ export const AppProvider = ({ children }) => {
         deleteTicket,
         createUser,
         updateUser,
+        changeUserRole,
         toggleUserStatus,
         toggleUserActiveStatus: toggleUserStatus,
         toggleUserPermission,

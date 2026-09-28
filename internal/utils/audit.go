@@ -10,10 +10,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// LogAudit creates an audit log entry
+// Actor turns a user id into an audit actor: 0 means "the system".
+func Actor(userID uint) *uint {
+	if userID == 0 {
+		return nil
+	}
+	id := userID
+	return &id
+}
+
+// LogAudit creates an audit log entry (userID 0 = done by the system)
 func LogAudit(userID uint, action, resourceType string, resourceID uint, details, ipAddress, userAgent string) {
 	auditLog := models.AuditLog{
-		UserID:       userID,
+		UserID:       Actor(userID),
 		Action:       action,
 		ResourceType: resourceType,
 		ResourceID:   resourceID,
@@ -45,7 +54,7 @@ func LogAuditWithValues(userID uint, action, resourceType string, resourceID uin
 	newJSON := ToJSON(newValues)
 
 	auditLog := models.AuditLog{
-		UserID:       userID,
+		UserID:       Actor(userID),
 		Action:       action,
 		ResourceType: resourceType,
 		ResourceID:   resourceID,
@@ -133,7 +142,7 @@ func AuditMiddleware() gin.HandlerFunc {
 		// Read from the gin.Context BEFORE starting the goroutine: gin reuses
 		// the Context object once the request ends.
 		entry := &models.AuditLog{
-			UserID:       userID,
+			UserID:       Actor(userID),
 			Action:       action,
 			ResourceType: resourceType,
 			ResourceID:   0, // Could parse from path

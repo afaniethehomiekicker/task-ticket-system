@@ -21,6 +21,11 @@ type FeasibilityVendor struct {
 	QuotationRef  string       `json:"quotation_ref"`
 	EvidenceURLs  string       `json:"evidence_urls"`
 	RespondedAt   *time.Time   `json:"responded_at,omitempty"`
+	// Withdrawn instead of deleted: the vendor stays on the feasibility with
+	// its quotes / responses, greyed out, and can be reinstated.
+	Withdrawn     bool       `json:"withdrawn"`
+	WithdrawnAt   *time.Time `json:"withdrawn_at,omitempty"`
+	WithdrawnByID *uint      `json:"withdrawn_by_id,omitempty"`
 }
 
 type FeasibilityAttachment struct {
@@ -53,6 +58,12 @@ type Feasibility struct {
 	AssignedUserID *uint  `json:"assigned_user_id"`
 	AssignedUser   *User  `json:"assigned_user,omitempty" gorm:"foreignKey:AssignedUserID"`
 
+	// Who raised it (e.g. sales / CNOC). The creator can always see and
+	// follow up on their own request. Empty on records created before this
+	// was recorded.
+	CreatedByID *uint `json:"created_by_id,omitempty" gorm:"index"`
+	CreatedBy   *User `json:"created_by,omitempty" gorm:"foreignKey:CreatedByID"`
+
 	Priority string `json:"priority"`
 	Status   string `json:"status"` // draft, in_progress, feasible, not_feasible, converted, cancelled, archived
 	Notes    string `json:"notes"`
@@ -64,6 +75,7 @@ type Feasibility struct {
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
 	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
 	ArchivedBy   *User      `json:"archived_by,omitempty" gorm:"foreignKey:ArchivedByID"`
+	PreArchiveStatus string     `json:"pre_archive_status,omitempty"` // status before archiving; Restore returns to it
 
 	ConvertedProjectID *uint      `json:"converted_project_id,omitempty"`
 	ConvertedProject   *Project   `json:"converted_project,omitempty" gorm:"foreignKey:ConvertedProjectID"`
@@ -77,15 +89,24 @@ type Feasibility struct {
 
 type User struct {
 	gorm.Model
+	// Permanent ID, USR-000001 (spec slide 7). Set automatically on create.
+	UserNumber string `json:"user_number" gorm:"size:20;index"`
 	Name         string     `json:"name"`
 	Email        string     `json:"email" gorm:"uniqueIndex"`
 	Password     string     `json:"-"`
 	Role         string     `json:"role" gorm:"default:'staff'"` // super_admin, admin, supervisor, staff
 	Department   string     `json:"department"`                  // e.g. "Technical", "Support", "Feasibility"
+	SupportTier  string     `gorm:"size:4" json:"support_tier,omitempty"` // CNOC support tier: L1..L4 (empty outside CNOC)
 	Title        string     `json:"title"`                       // job title
 	Phone        string     `json:"phone"`
 	Avatar       string     `json:"avatar"`
 	Status       string     `json:"status" gorm:"default:'active'"` // active, inactive
+	// Archive instead of delete (spec slides 4/29: nothing is permanently
+	// deleted). An archived user can't sign in and isn't offered as an
+	// assignee, but their name stays on everything they did.
+	ArchivedAt       *time.Time `json:"archived_at,omitempty"`
+	ArchivedByID     *uint      `json:"archived_by_id,omitempty"`
+	PreArchiveStatus string     `json:"pre_archive_status,omitempty"`
 	ManagerID    *uint      `json:"manager_id,omitempty"`
 	Manager      *User      `json:"manager,omitempty" gorm:"foreignKey:ManagerID"`
 	SupervisorID *uint      `json:"supervisor_id,omitempty"`
@@ -102,6 +123,15 @@ type Client struct {
 	// Feasibility — this was the one major entity still missing it.
 	ClientNumber  string `json:"client_number" gorm:"uniqueIndex"`
 	CompanyName   string `json:"company_name" binding:"required"`
+	// Spec slide 8 fields: the client (person) name, CNIC (optional) and a
+	// mobile number separate from the telephone.
+	ClientName    string `json:"client_name"`
+	CNIC          string `json:"cnic"`
+	Mobile        string `json:"mobile"`
+	// Values for the admin-defined extra fields (ClientField), keyed by the
+	// field's key. Slide 8: "Additional fields should be configurable later by
+	// an authorized Admin — no schema change required".
+	CustomFields  JSONMap `json:"custom_fields" gorm:"type:jsonb;default:'{}'"`
 	ContactPerson string `json:"contact_person"`
 	Email         string `json:"email"`
 	Phone         string `json:"phone"`
@@ -113,12 +143,23 @@ type Client struct {
 	Notes         string `json:"notes"`
 	Status        string `json:"status" gorm:"default:'active'"` // active, inactive, archived
 
+	// Who created the client record. The creator can always see it (e.g. a
+	// staff member who added it inline while raising a feasibility). Empty
+	// on records created before this was recorded.
+	CreatedByID *uint `json:"created_by_id,omitempty" gorm:"index"`
+
+	// Set per response, never stored: "reference" means the caller sees this
+	// client only because of related work (a project / ticket / feasibility
+	// they can see), so they get the name and ID but no contact details.
+	AccessLevel string `gorm:"-" json:"access_level,omitempty"`
+
 	// See the matching comment on Project.ArchivedAt further down this
 	// file — same reasoning: Client is one of the six entities the spec
 	// explicitly names as "never permanently deleted."
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
 	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
 	ArchivedBy   *User      `json:"archived_by,omitempty" gorm:"foreignKey:ArchivedByID"`
+	PreArchiveStatus string     `json:"pre_archive_status,omitempty"` // status before archiving; Restore returns to it
 }
 
 // --- Project -------------------------------------------------------------
@@ -153,20 +194,35 @@ type Project struct {
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
 	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
 	ArchivedBy   *User      `json:"archived_by,omitempty" gorm:"foreignKey:ArchivedByID"`
+	PreArchiveStatus string     `json:"pre_archive_status,omitempty"` // status before archiving; Restore returns to it
 	Priority     string     `json:"priority" gorm:"default:'normal'"` // low, normal, high, critical
 	StartDate    *time.Time `json:"start_date"`
 	DueDate      *time.Time `json:"due_date"`
 	CompletedAt  *time.Time `json:"completed_at,omitempty"`
 
-	ClientID *uint   `json:"client_id"`
-	Client   *Client `json:"client,omitempty" gorm:"foreignKey:ClientID"`
+	// Primary client (the first one linked) — kept for everything that shows
+	// "the" client of a project. The full set is Clients (spec slide 9: a
+	// project can belong to more than one client, a client can have many
+	// projects).
+	ClientID *uint    `json:"client_id"`
+	Client   *Client  `json:"client,omitempty" gorm:"foreignKey:ClientID"`
+	Clients  []Client `json:"clients,omitempty" gorm:"many2many:project_clients;"`
 	OwnerID  *uint   `json:"owner_id"`
 	Owner    *User   `json:"owner,omitempty" gorm:"foreignKey:OwnerID"`
 	AdminID  *uint   `json:"admin_id"`
 	Admin    *User   `json:"admin,omitempty" gorm:"foreignKey:AdminID"`
 
 	Progress    int     `json:"progress" gorm:"default:0"` // 0-100
+	// Filled per response from the project's tasks (not stored): how many
+	// tasks count towards progress, and how many are finished.
+	TasksTotal int `gorm:"-" json:"tasks_total"`
+	TasksDone  int `gorm:"-" json:"tasks_done"`
 	BudgetHours float64 `json:"budget_hours"`
+	// The budget as entered: BudgetValue in BudgetUnit ("hours" | "days").
+	// BudgetHours above is always the same budget in hours (1 day = 8 h), so
+	// reports and totals stay comparable whichever unit was used.
+	BudgetValue float64 `json:"budget_value"`
+	BudgetUnit  string  `json:"budget_unit" gorm:"size:10;default:'hours'"`
 	SpentHours  float64 `json:"spent_hours"`
 
 	// Relationships
@@ -191,6 +247,7 @@ type Ticket struct {
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
 	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
 	ArchivedBy   *User      `json:"archived_by,omitempty" gorm:"foreignKey:ArchivedByID"`
+	PreArchiveStatus string     `json:"pre_archive_status,omitempty"` // status before archiving; Restore returns to it
 	Priority     string     `json:"priority" gorm:"default:'normal'"` // low, normal, high, critical
 	Severity     string     `json:"severity"`                         // minor, major, critical
 	Source       string     `json:"source"`                           // email, phone, portal, chat
@@ -198,6 +255,22 @@ type Ticket struct {
 	// SLA Tracking
 	SLADeadline     *time.Time `json:"sla_deadline"`
 	FirstResponseAt *time.Time `json:"first_response_at"`
+	// Spec slide 22: "System tracks: start time, SLA deadline, remaining
+	// time, acknowledged?, work started?, breached?"
+	AcknowledgedAt *time.Time `json:"acknowledged_at,omitempty"` // first move out of "open" statuses
+	WorkStartedAt  *time.Time `json:"work_started_at,omitempty"` // first move into active work
+	// Automatic escalation after an SLA breach: 0 = none, 1 = department
+	// head, 2 = department admin, 3 = super admin (see sla.go).
+	AutoEscalationStep int `json:"auto_escalation_step"`
+
+	// CNOC flow (spec slide 19). OriginDepartment is where the ticket came
+	// from (the creator's department, e.g. CNOC); "Return" sends it back
+	// there. ReturnedByID / ReturnedFromDept remember who handed it back, so
+	// "client says not resolved" reopens it straight to them — "the loop is
+	// fully tracked, not restarted".
+	OriginDepartment string `json:"origin_department"`
+	ReturnedByID     *uint  `json:"returned_by_id,omitempty"`
+	ReturnedFromDept string `json:"returned_from_dept,omitempty"`
 	ResolvedAt      *time.Time `json:"resolved_at"`
 	ClosedAt        *time.Time `json:"closed_at"`
 
@@ -215,6 +288,10 @@ type Ticket struct {
 	Department   string `json:"department"` // e.g. "Technical", "Support"
 	AssignedToID *uint  `json:"assigned_to_id"`
 	AssignedTo   *User  `json:"assigned_to,omitempty" gorm:"foreignKey:AssignedToID"`
+	// Who gave the work to its current assignee — set on every assign,
+	// reassign, transfer, route, return and reopen.
+	AssignedByID *uint `json:"assigned_by_id,omitempty"`
+	AssignedBy   *User `json:"assigned_by,omitempty" gorm:"foreignKey:AssignedByID"`
 	CreatedByID  *uint  `json:"created_by_id"`
 	CreatedBy    *User  `json:"created_by,omitempty" gorm:"foreignKey:CreatedByID"`
 
@@ -245,6 +322,7 @@ type Task struct {
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
 	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
 	ArchivedBy   *User      `json:"archived_by,omitempty" gorm:"foreignKey:ArchivedByID"`
+	PreArchiveStatus string     `json:"pre_archive_status,omitempty"` // status before archiving; Restore returns to it
 	Priority     string     `json:"priority" gorm:"default:'normal'"` // low, normal, high, critical
 	StoryPoints  int        `json:"story_points"`
 
@@ -262,6 +340,10 @@ type Task struct {
 
 	AssigneeID *uint `json:"assignee_id"`
 	Assignee   *User `json:"assignee,omitempty" gorm:"foreignKey:AssigneeID"`
+	// Who gave the work to its current assignee — set on every assign,
+	// reassign, transfer, route, return and reopen.
+	AssignedByID *uint `json:"assigned_by_id,omitempty"`
+	AssignedBy   *User `json:"assigned_by,omitempty" gorm:"foreignKey:AssignedByID"`
 	CreatorID  *uint `json:"creator_id"`
 	Creator    *User `json:"creator,omitempty" gorm:"foreignKey:CreatorID"`
 
@@ -291,12 +373,19 @@ type Task struct {
 	Attachments  []Attachment    `json:"attachments,omitempty" gorm:"foreignKey:TaskID"`
 	WorkLogs     []WorkLog       `json:"work_logs,omitempty" gorm:"foreignKey:TaskID"`
 	Dependencies []Task          `json:"dependencies,omitempty" gorm:"many2many:task_dependencies;joinForeignKey:TaskID;joinReferences:DependsOnID"`
+
+	// AccessLevel is set per response, never stored: "subtask" means the
+	// caller can see this task only because they're assigned one of its
+	// subtasks, so they get a reference view (see limitToSubtaskView).
+	AccessLevel string `gorm:"-" json:"access_level,omitempty"`
 }
 
 // --- SubTask -------------------------------------------------------------
 
 type SubTask struct {
 	gorm.Model
+	// Permanent ID, STK-000001 (spec slide 7). Set automatically on create.
+	SubtaskNumber string `json:"subtask_number" gorm:"size:20;index"`
 	Title          string  `json:"title" binding:"required"`
 	Status         string  `json:"status" gorm:"default:'todo'"`     // todo, in_progress, done, archived
 	Priority       string  `json:"priority" gorm:"default:'normal'"` // low, normal, high
@@ -305,6 +394,10 @@ type SubTask struct {
 	Task           *Task   `json:"task,omitempty" gorm:"foreignKey:TaskID"`
 	AssigneeID     *uint   `json:"assignee_id"`
 	Assignee       *User   `json:"assignee,omitempty" gorm:"foreignKey:AssigneeID"`
+	// Who gave the work to its current assignee — set on every assign,
+	// reassign, transfer, route, return and reopen.
+	AssignedByID *uint `json:"assigned_by_id,omitempty"`
+	AssignedBy   *User `json:"assigned_by,omitempty" gorm:"foreignKey:AssignedByID"`
 	EstimatedHours float64 `json:"estimated_hours"`
 	ActualHours    float64 `json:"actual_hours"`
 	Order          int     `json:"order" gorm:"default:0"`
@@ -401,8 +494,15 @@ type Role struct {
 // only "is this name currently in use" matters (see department.go).
 type Department struct {
 	gorm.Model
+	// Permanent ID, DEP-000001 (spec slide 7). Set automatically on create.
+	DeptNumber string `json:"dept_number" gorm:"size:20;index"`
 	Name        string `json:"name" gorm:"uniqueIndex"`
 	Description string `json:"description"`
+	// active | archived. Archived departments leave every dropdown but keep
+	// their name and DEP- ID, so restoring reconnects all records using them.
+	Status       string     `json:"status" gorm:"size:20;default:'active'"`
+	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
+	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
 }
 
 type RolePermission struct {
@@ -410,4 +510,87 @@ type RolePermission struct {
 	RoleKey       string `json:"role_key" gorm:"uniqueIndex:idx_role_permission"`
 	PermissionKey string `json:"permission_key" gorm:"uniqueIndex:idx_role_permission"`
 	Granted       bool   `json:"granted"`
+}
+
+// RecordAccess is an explicit, per-record access grant — the spec's
+// "record-level permission" layer (slide 16): "A Legal Admin can pull in a
+// Technical staff member for one Task — without granting access to the rest
+// of the Project" (slide 6). One row = one person may see and work on one
+// record. RecordType is currently "task" (projects already have their member
+// list as the per-project grant).
+//
+// Revoking removes the row; the audit trail keeps the history of every
+// grant and revoke.
+type RecordAccess struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	RecordType  string    `gorm:"size:20;not null;uniqueIndex:idx_record_access" json:"record_type"`
+	RecordID    uint      `gorm:"not null;uniqueIndex:idx_record_access" json:"record_id"`
+	UserID      uint      `gorm:"not null;uniqueIndex:idx_record_access;index" json:"user_id"`
+	User        *User     `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	GrantedByID uint      `json:"granted_by_id"`
+	GrantedBy   *User     `gorm:"foreignKey:GrantedByID" json:"granted_by,omitempty"`
+}
+
+// WorkflowStatus is one entry in the configurable status catalog (spec slide
+// 21: "Configurable statuses, always with a recorded reason"). The Super
+// Admin can rename, enable/disable, require a reason for, reorder and add
+// statuses — no code change. Entity is "ticket" or "task".
+//
+// Category drives behaviour instead of hard-coded keys:
+//
+//	open      not started (new, assigned, to do)
+//	active    being worked on (acknowledged, in progress, reopened)
+//	waiting   paused on someone else (pending, waiting for client/vendor, blocked)
+//	review    awaiting approval (tasks: in review)
+//	done      finished (resolved, closed, done)
+//	cancelled stopped without finishing
+//
+// System statuses are ones the workflow code relies on (e.g. "new",
+// "resolved", "in_review", "done"): their key and category are fixed and they
+// can't be disabled; their label can still be changed.
+type WorkflowStatus struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	Entity         string    `gorm:"size:20;not null;uniqueIndex:idx_workflow_status" json:"entity"`
+	Key            string    `gorm:"size:50;not null;uniqueIndex:idx_workflow_status" json:"key"`
+	Label          string    `gorm:"size:80;not null" json:"label"`
+	Category       string    `gorm:"size:20;not null" json:"category"`
+	ReasonRequired bool      `json:"reason_required"`
+	Enabled        bool      `json:"enabled"`
+	SortOrder      int       `json:"sort_order"`
+	System         bool      `json:"system"`
+}
+
+// SLAPolicy is the configurable SLA per ticket priority (spec slide 22:
+// "Example SLA (fully configurable)": Critical 30 min, High 1 h, Normal 4 h).
+// ResolutionMinutes sets a new ticket's SLA deadline. EscalationStepMinutes
+// is the wait between automatic escalation steps once the SLA is breached:
+// department head at the deadline, department admin one step later, super
+// admin one step after that.
+type SLAPolicy struct {
+	ID                    uint      `gorm:"primaryKey" json:"id"`
+	UpdatedAt             time.Time `json:"updated_at"`
+	Priority              string    `gorm:"size:20;uniqueIndex;not null" json:"priority"`
+	ResolutionMinutes     int       `json:"resolution_minutes"`
+	EscalationStepMinutes int       `json:"escalation_step_minutes"`
+}
+
+// ClientField defines one admin-configurable extra client attribute (spec
+// slide 8). Values live in Client.CustomFields under Key.
+//
+//	FieldType: text | number | date | select
+//	Options:   for select — one option per line
+type ClientField struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Key       string    `gorm:"size:60;uniqueIndex;not null" json:"key"`
+	Label     string    `gorm:"size:100;not null" json:"label"`
+	FieldType string    `gorm:"size:20;not null" json:"field_type"`
+	Options   string    `json:"options"`
+	Required  bool      `json:"required"`
+	Enabled   bool      `json:"enabled"`
+	SortOrder int       `json:"sort_order"`
 }

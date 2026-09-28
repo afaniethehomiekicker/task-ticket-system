@@ -5,9 +5,8 @@ import {
   Calendar, Clock, Users, ArrowUpRight, Grid, List as ListIcon, CheckCircle2
 } from 'lucide-react';
 import { PriorityBadge, ProjectStatusBadge } from '../common/Badge';
-import { canCreateProject } from '../../utils/permissions';
+import { canCreateProject, formatDate } from '../../utils/permissions';
 import { exportProjectsToCSV } from '../../utils/exportUtils';
-import { ProjectDetailModal } from './ProjectDetailModal';
 
 export const ProjectsView = () => {
   const { 
@@ -16,8 +15,15 @@ export const ProjectsView = () => {
     currentUser, 
     togglePinProject, 
     setSelectedProjectDetailId,
-    setQuickCreateOpen
+    setQuickCreateOpen,
+    permissionMatrix,
+    departments
   } = useApp();
+
+  const deptFilterOptions = Array.from(new Set([
+    ...(departments || []).map(d => d.name),
+    ...(visibleProjects || []).map(r => r.department).filter(Boolean),
+  ])).sort((a, b) => a.localeCompare(b));
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -63,7 +69,7 @@ export const ProjectsView = () => {
             Export CSV
           </button>
 
-          {canCreateProject(currentUser) && (
+          {canCreateProject(currentUser, permissionMatrix) && (
             <button
               id="create-new-project-btn"
               onClick={() => setQuickCreateOpen(true)}
@@ -100,11 +106,11 @@ export const ProjectsView = () => {
             className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-800 dark:text-zinc-300 focus:outline-hidden"
           >
             <option value="all">All Departments</option>
-            <option value="Engineering">Engineering</option>
-            <option value="Customer Success">Customer Success</option>
-            <option value="Product & Design">Product & Design</option>
-            <option value="Marketing & Growth">Marketing & Growth</option>
-            <option value="Operations">Operations</option>
+            {/* Managed departments, plus any other value still on existing
+                records (so old data stays filterable). Was a hard-coded list. */}
+            {deptFilterOptions.map(name => (
+              <option key={name} value={name}>{name}</option>
+            ))}
           </select>
 
           {/* Status Filter */}
@@ -196,7 +202,14 @@ export const ProjectsView = () => {
                   {/* Progress Meter */}
                   <div className="space-y-1.5 mb-4">
                     <div className="flex items-center justify-between text-[11px] font-medium text-slate-600 dark:text-zinc-400">
-                      <span>Progress</span>
+                      <span>
+                        Progress
+                        {project.tasksTotal > 0 && (
+                          <span className="ml-1 text-slate-500 dark:text-zinc-500 font-normal">
+                            · {project.tasksDone} of {project.tasksTotal} tasks done
+                          </span>
+                        )}
+                      </span>
                       <span className="font-mono">{project.progress}%</span>
                     </div>
                     <div className="w-full h-1.5 bg-slate-300 dark:bg-zinc-800 rounded-full overflow-hidden">
@@ -211,7 +224,7 @@ export const ProjectsView = () => {
                   <div className="pt-3 border-t border-slate-300/60 dark:border-zinc-800/80 flex items-center justify-between text-xs">
                     <div className="flex items-center gap-2 text-slate-500 dark:text-zinc-400">
                       <Calendar className="w-3.5 h-3.5" />
-                      <span className="text-[11px]">{project.dueDate}</span>
+                      <span className="text-[11px]">{formatDate(project.dueDate)}</span>
                     </div>
 
                     {/* Member Avatars Stack */}
@@ -270,7 +283,7 @@ export const ProjectsView = () => {
                     <td className="p-3.5"><ProjectStatusBadge status={p.status} /></td>
                     <td className="p-3.5"><PriorityBadge priority={p.priority} /></td>
                     <td className="p-3.5 font-mono">{p.progress}%</td>
-                    <td className="p-3.5">{p.dueDate}</td>
+                    <td className="p-3.5">{formatDate(p.dueDate)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -280,7 +293,6 @@ export const ProjectsView = () => {
       )}
 
       {/* Project Detail Slide-over / Modal */}
-      <ProjectDetailModal />
     </div>
   );
 };

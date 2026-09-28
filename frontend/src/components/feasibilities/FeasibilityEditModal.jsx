@@ -8,6 +8,7 @@ import { X } from 'lucide-react';
 // (TaskDetailDrawer handles status/review; TaskEditModal handles the core
 // fields), so this follows an existing pattern rather than inventing one.
 
+import { canAssignTickets } from '../../utils/permissions';
 const PRODUCTS = ['DPLC', 'Dark Fiber', 'IPT', 'IPT Mix', 'Pure IPT'];
 
 export const FeasibilityEditModal = () => {
@@ -19,7 +20,12 @@ export const FeasibilityEditModal = () => {
     clients,
     allUsers,
     departments,
+    currentUser,
+    permissionMatrix,
   } = useApp();
+  // Changing the handling department or person is a reassignment: needs
+  // "Reassign Tickets & Tasks" (the backend refuses it otherwise).
+  const canReassign = canAssignTickets(currentUser, permissionMatrix);
 
   const feasibility = (feasibilities || []).find(f => String(f.id) === String(selectedFeasibilityEditId));
   const [isSaving, setIsSaving] = useState(false);
@@ -185,7 +191,9 @@ export const FeasibilityEditModal = () => {
                 name="assignedDept"
                 value={formData.assignedDept}
                 onChange={handleChange}
-                className="w-full px-3 py-2 bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg text-xs text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-indigo-500"
+                disabled={!canReassign}
+                title={canReassign ? undefined : "You don't have permission to reassign"}
+                className="disabled:opacity-60 disabled:cursor-not-allowed w-full px-3 py-2 bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg text-xs text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-indigo-500"
               >
                 <option value="">No department</option>
                 {(departments || []).map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
@@ -206,11 +214,16 @@ export const FeasibilityEditModal = () => {
                 name="assignedUserId"
                 value={formData.assignedUserId}
                 onChange={handleChange}
-                className="w-full px-3 py-2 bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg text-xs text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-indigo-500"
+                disabled={!canReassign}
+                title={canReassign ? undefined : "You don't have permission to reassign"}
+                className="disabled:opacity-60 disabled:cursor-not-allowed w-full px-3 py-2 bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg text-xs text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-indigo-500"
               >
                 <option value="">Unassigned</option>
-                {(allUsers || []).filter(u => u.role === 'staff' || u.role === 'supervisor').map(u => (
-                  <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
+                {(allUsers || [])
+                  .filter(u => u.role === 'staff' || u.role === 'supervisor')
+                  .filter(u => u.status === 'active' || String(u.id) === String(formData.assignedUserId))
+                  .map(u => (
+                  <option key={u.id} value={u.id}>{u.name} ({u.role}){u.status !== 'active' ? ' — inactive' : ''}</option>
                 ))}
               </select>
             </div>

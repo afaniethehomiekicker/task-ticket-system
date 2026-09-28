@@ -1,13 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
-import { 
-  X, CheckSquare, Plus, MessageSquare, Clock, Calendar, Paperclip, 
-  Send, UserCheck, ShieldAlert, CheckCircle, RotateCcw, AlertTriangle, Trash2, Edit, Link2, XCircle
+import {
+  X, CheckSquare, Plus, MessageSquare, Clock, Calendar, Paperclip,
+  Send, UserCheck, ShieldAlert, CheckCircle, RotateCcw, AlertTriangle, Trash2, Edit, Link2, XCircle, Archive, Lock
 } from 'lucide-react';
 import { PriorityBadge, TaskStatusBadge, RoleBadge } from '../common/Badge';
 
-import { canApproveWork } from '../../utils/permissions';
+import { canApproveWork, canViewInternalNotes, canAssignTickets, canGrantRecordAccess, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName } from '../../utils/permissions';
 
+import { TimelinePanel } from '../common/TimelinePanel';
 export const TaskDetailDrawer = () => {
   const { 
     selectedTaskId, 
@@ -27,19 +28,55 @@ export const TaskDetailDrawer = () => {
     addChecklistItem,
     addSubTask,
     updateSubTaskStatus,
+    updateSubTaskAssignee,
+    fetchTaskAccess,
+    grantTaskAccess,
+    revokeTaskAccess,
     addTaskComment,
     addTaskDependency,
     removeTaskDependency,
-    deleteTask
-  } = useApp();
+    deleteTask, getStatuses, getStatusCategory } = useApp();
 
   const [commentText, setCommentText] = useState('');
+  const [commentIsInternal, setCommentIsInternal] = useState(false);
+  // Record-level access grants (spec slide 16).
+  const [accessList, setAccessList] = useState([]);
+  const [accessLoading, setAccessLoading] = useState(false);
+  const [accessError, setAccessError] = useState('');
+  const [grantUserId, setGrantUserId] = useState('');
   const [newChecklistText, setNewChecklistText] = useState('');
   const [newSubTaskText, setNewSubTaskText] = useState('');
+  const [newSubTaskAssignee, setNewSubTaskAssignee] = useState('');
+  const [newSubTaskDue, setNewSubTaskDue] = useState('');
   const [reviewNotes, setReviewNotes] = useState('');
   const [showReviewInput, setShowReviewInput] = useState(false);
   const [isProcessingReview, setIsProcessingReview] = useState(false);
   const [selectedDependencyId, setSelectedDependencyId] = useState('');
+
+  // Access list for the Access panel. This hook MUST stay above the early
+  // returns below: hooks have to run in the same order on every render, and
+  // placing it after `if (!task) return null` crashed the drawer ("Rendered
+  // more hooks than during the previous render").
+  const accessTask = selectedTaskId ? (tasks || []).find(t => t.id === selectedTaskId) : null;
+  const accessTaskId = accessTask?.id ?? null;
+  const accessPanelAllowed = !!accessTask &&
+    accessTask.accessLevel !== 'subtask' && accessTask.accessLevel !== 'granted' &&
+    canGrantRecordAccess(currentUser, permissionMatrix);
+  useEffect(() => {
+    let cancelled = false;
+    if (!accessPanelAllowed || !accessTaskId) {
+      setAccessList([]);
+      return undefined;
+    }
+    setAccessLoading(true);
+    setAccessError('');
+    fetchTaskAccess(accessTaskId)
+      .then(list => { if (!cancelled) setAccessList(list); })
+      .catch(err => { if (!cancelled) setAccessError(err.message || 'Failed to load access list'); })
+      .finally(() => { if (!cancelled) setAccessLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessTaskId, accessPanelAllowed]);
 
   if (!selectedTaskId) return null;
 
@@ -65,13 +102,69 @@ export const TaskDetailDrawer = () => {
   const creator = allUsers.find(u => u.id === task.creatorId);
 
   const isStaffAssignee = currentUser.id === task.assignedToId;
+  // Reference view (spec: private task hierarchy): the caller only sees this
+  // task because one of its sub-tasks is assigned to them. The server sends
+  // just the task itself and their own sub-tasks; everything else — other
+  // sub-tasks, comments, checklist, dependencies, edit and status actions —
+  // is hidden here and refused by the backend.
+  const isReference = task.accessLevel === 'subtask';
+  // Explicitly shared with the current user (record-level grant).
+  const isGranted = task.accessLevel === 'granted';
   const isSupervisorOrAbove = canApproveWork(currentUser, permissionMatrix);
 
-  const handleAddComment = (e) => {
+  // Sharing this task with specific people: admins (Grant Record Access) on
+  // a task they can see themselves — not on one shared with them.
+  const canManageAccess = !isReference && !isGranted && canGrantRecordAccess(currentUser, permissionMatrix);
+
+  const reloadAccess = async () => {
+    setAccessLoading(true);
+    setAccessError('');
+    try {
+      setAccessList(await fetchTaskAccess(task.id));
+    } catch (err) {
+      setAccessError(err.message || 'Failed to load access list');
+    } finally {
+      setAccessLoading(false);
+    }
+  };
+
+
+  const handleGrant = async (e) => {
+    e.preventDefault();
+    if (!grantUserId) return;
+    const saved = await grantTaskAccess(task.id, grantUserId);
+    if (saved) {
+      setGrantUserId('');
+      reloadAccess();
+    }
+  };
+
+  const handleRevoke = async (g) => {
+    if (!window.confirm(`Remove ${g.userName || 'this person'}'s access to ${task.taskNumber}?`)) return;
+    if (await revokeTaskAccess(task.id, g.userId)) reloadAccess();
+  };
+
+  // People who could be given access: active, not already granted, and not
+  // already involved as assignee/creator.
+  const grantCandidates = allUsers.filter(u =>
+    u.status === 'active' &&
+    String(u.id) !== String(task.assignedToId) &&
+    String(u.id) !== String(task.creatorId) &&
+    !accessList.some(g => String(g.userId) === String(u.id)));
+
+  // Private management notes (spec): only for people with the
+  // "View & Write Internal Notes" permission; the server strips them from
+  // everyone else's view.
+  const showInternal = canViewInternalNotes(currentUser, permissionMatrix);
+
+  const handleAddComment = async (e) => {
     e.preventDefault();
     if (!commentText.trim()) return;
-    addTaskComment(task.id, commentText);
-    setCommentText('');
+    const saved = await addTaskComment(task.id, commentText, showInternal && commentIsInternal);
+    if (saved) {
+      setCommentText('');
+      setCommentIsInternal(false);
+    }
   };
 
   const handleAddChecklist = (e) => {
@@ -81,12 +174,44 @@ export const TaskDetailDrawer = () => {
     setNewChecklistText('');
   };
 
-  const handleAddSubTask = (e) => {
+  const handleAddSubTask = async (e) => {
     e.preventDefault();
     if (!newSubTaskText.trim()) return;
-    addSubTask(task.id, newSubTaskText);
-    setNewSubTaskText('');
+    const saved = await addSubTask(task.id, newSubTaskText.trim(), newSubTaskAssignee || null, 'normal', newSubTaskDue || '');
+    if (saved) {
+      setNewSubTaskText('');
+      setNewSubTaskAssignee('');
+      setNewSubTaskDue('');
+    }
   };
+
+  // Who can change a sub-task's assignee (same rules as the backend):
+  //  - anyone with "Reassign Tickets & Tasks" who fully sees the task;
+  //  - with "Transfer My Work Within Department": the sub-task's own
+  //    assignee, or the parent task's assignee — to a colleague in their own
+  //    department (spec slide 20: "Staff A creates Subtask -> assigns to
+  //    Staff B", "Transferred to L2").
+  const me = String(currentUser?.id);
+  const canReassignAnySub = !isReference && canAssignTickets(currentUser, permissionMatrix);
+  const canTransfer = canTransferOwnWork(currentUser, permissionMatrix);
+  const ownsTask = !isReference && String(task.assignedToId) === me;
+  // Admins assign work; they can't be given a sub-task.
+  const colleagues = sameDepartmentUsers(currentUser, allUsers).filter(isTaskAssignable);
+  const canChangeSubAssignee = (sub) =>
+    canReassignAnySub || (canTransfer && (String(sub.assignedToId) === me || ownsTask));
+  // Options for an existing sub-task; the current assignee stays listed.
+  const assigneeOptionsFor = (sub) => {
+    const pool = canReassignAnySub ? allUsers.filter(u => u.status === 'active' && isTaskAssignable(u)) : colleagues;
+    const current = allUsers.find(u => String(u.id) === String(sub.assignedToId));
+    return current && !pool.some(u => u.id === current.id) ? [...pool, current] : pool;
+  };
+  // New sub-tasks: anyone (with reassign), colleagues (task assignee with
+  // transfer), otherwise only yourself.
+  const subTaskAssignees = canReassignAnySub
+    ? allUsers.filter(u => u.status === 'active' && isTaskAssignable(u))
+    : (canTransfer && ownsTask ? colleagues
+      : allUsers.filter(u => String(u.id) === me && isTaskAssignable(u)));
+  const userName = (id) => allUsers.find(u => String(u.id) === String(id))?.name;
 
   const handleAddDependency = (e) => {
     e.preventDefault();
@@ -139,6 +264,7 @@ export const TaskDetailDrawer = () => {
           </div>
 
           <div className="flex items-center gap-2">
+{!isReference && (
             <button
               id="edit-task-btn"
               onClick={() => setSelectedTaskEditId(task.id)}
@@ -147,6 +273,7 @@ export const TaskDetailDrawer = () => {
             >
               <Edit className="w-4 h-4" />
             </button>
+            )}
             <button
               id="close-task-detail-drawer"
               onClick={() => setSelectedTaskId(null)}
@@ -159,6 +286,18 @@ export const TaskDetailDrawer = () => {
 
         {/* Scrollable Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {isGranted && (
+            <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 text-xs text-emerald-800 dark:text-emerald-300">
+              This task was shared with you. You can work on it; its project is shown for reference only.
+            </div>
+          )}
+                    {isReference && (
+            <div className="p-3 rounded-xl bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-900 text-xs text-sky-800 dark:text-sky-300">
+              You can see this task because a sub-task of it is assigned to you. Only your sub-tasks are shown;
+              you can update their status.
+            </div>
+          )}
+          {!isReference && (<>
           {/* Review Banner if under review */}
           {task.reviewStatus === 'submitted_for_review' && (
             <div className="p-4 rounded-xl bg-purple-100/80 dark:bg-purple-950/40 border border-purple-300 dark:border-purple-800 space-y-3">
@@ -207,6 +346,7 @@ export const TaskDetailDrawer = () => {
               )}
             </div>
           )}
+          </>)}
 
           {/* Title & Description */}
           <div>
@@ -230,6 +370,9 @@ export const TaskDetailDrawer = () => {
                   </>
                 )}
               </div>
+              {assignedByName(task, allUsers) && (
+                <span className="block mt-1 text-[10px] text-slate-500 dark:text-zinc-400">Assigned by {assignedByName(task, allUsers)}</span>
+              )}
             </div>
 
             <div>
@@ -254,6 +397,7 @@ export const TaskDetailDrawer = () => {
             </div>
           </div>
 
+          {!isReference && (<>
           {/* Checklists Section */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -308,6 +452,7 @@ export const TaskDetailDrawer = () => {
               </button>
             </form>
           </div>
+          </>)}
 
           {/* Sub-tasks Section */}
           <div className="space-y-3">
@@ -321,8 +466,37 @@ export const TaskDetailDrawer = () => {
                   className="p-3 rounded-lg border border-slate-300 dark:border-zinc-800 bg-slate-100 dark:bg-zinc-900 flex items-center justify-between text-xs"
                 >
                   <div>
-                    <span className="font-medium text-slate-900 dark:text-zinc-200 block">{sub.title}</span>
-                    <span className="text-[10px] text-slate-500 dark:text-zinc-400">Due {sub.dueDate}</span>
+                    <span className="font-medium text-slate-900 dark:text-zinc-200 block">
+                      {sub.subtaskNumber && <span className="mr-1.5 font-mono text-[10px] text-slate-500 dark:text-zinc-500">{sub.subtaskNumber}</span>}
+                      {sub.title}
+                    </span>
+                    {canChangeSubAssignee(sub) ? (
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <select
+                          value={sub.assignedToId ?? ''}
+                          onChange={(e) => updateSubTaskAssignee(task.id, sub.id, e.target.value)}
+                          title="Assignee"
+                          className="max-w-[180px] px-1.5 py-0.5 text-[11px] rounded border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-800 dark:text-zinc-300 focus:outline-hidden"
+                        >
+                          {/* Transferring must go to someone; only the full
+                              reassign right can clear the assignee. */}
+                          {(canReassignAnySub || !sub.assignedToId) && <option value="">Unassigned</option>}
+                          {assigneeOptionsFor(sub).map(u => (
+                            <option key={u.id} value={u.id}>
+                              {u.name}{u.status !== 'active' ? ' (inactive)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                        {assignedByName(sub, allUsers) && <span className="text-[10px] text-slate-500 dark:text-zinc-400">by {assignedByName(sub, allUsers)}</span>}
+                        {sub.dueDate && <span className="text-[10px] text-slate-500 dark:text-zinc-400">Due {sub.dueDate}</span>}
+                      </div>
+                    ) : (
+                      <span className="text-[10px] text-slate-500 dark:text-zinc-400">
+                        {sub.assignedToId ? (userName(sub.assignedToId) || 'Unknown user') : 'Unassigned'}
+                        {assignedByName(sub, allUsers) ? ` · by ${assignedByName(sub, allUsers)}` : ''}
+                        {sub.dueDate ? ` · Due ${sub.dueDate}` : ''}
+                      </span>
+                    )}
                   </div>
                   <select
                     value={sub.status}
@@ -332,29 +506,109 @@ export const TaskDetailDrawer = () => {
                     <option value="todo">To Do</option>
                     <option value="in_progress">In Progress</option>
                     <option value="done">Done</option>
+                    <option value="cancelled">Cancelled</option>
                   </select>
                 </div>
               ))}
             </div>
 
-            <form onSubmit={handleAddSubTask} className="flex gap-2">
+{!isReference && (
+            <form onSubmit={handleAddSubTask} className="space-y-2">
               <input
                 id="add-subtask-input"
                 type="text"
                 placeholder="Add sub-task..."
                 value={newSubTaskText}
                 onChange={(e) => setNewSubTaskText(e.target.value)}
-                className="flex-1 px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
               />
-              <button
-                type="submit"
-                className="px-3 py-1.5 text-xs font-semibold bg-slate-300/60 hover:bg-slate-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-800 dark:text-zinc-200 rounded-lg cursor-pointer"
-              >
-                Add Sub-task
-              </button>
+              <div className="flex gap-2">
+                {/* Who does it: the assignee sees this sub-task (and the
+                    parent task as a reference) in their lists and Kanban. */}
+                <select
+                  value={newSubTaskAssignee}
+                  onChange={(e) => setNewSubTaskAssignee(e.target.value)}
+                  className="flex-1 min-w-0 px-2 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                >
+                  <option value="">Unassigned</option>
+                  {subTaskAssignees.map(u => (
+                    <option key={u.id} value={u.id}>{u.name}{u.department ? ` · ${u.department}` : ''}</option>
+                  ))}
+                </select>
+                <input
+                  type="date"
+                  value={newSubTaskDue}
+                  onChange={(e) => setNewSubTaskDue(e.target.value)}
+                  title="Due date (optional)"
+                  className="px-2 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                />
+                <button
+                  type="submit"
+                  className="px-3 py-1.5 text-xs font-semibold bg-slate-300/60 hover:bg-slate-300 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-800 dark:text-zinc-200 rounded-lg cursor-pointer whitespace-nowrap"
+                >
+                  Add Sub-task
+                </button>
+              </div>
             </form>
+            )}
           </div>
 
+          {canManageAccess && (
+            <div className="space-y-3">
+              <h3 className="text-xs font-bold text-slate-700 dark:text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
+                <UserCheck className="w-4 h-4 text-emerald-500" />
+                Access ({accessList.length})
+              </h3>
+              <p className="text-[11px] text-slate-500 dark:text-zinc-400">
+                Give someone access to this task only — not its project or the project's other tasks.
+              </p>
+              {accessError && <p className="text-[11px] text-rose-600 dark:text-rose-400">{accessError}</p>}
+              {accessList.length === 0 && !accessLoading && !accessError && (
+                <p className="text-[11px] text-slate-500 dark:text-zinc-500 italic">Not shared with anyone.</p>
+              )}
+              <div className="space-y-1.5">
+                {accessList.map(g => (
+                  <div key={g.id} className="flex items-center justify-between p-2 rounded-lg bg-slate-100 dark:bg-zinc-900/50 border border-slate-300 dark:border-zinc-800 text-xs">
+                    <div>
+                      <span className="font-semibold text-slate-900 dark:text-zinc-100">{g.userName}</span>
+                      {g.userDepartment && <span className="text-slate-500 dark:text-zinc-400"> · {g.userDepartment}</span>}
+                      <span className="block text-[10px] text-slate-500 dark:text-zinc-500">
+                        Granted by {g.grantedByName || 'unknown'}{g.createdAt ? ` · ${new Date(g.createdAt).toLocaleDateString()}` : ''}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleRevoke(g)}
+                      className="px-2 py-1 rounded text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-950/40 cursor-pointer"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <form onSubmit={handleGrant} className="flex gap-2">
+                <select
+                  value={grantUserId}
+                  onChange={(e) => setGrantUserId(e.target.value)}
+                  className="flex-1 min-w-0 px-2 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                >
+                  <option value="">Give access to…</option>
+                  {grantCandidates.map(u => (
+                    <option key={u.id} value={u.id}>{u.name}{u.department ? ` · ${u.department}` : ''}</option>
+                  ))}
+                </select>
+                <button
+                  type="submit"
+                  disabled={!grantUserId}
+                  className="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-lg cursor-pointer whitespace-nowrap"
+                >
+                  Grant access
+                </button>
+              </form>
+            </div>
+          )}
+
+          {!isReference && (<>
           {/* Task Dependencies Section */}
           <div className="space-y-3">
             <h3 className="text-xs font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -416,7 +670,9 @@ export const TaskDetailDrawer = () => {
               </button>
             </form>
           </div>
+          </>)}
 
+          {!isReference && (<>
           {/* Activity / Comments Stream */}
           <div className="space-y-4 pt-4 border-t border-slate-300 dark:border-zinc-800">
             <h3 className="text-xs font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -429,12 +685,21 @@ export const TaskDetailDrawer = () => {
                 <p className="text-xs text-slate-500 dark:text-zinc-500">No discussion comments yet.</p>
               ) : (
                 comments.map(c => (
-                  <div key={c.id} className="p-3 rounded-lg bg-slate-100 dark:bg-zinc-900/50 border border-slate-300 dark:border-zinc-800 space-y-1">
+                  <div key={c.id} className={`p-3 rounded-lg border space-y-1 ${
+                    c.isInternal
+                      ? 'bg-purple-50/70 dark:bg-purple-950/20 border-purple-200 dark:border-purple-900'
+                      : 'bg-slate-100 dark:bg-zinc-900/50 border-slate-300 dark:border-zinc-800'
+                  }`}>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <img src={c.authorAvatar} alt={c.authorName} className="w-5 h-5 rounded-full object-cover" />
                         <span className="text-xs font-semibold text-slate-900 dark:text-zinc-100">{c.authorName}</span>
                         <RoleBadge role={c.authorRole} size="xs" />
+                        {c.isInternal && (
+                          <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 text-[10px] font-semibold">
+                            <Lock className="w-3 h-3" /> Internal
+                          </span>
+                        )}
                       </div>
                       <span className="text-[10px] text-slate-500 dark:text-zinc-400">
                         {new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -449,11 +714,22 @@ export const TaskDetailDrawer = () => {
             </div>
 
             {/* Post Comment */}
+            {showInternal && (
+              <label className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-zinc-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={commentIsInternal}
+                  onChange={(e) => setCommentIsInternal(e.target.checked)}
+                  className="accent-purple-600"
+                />
+                <Lock className="w-3 h-3" /> Internal note (visible to management only)
+              </label>
+            )}
             <form onSubmit={handleAddComment} className="flex gap-2">
               <input
                 id="task-comment-input"
                 type="text"
-                placeholder="Post an update or mention team members..."
+                placeholder={commentIsInternal ? "Private note for management..." : "Post an update or mention team members..."}
                 value={commentText}
                 onChange={(e) => setCommentText(e.target.value)}
                 className="flex-1 px-3.5 py-2 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
@@ -467,8 +743,15 @@ export const TaskDetailDrawer = () => {
               </button>
             </form>
           </div>
+          </>)}
+
+          {/* Accountability chain (spec slide 20): who did what and when, with
+              previous -> new and the reason. In reference view the server
+              returns only the caller's own sub-task events. */}
+          <TimelinePanel kind="tasks" recordId={task.id} refreshKey={`${task.updatedAt}|${task.status}|${task.assignedToId}|${(task.subTasks || []).length}`} />
         </div>
 
+        {!isReference && (<>
         {/* Footer Actions */}
         <div className="p-4 border-t border-slate-300 dark:border-zinc-800 bg-slate-300/40 dark:bg-zinc-950 space-y-3">
           <div className="flex items-center justify-between gap-3">
@@ -485,21 +768,13 @@ export const TaskDetailDrawer = () => {
                     : undefined
                 }
               >
-                <option value="todo">To Do</option>
-                <option value="in_progress">In Progress</option>
-                <option value="blocked">Blocked</option>
-                <option value="cancelled">Cancelled</option>
-                {/* "In Review" and "Done" are intentionally NOT freely
-                    selectable here — reaching either one must go through
-                    submitTaskForReview / approveTask, which (unlike this
-                    generic status PATCH) are backed by real server-side role
-                    checks. Only shown as an option at all when it's already
-                    the task's current status, so the dropdown still displays
-                    correctly rather than showing blank. These are the
-                    backend's own status names, the same ones TaskStatusBadge
-                    and the Kanban board use. */}
-                {task.status === 'in_review' && <option value="in_review">In Review</option>}
-                {task.status === 'done' && <option value="done">Done</option>}
+                {/* Configurable catalog. Review / done statuses go through Submit
+                    for Review / Approve (server-side role checks), so they
+                    appear here only when already current. */}
+                {getStatuses('task')
+                  .filter(st => st.key === task.status ||
+                    !['review', 'done'].includes(getStatusCategory('task', st.key)))
+                  .map(st => <option key={st.key} value={st.key}>{st.label}</option>)}
               </select>
             </div>
 
@@ -514,17 +789,22 @@ export const TaskDetailDrawer = () => {
                 </button>
               )}
 
-              {isSupervisorOrAbove && (
+              {/* Archiving is admin/super_admin only on the backend
+                  (DeleteTask). It used to be offered to supervisors too, and
+                  always failed for them — silently, with the task vanishing
+                  from the UI anyway. */}
+              {(currentUser?.role === 'admin' || currentUser?.role === 'super_admin') && (
                 <button
                   id="task-delete-btn"
-                  onClick={() => {
-                    deleteTask(task.id);
-                    setSelectedTaskId(null);
+                  onClick={async () => {
+                    if (!window.confirm(`Archive ${task.taskNumber || 'this task'}? It stays available in the archive and audit trail.`)) return;
+                    const ok = await deleteTask(task.id);
+                    if (ok) setSelectedTaskId(null);
                   }}
-                  className="p-1.5 text-slate-500 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 rounded-lg cursor-pointer"
-                  title="Delete Task"
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 border border-rose-300 dark:border-rose-900 text-rose-700 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-950/40 cursor-pointer"
+                  title="Archive this task (it stays in the archive and audit trail)"
                 >
-                  <Trash2 className="w-4 h-4" />
+                  <Archive className="w-3.5 h-3.5" /> Archive
                 </button>
               )}
             </div>
@@ -557,6 +837,7 @@ export const TaskDetailDrawer = () => {
             </div>
           )}
         </div>
+        </>)}
       </div>
     </div>
   );

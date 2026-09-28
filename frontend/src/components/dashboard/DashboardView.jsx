@@ -16,8 +16,10 @@ export const DashboardView = () => {
     auditLogs,
     setActiveTab,
     setSelectedTaskId,
-    setQuickCreateOpen
-  } = useApp();
+    setQuickCreateOpen, getStatusCategory,
+    setTaskListPreset,
+    getStatuses
+  } = useApp();
 
   if (!currentUser) return null;
 
@@ -32,10 +34,13 @@ export const DashboardView = () => {
   // task including done/cancelled/archived ones, and pendingReviewTasks
   // was always empty regardless of how many tasks were genuinely
   // awaiting review.
-  const activeTasks = visibleTasks.filter(t => !['done', 'cancelled', 'archived'].includes(t.status));
-  const criticalTasks = visibleTasks.filter(t => (t.priority === 'critical' || t.priority === 'urgent') && !['done', 'cancelled', 'archived'].includes(t.status));
-  const pendingReviewTasks = visibleTasks.filter(t => t.status === 'in_review');
-  const openTickets = visibleTickets.filter(t => t.status !== 'resolved' && t.status !== 'closed');
+  // By status category (configurable catalog), so renamed / added statuses
+  // count correctly — e.g. "Waiting for Client" or "Reopened" tickets.
+  const isFinished = (entity, st) => ['done', 'cancelled', 'archived'].includes(getStatusCategory(entity, st));
+  const activeTasks = visibleTasks.filter(t => !isFinished('task', t.status));
+  const criticalTasks = visibleTasks.filter(t => (t.priority === 'critical' || t.priority === 'urgent') && !isFinished('task', t.status));
+  const pendingReviewTasks = visibleTasks.filter(t => getStatusCategory('task', t.status) === 'review');
+  const openTickets = visibleTickets.filter(t => !isFinished('ticket', t.status));
   // Was `t.status === 'escalated' || t.escalationLevel !== 'none'` —
   // "escalated" isn't a real Ticket.Status value, and escalation isn't
   // an implemented feature on this backend at all (no EscalationLevel
@@ -122,7 +127,13 @@ export const DashboardView = () => {
         </div>
 
         <div 
-          onClick={() => setActiveTab('reports')} 
+          onClick={() => {
+            // Open Task Management filtered to tasks awaiting sign-off (it
+            // used to open Reports & SLA).
+            const reviewKey = (getStatuses('task').find(st => st.category === 'review') || {}).key || 'in_review';
+            setTaskListPreset({ status: reviewKey });
+            setActiveTab('tasks');
+          }} 
           className="p-5 rounded-xl bg-slate-200/60 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-800 cursor-pointer transition hover:border-indigo-400 dark:hover:border-indigo-500"
         >
           <div className="flex items-center justify-between mb-3">

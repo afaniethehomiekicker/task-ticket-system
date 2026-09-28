@@ -6,8 +6,8 @@ import {
 } from 'lucide-react';
 import { PriorityBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
 import { exportTicketsToCSV } from '../../utils/exportUtils';
-import { TicketDetailDrawer } from './TicketDetailDrawer';
 
+import { assignedByName } from '../../utils/permissions';
 export const TicketsView = () => {
   const { 
     visibleTickets, 
@@ -16,8 +16,7 @@ export const TicketsView = () => {
     setSelectedTicketId, 
     setSelectedTicketEditId,
     openQuickCreate,
-    updateTicket
-  } = useApp();
+    updateTicket, getStatuses } = useApp();
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -117,13 +116,10 @@ export const TicketsView = () => {
           className="px-2.5 py-1 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-800 dark:text-zinc-300 focus:outline-hidden"
         >
           <option value="all">All Statuses</option>
-          <option value="new">New</option>
-          <option value="assigned">Assigned</option>
-          <option value="in_progress">In Progress</option>
-          <option value="pending">Pending</option>
-          <option value="resolved">Resolved</option>
-          <option value="closed">Closed</option>
-          <option value="cancelled">Cancelled</option>
+          {/* From the configurable status catalog (Settings → Workflow Statuses). */}
+          {getStatuses('ticket', { includeDisabled: true }).map(st => (
+            <option key={st.key} value={st.key}>{st.label}{st.enabled ? '' : ' (disabled)'}</option>
+          ))}
           <option value="escalated">Escalated (any tier)</option>
         </select>
 
@@ -271,6 +267,9 @@ export const TicketsView = () => {
                         ) : (
                           <span className="text-amber-600 font-medium">Unassigned</span>
                         )}
+                        {assignee && assignedByName(t, allUsers) && (
+                          <span className="block mt-0.5 text-[10px] text-slate-500 dark:text-zinc-400">by {assignedByName(t, allUsers)}</span>
+                        )}
                       </td>
                       <td className="p-3.5"><PriorityBadge priority={t.priority} /></td>
                       <td className="p-3.5"><TicketStatusBadge status={t.status} /></td>
@@ -314,7 +313,6 @@ export const TicketsView = () => {
       </div>
 
       {/* Ticket Drawer */}
-      <TicketDetailDrawer />
     </div>
   );
 };

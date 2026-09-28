@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"fmt"
 	"net/http"
 	"strings"
@@ -25,9 +26,14 @@ type CreateProjectInput struct {
 	StartDate     *time.Time `json:"start_date"`
 	DueDate       *time.Time `json:"due_date"`
 	ClientID      *uint      `json:"client_id"`
+	ClientIDs     []uint     `json:"client_ids"` // all clients (slide 9); first = primary
 	OwnerID       *uint      `json:"owner_id"`
 	AdminID       *uint      `json:"admin_id"`
 	BudgetHours   float64    `json:"budget_hours"`
+	// Budget as entered: a number in "hours" or "days" (1 day = 8 h). When
+	// sent, budget_hours is derived from it.
+	BudgetValue *float64 `json:"budget_value"`
+	BudgetUnit  string   `json:"budget_unit"`
 	MemberIDs     []uint     `json:"member_ids"`
 	SupervisorIDs []uint     `json:"supervisor_ids"`
 }
@@ -42,9 +48,14 @@ type UpdateProjectInput struct {
 	StartDate     *time.Time `json:"start_date"`
 	DueDate       *time.Time `json:"due_date"`
 	ClientID      *uint      `json:"client_id"`
+	ClientIDs     []uint     `json:"client_ids"` // replaces the linked clients when sent
 	OwnerID       *uint      `json:"owner_id"`
 	AdminID       *uint      `json:"admin_id"`
 	BudgetHours   float64    `json:"budget_hours"`
+	// Budget as entered: a number in "hours" or "days" (1 day = 8 h). When
+	// sent, budget_hours is derived from it.
+	BudgetValue *float64 `json:"budget_value"`
+	BudgetUnit  string   `json:"budget_unit"`
 	Progress      *int       `json:"progress"` // pointer: "not sent" must not mean "0"
 	MemberIDs     []uint     `json:"member_ids"`
 	SupervisorIDs []uint     `json:"supervisor_ids"`
@@ -100,6 +111,7 @@ func GetProjects(c *gin.Context) {
 
 	query := database.DB.
 		Preload("Client").
+		Preload("Clients").
 		Preload("Owner").
 		Preload("Admin").
 		Preload("Members").
@@ -127,7 +139,8 @@ func GetProjects(c *gin.Context) {
 		query = query.Where("department = ?", params.Department)
 	}
 	if params.ClientID != "" {
-		query = query.Where("client_id = ?", params.ClientID)
+		// Any linked client, not just the primary one.
+		query = query.Where("(projects.client_id = ? OR projects.id IN (SELECT project_id FROM project_clients WHERE client_id = ?))", params.ClientID, params.ClientID)
 	}
 	if params.OwnerID != "" {
 		query = query.Where("owner_id = ?", params.OwnerID)
@@ -152,6 +165,7 @@ func GetProjects(c *gin.Context) {
 		return
 	}
 
+	fillProjectProgress(projects) // progress from tasks, not a stale stored number
 	c.JSON(http.StatusOK, gin.H{
 		"projects": projects,
 		"pagination": gin.H{
@@ -174,6 +188,7 @@ func GetProject(c *gin.Context) {
 	// see handed you every task and ticket in it.
 	query := database.DB.
 		Preload("Client").
+		Preload("Clients").
 		Preload("Owner").
 		Preload("Admin").
 		Preload("Members").
@@ -199,6 +214,7 @@ func GetProject(c *gin.Context) {
 		return
 	}
 
+	fillOneProjectProgress(&project)
 	c.JSON(http.StatusOK, gin.H{"project": project})
 }
 
@@ -228,12 +244,13 @@ func CreateProject(c *gin.Context) {
 	// naming scheme); it's only auto-generated when omitted.
 	code := input.Code
 	if code == "" {
-		var maxNum int
-		database.DB.Unscoped().Model(&models.Project{}).
-			Where("code ~ '^PRJ-[0-9]+$'").
-			Select("COALESCE(MAX(CAST(SUBSTRING(code FROM 5) AS INTEGER)), 0)").
-			Scan(&maxNum)
-		code = fmt.Sprintf("PRJ-%06d", maxNum+1)
+		// Permanent ID from the atomic counter (spec slide 7).
+		nextID, idErr := models.NextID(database.DB, "PRJ")
+		if idErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to allocate a project code"})
+			return
+		}
+		code = nextID
 	}
 
 	// Validate unique code (only meaningful now for an explicitly-
@@ -244,13 +261,14 @@ func CreateProject(c *gin.Context) {
 		return
 	}
 
-	// Validate client if provided
-	if input.ClientID != nil {
-		var client models.Client
-		if err := database.DB.First(&client, *input.ClientID).Error; err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Client not found"})
-			return
-		}
+	// Clients: client_ids (several, slide 9) or the older single client_id.
+	clientIDs, msg := resolveProjectClients(input.ClientID, input.ClientIDs, nil)
+	if msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+	if len(clientIDs) > 0 {
+		input.ClientID = &clientIDs[0]
 	}
 
 	// Validate owner
@@ -299,6 +317,12 @@ func CreateProject(c *gin.Context) {
 		return
 	}
 
+	budgetValue, budgetUnit, budgetHours, msg := resolveBudget(input.BudgetValue, input.BudgetUnit, input.BudgetHours)
+	if msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+
 	project := models.Project{
 		Code:        code,
 		Title:       input.Title,
@@ -312,7 +336,9 @@ func CreateProject(c *gin.Context) {
 		ClientID:    input.ClientID,
 		OwnerID:     input.OwnerID,
 		AdminID:     input.AdminID,
-		BudgetHours: input.BudgetHours,
+		BudgetHours: budgetHours,
+		BudgetValue: budgetValue,
+		BudgetUnit:  budgetUnit,
 		Progress:    0,
 	}
 
@@ -346,18 +372,27 @@ func CreateProject(c *gin.Context) {
 		database.DB.Model(&project).Association("Supervisors").Append(&supervisors)
 	}
 
+	// All linked clients (slide 9); client_id is the first.
+	if len(clientIDs) > 0 {
+		if err := setProjectClients(database.DB, &project, clientIDs); err != nil {
+			log.Printf("projects: linking clients to %s failed: %v", project.Code, err)
+		}
+	}
+
 	utils.LogAudit(currentUserID, "created", "project", project.ID,
 		fmt.Sprintf("Created project %s: %s", project.Code, project.Title), c.ClientIP(), c.Request.UserAgent())
 
 	// Reload
 	database.DB.
 		Preload("Client").
+		Preload("Clients").
 		Preload("Owner").
 		Preload("Admin").
 		Preload("Members").
 		Preload("Supervisors").
 		First(&project, project.ID)
 
+	fillOneProjectProgress(&project)
 	c.JSON(http.StatusCreated, gin.H{"message": "Project created successfully", "project": project})
 }
 
@@ -445,14 +480,29 @@ func UpdateProject(c *gin.Context) {
 	if input.DueDate != nil {
 		updates["due_date"] = *input.DueDate
 	}
-	if input.ClientID != nil {
-		// Verify client exists
-		var client models.Client
-		if err := database.DB.First(&client, *input.ClientID).Error; err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Client not found"})
+	// Clients (slide 9). client_ids replaces the whole set; a lone client_id
+	// (older callers) replaces it with that one client. Clients already
+	// linked may stay even if archived since. Applied after the other
+	// updates, below.
+	var newClientIDs []uint
+	clientsChanging := false
+	oldClientIDs := linkedClientIDs(&project)
+	if input.ClientIDs != nil || input.ClientID != nil {
+		keep := map[uint]bool{}
+		for _, id := range oldClientIDs {
+			keep[id] = true
+		}
+		ids, msg := resolveProjectClients(input.ClientID, input.ClientIDs, keep)
+		if msg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 			return
 		}
-		updates["client_id"] = *input.ClientID
+		if len(ids) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "A project needs at least one client"})
+			return
+		}
+		newClientIDs = ids
+		clientsChanging = fmt.Sprint(ids) != fmt.Sprint(oldClientIDs)
 	}
 	if input.OwnerID != nil {
 		var owner models.User
@@ -470,8 +520,19 @@ func UpdateProject(c *gin.Context) {
 		}
 		updates["admin_id"] = *input.AdminID
 	}
-	if input.BudgetHours > 0 {
-		updates["budget_hours"] = input.BudgetHours
+	if input.BudgetValue != nil || input.BudgetUnit != "" || input.BudgetHours > 0 {
+		unit := input.BudgetUnit
+		if unit == "" && input.BudgetValue != nil {
+			unit = project.BudgetUnit // same unit as before when only the number changes
+		}
+		v, u, h, msg := resolveBudget(input.BudgetValue, unit, input.BudgetHours)
+		if msg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
+		updates["budget_value"] = v
+		updates["budget_unit"] = u
+		updates["budget_hours"] = h
 	}
 	// Progress was a plain int with an "is it within 0-100" check, which an
 	// omitted field (0) always passed — so EVERY update, even just renaming
@@ -505,6 +566,18 @@ func UpdateProject(c *gin.Context) {
 		database.DB.Model(&project).Association("Supervisors").Replace(&supervisors)
 	}
 
+	if clientsChanging {
+		if err := setProjectClients(database.DB, &project, newClientIDs); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update the project's clients"})
+			return
+		}
+		utils.LogAuditWithValues(currentUserID, "updated", "project", project.ID,
+			map[string]interface{}{"clients": clientNames(oldClientIDs)},
+			map[string]interface{}{"clients": clientNames(newClientIDs)},
+			fmt.Sprintf("Project %s clients: %s -> %s", project.Code, clientNames(oldClientIDs), clientNames(newClientIDs)),
+			c.ClientIP(), c.Request.UserAgent())
+	}
+
 	database.DB.First(&project, id)
 
 	utils.LogAudit(currentUserID, "updated", "project", project.ID,
@@ -513,12 +586,14 @@ func UpdateProject(c *gin.Context) {
 	// Reload
 	database.DB.
 		Preload("Client").
+		Preload("Clients").
 		Preload("Owner").
 		Preload("Admin").
 		Preload("Members").
 		Preload("Supervisors").
 		First(&project, id)
 
+	fillOneProjectProgress(&project)
 	c.JSON(http.StatusOK, gin.H{"message": "Project updated successfully", "project": project})
 }
 
@@ -561,9 +636,17 @@ func DeleteProject(c *gin.Context) {
 		return
 	}
 
+	// Archiving twice would overwrite pre_archive_status with "archived",
+	// losing the status Restore needs.
+	if project.Status == "archived" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Already archived"})
+		return
+	}
+
 	now := time.Now()
 	if err := database.DB.Model(&project).Updates(map[string]interface{}{
 		"status":         "archived",
+		"pre_archive_status": project.Status,
 		"archived_at":    now,
 		"archived_by_id": currentUserID,
 	}).Error; err != nil {
@@ -630,4 +713,83 @@ func GetProjectStats(c *gin.Context) {
 		"tasks":        taskStats,
 		"tickets":      ticketStats,
 	})
+}
+
+// hoursPerDay converts a budget in days to hours.
+const hoursPerDay = 8.0
+
+// resolveBudget turns what the form sent into (value, unit, hours). A value
+// with a unit wins; otherwise a plain budget_hours (older callers) is taken
+// as hours.
+func resolveBudget(value *float64, unit string, hours float64) (float64, string, float64, string) {
+	unit = strings.ToLower(strings.TrimSpace(unit))
+	if value != nil {
+		if *value < 0 {
+			return 0, "", 0, "Budget can't be negative"
+		}
+		switch unit {
+		case "", "hours":
+			return *value, "hours", *value, ""
+		case "days":
+			return *value, "days", *value * hoursPerDay, ""
+		default:
+			return 0, "", 0, "Budget unit must be hours or days"
+		}
+	}
+	if hours < 0 {
+		return 0, "", 0, "Budget can't be negative"
+	}
+	return hours, "hours", hours, ""
+}
+
+// ---- Progress, calculated from the project's tasks ----------------------------
+//
+// A project's progress used to be a stored number nothing ever updated, so
+// every project showed 0% however many tasks were done. It's now worked out
+// from the tasks each time projects are returned: finished tasks (status
+// category "done") / all tasks, leaving out cancelled and archived ones. A
+// project with no tasks keeps its stored (manually set) progress.
+//
+// TaskCounts carries the numbers behind it for display ("3 of 5 tasks").
+
+type projectTaskCounts struct {
+	ProjectID uint
+	Total     int64
+	Done      int64
+}
+
+func fillProjectProgress(projects []models.Project) {
+	if len(projects) == 0 {
+		return
+	}
+	ids := make([]uint, 0, len(projects))
+	for _, p := range projects {
+		ids = append(ids, p.ID)
+	}
+	var rows []projectTaskCounts
+	database.DB.Model(&models.Task{}).
+		Select("project_id, COUNT(*) AS total, COUNT(*) FILTER (WHERE status IN ?) AS done",
+			statusKeysIn("task", "done")).
+		Where("project_id IN ? AND status NOT IN ?", ids, append(statusKeysIn("task", "cancelled"), "archived")).
+		Group("project_id").
+		Scan(&rows)
+	byID := map[uint]projectTaskCounts{}
+	for _, r := range rows {
+		byID[r.ProjectID] = r
+	}
+	for i := range projects {
+		r, ok := byID[projects[i].ID]
+		if !ok || r.Total == 0 {
+			continue
+		}
+		projects[i].Progress = int(r.Done * 100 / r.Total)
+		projects[i].TasksTotal = int(r.Total)
+		projects[i].TasksDone = int(r.Done)
+	}
+}
+
+func fillOneProjectProgress(p *models.Project) {
+	list := []models.Project{*p}
+	fillProjectProgress(list)
+	p.Progress, p.TasksTotal, p.TasksDone = list[0].Progress, list[0].TasksTotal, list[0].TasksDone
 }

@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { PriorityBadge } from '../common/Badge';
 
-import { FeasibilityDetailDrawer } from './FeasibilityDetailDrawer';
+import { canCreateFeasibility } from '../../utils/permissions';
 import { FeasibilityEditModal } from './FeasibilityEditModal';
 
 const PRODUCTS = ['DPLC', 'Dark Fiber', 'IPT', 'IPT Mix', 'Pure IPT'];
@@ -45,7 +45,8 @@ export const FeasibilitiesView = () => {
     setSelectedFeasibilityId, 
     setSelectedFeasibilityEditId,
     openQuickCreate,
-    createFeasibility
+    createFeasibility,
+    permissionMatrix
   } = useApp();
 
   const [search, setSearch] = useState('');
@@ -111,6 +112,7 @@ export const FeasibilitiesView = () => {
         </div>
 
         <div className="flex items-center gap-2">
+{canCreateFeasibility(currentUser, permissionMatrix) && (
           <button
             id="create-feasibility-main-btn"
             onClick={() => openQuickCreate({ tab: 'feasibility', restrictToTab: true })}
@@ -119,6 +121,7 @@ export const FeasibilitiesView = () => {
             <Plus className="w-4 h-4" />
             New Feasibility
           </button>
+          )}
         </div>
       </div>
 
@@ -213,7 +216,6 @@ export const FeasibilitiesView = () => {
         )}
       </div>
 
-      <FeasibilityDetailDrawer />
       <FeasibilityEditModal />
     </div>
   );

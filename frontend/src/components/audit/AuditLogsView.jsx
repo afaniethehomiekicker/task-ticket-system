@@ -1,48 +1,62 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
   ScrollText, Search, Filter, Download, ShieldCheck, 
-  Clock, ShieldAlert, FileText, CheckCircle
+  Clock, ShieldAlert, FileText, CheckCircle, RefreshCw
 } from 'lucide-react';
 import { RoleBadge } from '../common/Badge';
 import { exportAuditLogsToCSV } from '../../utils/exportUtils';
 import { canViewAuditLogs } from '../../utils/permissions';
 
 export const AuditLogsView = () => {
-  const { auditLogs, currentUser } = useApp();
+  const {
+    auditLogs, auditPagination, auditLoading, fetchAuditLogs,
+    currentUser, permissionMatrix
+  } = useApp();
 
   const [search, setSearch] = useState('');
   const [entityFilter, setEntityFilter] = useState('all');
   const [actionFilter, setActionFilter] = useState('all');
 
-  const filteredLogs = useMemo(() => {
-    return auditLogs.filter(log => {
-      // log.entityId is a number (or null) per normalizeAuditLog —
-      // resource_id on the backend is a uint, never a string. Calling
-      // .toLowerCase() on it directly threw immediately on every real
-      // audit log entry, crashing this entire view the moment any data
-      // loaded. Coerced to a string first.
-      const matchSearch = log.actorName.toLowerCase().includes(search.toLowerCase()) ||
-                          log.details.toLowerCase().includes(search.toLowerCase()) ||
-                          String(log.entityId ?? '').toLowerCase().includes(search.toLowerCase());
-      const matchEntity = entityFilter === 'all' || log.entityType === entityFilter;
-      const matchAction = actionFilter === 'all' || log.action === actionFilter;
+  // Live matrix, not the defaults — an admin granted view_audit_logs in
+  // Settings was still shown "Access Restricted".
+  const allowed = canViewAuditLogs(currentUser, permissionMatrix);
 
-      return matchSearch && matchEntity && matchAction;
+  // Filtering happens on the server now (it used to filter only the handful
+  // of rows already in memory). Search is debounced.
+  const firstRun = useRef(true);
+  useEffect(() => {
+    if (!allowed) return;
+    const run = () => fetchAuditLogs({
+      page: 1,
+      search: search.trim() || undefined,
+      action: actionFilter === 'all' ? undefined : actionFilter,
+      resourceType: entityFilter === 'all' ? undefined : entityFilter,
     });
-  }, [auditLogs, search, entityFilter, actionFilter]);
+    if (firstRun.current) {
+      firstRun.current = false;
+      run();
+      return;
+    }
+    const t = setTimeout(run, 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, entityFilter, actionFilter, allowed]);
+
+  const filteredLogs = auditLogs;
+  const canLoadMore = auditPagination.page > 0 && auditPagination.page < auditPagination.pages;
 
   const handleExport = () => {
     exportAuditLogsToCSV(filteredLogs);
   };
 
-  if (!canViewAuditLogs(currentUser)) {
+  if (!allowed) {
     return (
       <div className="py-20 text-center max-w-md mx-auto">
         <ShieldAlert className="w-12 h-12 text-rose-500 mx-auto mb-3" />
         <h3 className="text-base font-bold text-slate-900 dark:text-zinc-100">Access Restricted</h3>
         <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">
-          System audit trails and security logs are restricted to Super Administrators and Department Admins.
+          System audit trails are only available to roles with the "View System Audit Trail" permission.
         </p>
       </div>
     );
@@ -62,14 +76,29 @@ export const AuditLogsView = () => {
           </p>
         </div>
 
+        <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => fetchAuditLogs({ page: 1,
+            search: search.trim() || undefined,
+            action: actionFilter === 'all' ? undefined : actionFilter,
+            resourceType: entityFilter === 'all' ? undefined : entityFilter })}
+          disabled={auditLoading}
+          className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-zinc-800 bg-slate-200/60 dark:bg-zinc-900 text-slate-800 dark:text-zinc-300 hover:bg-slate-300/80 dark:hover:bg-zinc-800 transition cursor-pointer disabled:opacity-60"
+          title="Refresh"
+        >
+          <RefreshCw className={`w-4 h-4 ${auditLoading ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
         <button
           id="export-audit-csv-btn"
           onClick={handleExport}
           className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-zinc-800 bg-slate-200/60 dark:bg-zinc-900 text-slate-800 dark:text-zinc-300 hover:bg-slate-300/80 dark:hover:bg-zinc-800 transition cursor-pointer"
         >
           <Download className="w-4 h-4" />
-          Export Audit Trail (CSV)
+          Export Loaded Rows (CSV)
         </button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -93,10 +122,15 @@ export const AuditLogsView = () => {
           className="px-2.5 py-1 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-800 dark:text-zinc-300 focus:outline-hidden"
         >
           <option value="all">All Entity Types</option>
+          <option value="project">Projects</option>
           <option value="task">Tasks</option>
           <option value="subtask">Subtasks</option>
           <option value="ticket">Tickets</option>
-          <option value="project">Projects</option>
+          <option value="feasibility">Feasibilities</option>
+          <option value="client">Clients</option>
+          <option value="user">Users</option>
+          <option value="role">Roles & Permissions</option>
+          <option value="department">Departments</option>
         </select>
 
         <select
@@ -109,8 +143,13 @@ export const AuditLogsView = () => {
           <option value="created">Created</option>
           <option value="updated">Updated</option>
           <option value="status_changed">Status Change</option>
+          <option value="assigned">Assigned</option>
+          <option value="escalated">Escalated</option>
           <option value="archived">Archived</option>
           <option value="commented">Commented</option>
+          <option value="internal_note_added">Internal Note</option>
+          <option value="role_changed">Role Changed</option>
+          <option value="permission_changed">Permission Changed</option>
           <option value="work_log_added">Work Log Added</option>
         </select>
       </div>
@@ -146,7 +185,7 @@ export const AuditLogsView = () => {
                   </td>
                   <td className="p-3.5">
                     <span className="px-2 py-0.5 rounded text-[10px] uppercase font-bold bg-slate-300/60 dark:bg-zinc-800 text-slate-800 dark:text-zinc-300">
-                      {log.action.replace('_', ' ')}
+                      {(log.action || '').replace(/_/g, ' ')}
                     </span>
                   </td>
                   <td className="p-3.5 font-sans text-slate-800 dark:text-zinc-300 text-xs">
@@ -156,6 +195,22 @@ export const AuditLogsView = () => {
               ))}
             </tbody>
           </table>
+          {filteredLogs.length === 0 && !auditLoading && (
+            <p className="p-6 text-center text-xs text-slate-500 dark:text-zinc-400">No audit entries match.</p>
+          )}
+        </div>
+        <div className="flex items-center justify-between px-3.5 py-2.5 border-t border-slate-300 dark:border-zinc-800 text-[11px] text-slate-500 dark:text-zinc-400">
+          <span>Showing {filteredLogs.length} of {auditPagination.total} entries</span>
+          {canLoadMore && (
+            <button
+              type="button"
+              onClick={() => fetchAuditLogs({ page: auditPagination.page + 1, append: true })}
+              disabled={auditLoading}
+              className="px-3 py-1 rounded-lg font-semibold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-60 cursor-pointer"
+            >
+              {auditLoading ? 'Loading...' : 'Load more'}
+            </button>
+          )}
         </div>
       </div>
     </div>

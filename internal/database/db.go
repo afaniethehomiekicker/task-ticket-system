@@ -79,6 +79,16 @@ func ConnectDB() {
 		// not exist."
 		&models.FeasibilityVendor{},
 		&models.FeasibilityAttachment{},
+		// Explicit per-record access grants (spec slide 16, record-level layer).
+		&models.RecordAccess{},
+		// Configurable status catalog (spec slide 21).
+		&models.WorkflowStatus{},
+		// Configurable SLA per priority (spec slide 22).
+		&models.SLAPolicy{},
+		// Admin-configurable extra client fields (spec slide 8).
+		&models.ClientField{},
+		// Atomic counters for permanent IDs (spec slide 7).
+		&models.IDCounter{},
 		// Missing from this list the same way FeasibilityVendor/
 		// FeasibilityAttachment were above — the struct existing in
 		// models.go doesn't create its table on its own; it has to be

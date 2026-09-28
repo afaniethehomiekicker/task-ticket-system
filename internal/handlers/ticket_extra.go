@@ -62,7 +62,22 @@ func AddProjectMember(c *gin.Context) {
 		return
 	}
 
-	database.DB.Preload("Members").First(&project, project.ID)
+	// Same relations GetProjects returns. Preloading only Members made the
+	// frontend (which replaces its copy with this) lose the client name,
+	// owner, admin and supervisors after adding a member.
+	var full models.Project
+	if err := database.DB.
+		Preload("Client").
+		Preload("Clients").
+		Preload("Owner").
+		Preload("Admin").
+		Preload("Members").
+		Preload("Supervisors").
+		First(&full, project.ID).Error; err != nil {
+		full = project
+	}
+	project = full
+	fillOneProjectProgress(&project)
 	c.JSON(http.StatusOK, gin.H{"message": "Member added successfully", "project": project})
 }
 
@@ -117,11 +132,14 @@ func GetProjectTasks(c *gin.Context) {
 	var tasks []models.Task
 	applyTaskScope(database.DB.Where("project_id = ?", projectID), viewerFrom(c)).
 		Preload("Assignee").
+		Preload("AssignedBy", userBasics).
 		Preload("Creator").
 		Preload("SubTasks").
 		Preload("Comments").
 		Find(&tasks)
 
+	redactTasks(c, tasks)       // internal notes only for view_internal_notes
+	applySubtaskViews(c, tasks) // subtask assignees get a reference view
 	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
 }
 
@@ -141,6 +159,7 @@ func GetProjectTickets(c *gin.Context) {
 	var tickets []models.Ticket
 	applyTicketScope(database.DB.Where("project_id = ?", projectID), viewerFrom(c)).
 		Preload("AssignedTo").
+		Preload("AssignedBy", userBasics).
 		Preload("CreatedBy").
 		Preload("Client").
 		Find(&tickets)
@@ -168,6 +187,7 @@ func GetTicketComments(c *gin.Context) {
 		Order("created_at asc").
 		Find(&comments)
 
+	comments = visibleComments(canSeeInternalNotes(c), comments)
 	c.JSON(http.StatusOK, gin.H{"comments": comments})
 }
 
@@ -181,6 +201,13 @@ func AddTicketComment(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Posting a private management note needs the same permission as reading
+	// one (view_internal_notes). Anyone could post them before.
+	if input.IsInternal && !canSeeInternalNotes(c) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to post internal notes"})
 		return
 	}
 
@@ -207,12 +234,30 @@ func AddTicketComment(c *gin.Context) {
 		return
 	}
 
+	// The first PUBLIC reply is the ticket's first response. Internal notes
+	// are staff-to-staff and don't count. This used to be faked in the
+	// browser only (for any comment, notes included) and never saved.
+	if !input.IsInternal && ticket.FirstResponseAt == nil {
+		now := time.Now()
+		if err := database.DB.Model(&ticket).Update("first_response_at", now).Error; err == nil {
+			ticket.FirstResponseAt = &now
+		}
+	}
+
 	database.DB.Preload("User").First(&comment, comment.ID)
 
-	utils.LogAudit(currentUserID, "commented", "ticket", ticket.ID,
-		"Added comment to ticket "+ticket.TicketNumber, "", "")
+	action, what := "commented", "comment"
+	if input.IsInternal {
+		action, what = "internal_note_added", "internal note"
+	}
+	utils.LogAudit(currentUserID, action, "ticket", ticket.ID,
+		"Added "+what+" to ticket "+ticket.TicketNumber, c.ClientIP(), c.Request.UserAgent())
 
-	c.JSON(http.StatusCreated, gin.H{"message": "Comment added", "comment": comment})
+	c.JSON(http.StatusCreated, gin.H{
+		"message":           "Comment added",
+		"comment":           comment,
+		"first_response_at": ticket.FirstResponseAt,
+	})
 }
 
 // Ticket work logs
@@ -299,6 +344,7 @@ func GetTicketTasks(c *gin.Context) {
 	var tasks []models.Task
 	applyTaskScope(database.DB.Where("ticket_id = ?", ticketID), viewerFrom(c)).
 		Preload("Assignee").
+		Preload("AssignedBy", userBasics).
 		Preload("Creator").
 		Preload("SubTasks").
 		Find(&tasks)

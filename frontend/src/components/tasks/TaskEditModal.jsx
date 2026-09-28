@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { X } from 'lucide-react';
-import { canAssignTickets, canApproveWork } from '../../utils/permissions';
+import { canAssignTickets, canApproveWork, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable } from '../../utils/permissions';
 
 export const TaskEditModal = () => {
   const { 
@@ -11,16 +11,20 @@ export const TaskEditModal = () => {
     updateTask, 
     allUsers,
     currentUser,
-    permissionMatrix
-  } = useApp();
+    permissionMatrix, getStatuses, getStatusCategory } = useApp();
 
   // Reassigning needs the assign_tickets permission ("Reassign Tickets &
   // Tasks"); the backend now enforces it, so don't offer a control that will
   // just be refused.
-  const canReassign = canAssignTickets(currentUser, permissionMatrix);
   const canMarkDone = canApproveWork(currentUser, permissionMatrix);
 
   const task = (tasks || []).find(t => t.id === selectedTaskEditId);
+  const canReassignAny = canAssignTickets(currentUser, permissionMatrix);
+  // The task's own assignee may transfer it within their department.
+  const canTransfer = !canReassignAny && !!task &&
+    String(task.assignedToId) === String(currentUser?.id) &&
+    canTransferOwnWork(currentUser, permissionMatrix);
+  const canReassign = canReassignAny || canTransfer;
   const [isSaving, setIsSaving] = useState(false);
 
   const [formData, setFormData] = useState({
@@ -139,12 +143,15 @@ export const TaskEditModal = () => {
                     both), so In Review is shown only when it is already the
                     current status and Done only to people who can set it.
                     "archived" stays excluded (archive action only). */}
-                <option value="todo">To Do</option>
-                <option value="in_progress">In Progress</option>
-                <option value="blocked">Blocked</option>
-                {task.status === 'in_review' && <option value="in_review">In Review</option>}
-                {(task.status === 'done' || canMarkDone) && <option value="done">Done</option>}
-                <option value="cancelled">Cancelled</option>
+                {/* Configurable catalog. "Review" statuses are only reached via
+                    Submit for Review, and "done" ones need approve_work — both
+                    enforced server-side — so they're only offered when current
+                    (review) or allowed (done). */}
+                {getStatuses('task')
+                  .filter(st => st.key === task.status ||
+                    (getStatusCategory('task', st.key) !== 'review' &&
+                     (getStatusCategory('task', st.key) !== 'done' || canMarkDone)))
+                  .map(st => <option key={st.key} value={st.key}>{st.label}</option>)}
               </select>
             </div>
           </div>
@@ -161,8 +168,16 @@ export const TaskEditModal = () => {
                 className="w-full px-3 py-2 bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg text-xs text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-indigo-500"
               >
                 <option value="">Unassigned</option>
-                {allUsers.map(u => (
-                  <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
+                {/* Active people only (plus the current assignee, so the
+                    select still shows who it is if they were deactivated). */}
+                {allUsers
+                  .filter(u => u.status === 'active' || String(u.id) === String(formData.assignedToId))
+                  // Admins assign tasks; they can't be assigned one.
+                  .filter(u => isTaskAssignable(u) || String(u.id) === String(formData.assignedToId))
+                  .filter(u => canReassignAny || String(u.id) === String(formData.assignedToId) ||
+                    sameDepartmentUsers(currentUser, [u]).length > 0)
+                  .map(u => (
+                  <option key={u.id} value={u.id}>{u.name} ({u.role}){u.status !== 'active' ? ' — inactive' : ''}</option>
                 ))}
               </select>
             </div>

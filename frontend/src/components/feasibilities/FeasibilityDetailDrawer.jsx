@@ -70,8 +70,7 @@ export const FeasibilityDetailDrawer = () => {
     deleteFeasibilityVendor,
     addFeasibilityVendor,
     deleteFeasibility,
-    convertFeasibilityToProject,
-  } = useApp();
+    convertFeasibilityToProject, reinstateFeasibilityVendor } = useApp();
 
   const [isBusy, setIsBusy] = useState(false);
   const [showAddVendor, setShowAddVendor] = useState(false);
@@ -115,10 +114,18 @@ export const FeasibilityDetailDrawer = () => {
     setIsBusy(false);
   };
 
+  // Withdraw, not delete: the vendor stays listed (greyed out) with its
+  // responses and quotes, and can be reinstated.
   const handleRemoveVendor = async (vendorId) => {
-    if (!window.confirm('Remove this vendor from the feasibility check?')) return;
+    if (!window.confirm('Withdraw this vendor? It stays on the feasibility with its responses and can be reinstated.')) return;
     setIsBusy(true);
     await deleteFeasibilityVendor(feasibility.id, vendorId);
+    setIsBusy(false);
+  };
+
+  const handleReinstateVendor = async (vendorId) => {
+    setIsBusy(true);
+    await reinstateFeasibilityVendor(feasibility.id, vendorId);
     setIsBusy(false);
   };
 
@@ -324,10 +331,15 @@ export const FeasibilityDetailDrawer = () => {
             ) : (
               <div className="space-y-2">
                 {vendors.map(v => (
-                  <div key={v.id} className="p-3 rounded-xl bg-slate-100 dark:bg-zinc-900/60 border border-slate-300 dark:border-zinc-800">
+                  <div key={v.id} className={`p-3 rounded-xl bg-slate-100 dark:bg-zinc-900/60 border border-slate-300 dark:border-zinc-800 ${v.withdrawn ? 'opacity-60' : ''}`}>
                     <div className="flex items-start justify-between gap-2 mb-1.5">
                       <div className="min-w-0">
-                        <div className="font-semibold text-xs text-slate-900 dark:text-zinc-100 truncate">{v.vendorName}</div>
+                        <div className="font-semibold text-xs text-slate-900 dark:text-zinc-100 truncate">
+                          {v.vendorName}
+                          {v.withdrawn && (
+                            <span className="ml-1.5 px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 text-[9px] font-bold uppercase">Withdrawn</span>
+                          )}
+                        </div>
                         {(v.contactPerson || v.contactEmail) && (
                           <div className="text-[11px] text-slate-500 dark:text-zinc-400 truncate">
                             {v.contactPerson}{v.contactPerson && v.contactEmail ? ' · ' : ''}{v.contactEmail}
@@ -338,14 +350,20 @@ export const FeasibilityDetailDrawer = () => {
                         <select
                           value={v.status}
                           onChange={(e) => handleVendorStatus(v.id, e.target.value)}
-                          disabled={isBusy || isClosedOut}
+                          disabled={isBusy || isClosedOut || v.withdrawn}
                           className={`text-[11px] px-1.5 py-1 rounded-md border-0 font-medium cursor-pointer disabled:opacity-60 ${getVendorStatusColor(v.status)}`}
                         >
                           {VENDOR_STATUS_OPTIONS.map(([val, label]) => <option key={val} value={val}>{label}</option>)}
                         </select>
-                        {!isClosedOut && (
-                          <button type="button" onClick={() => handleRemoveVendor(v.id)} disabled={isBusy} className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded cursor-pointer disabled:opacity-60" title="Remove vendor">
+                        {!isClosedOut && !v.withdrawn && (
+                          <button type="button" onClick={() => handleRemoveVendor(v.id)} disabled={isBusy} className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded cursor-pointer disabled:opacity-60" title="Withdraw vendor (kept, can be reinstated)">
                             <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {!isClosedOut && v.withdrawn && (
+                          <button type="button" onClick={() => handleReinstateVendor(v.id)} disabled={isBusy}
+                            className="px-2 py-0.5 rounded text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-950/40 cursor-pointer disabled:opacity-60">
+                            Reinstate
                           </button>
                         )}
                       </div>

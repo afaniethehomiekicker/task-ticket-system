@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -26,13 +27,23 @@ func GetSubTasks(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
 		return
 	}
-	if !userCanAccessTask(c, &task) {
+	full := userCanAccessTask(c, &task)
+	me := viewerFrom(c).ID
+	if !full && !hasSubtaskAssignedIn(task.ID, me) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: task belongs to different department"})
 		return
 	}
 
 	var subTasks []models.SubTask
-	database.DB.Where("task_id = ?", taskID).Preload("Assignee").Preload("Task").Find(&subTasks)
+	q := database.DB.Where("task_id = ?", taskID).Preload("Assignee").Preload("AssignedBy", userBasics)
+	if full {
+		q = q.Preload("Task")
+	} else {
+		// Subtask assignee: only their own subtasks, without the parent task
+		// embedded in each one.
+		q = q.Where("assignee_id = ? AND status <> ?", me, "archived")
+	}
+	q.Find(&subTasks)
 	c.JSON(http.StatusOK, gin.H{"subtasks": subTasks})
 }
 
@@ -64,6 +75,32 @@ func CreateSubTask(c *gin.Context) {
 		return
 	}
 
+	// Handing a sub-task to someone else needs the same permission as
+	// reassigning tasks (assign_tickets); assigning it to yourself doesn't.
+	if input.AssigneeID != nil && *input.AssigneeID == 0 {
+		input.AssigneeID = nil
+	}
+	if input.AssigneeID != nil && *input.AssigneeID != currentUserID && !canAssignWork(viewerFrom(c).Role) {
+		// The task's assignee may split work out to a colleague in their own
+		// department (spec slide 20: "Staff A creates Subtask -> assigns to
+		// Staff B").
+		if ok, msg := canTransferOwnWork(c, parentTask.AssigneeID, input.AssigneeID); !ok {
+			if msg == "" {
+				msg = "You don't have permission to assign sub-tasks to other people"
+			}
+			c.JSON(http.StatusForbidden, gin.H{"error": msg})
+			return
+		}
+	}
+	if msg := taskAssigneeRoleError(input.AssigneeID); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+	if msg := assigneeError(input.AssigneeID); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+
 	priority := input.Priority
 	if priority == "" {
 		priority = "normal"
@@ -73,6 +110,12 @@ func CreateSubTask(c *gin.Context) {
 		Title:          input.Title,
 		TaskID:         input.TaskID,
 		AssigneeID:     input.AssigneeID,
+		AssignedByID: func() *uint {
+			if input.AssigneeID != nil {
+				return &currentUserID
+			}
+			return nil
+		}(),
 		Status:         "todo",
 		Priority:       priority,
 		Deadline:       input.Deadline,
@@ -85,7 +128,7 @@ func CreateSubTask(c *gin.Context) {
 		return
 	}
 
-	database.DB.Preload("Assignee").First(&subTask, subTask.ID)
+	database.DB.Preload("Assignee").Preload("AssignedBy", userBasics).First(&subTask, subTask.ID)
 
 	utils.LogAudit(currentUserID, "created", "subtask", subTask.ID,
 		"Created subtask "+subTask.Title, "", "")
@@ -116,9 +159,21 @@ func UpdateSubTask(c *gin.Context) {
 		return
 	}
 
+	// Full edit (title, assignee, deadline...) needs full access to the parent
+	// task. The check used to be skipped entirely if the parent couldn't be
+	// loaded. A subtask assignee changes status via UpdateSubTaskStatus.
 	var parentTask models.Task
-	if err := database.DB.First(&parentTask, subTask.TaskID).Error; err == nil {
-		if !userCanAccessTask(c, &parentTask) {
+	if err := database.DB.First(&parentTask, subTask.TaskID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Parent task not found"})
+		return
+	}
+	if !userCanAccessTask(c, &parentTask) {
+		// The sub-task's own assignee (who may only have the reference view
+		// of the parent) can still TRANSFER it — nothing else.
+		isOwn := subTask.AssigneeID != nil && *subTask.AssigneeID == viewerFrom(c).ID
+		onlyTransfer := input.AssigneeID != nil && input.Title == "" && input.Status == "" &&
+			input.Priority == "" && input.Deadline == "" && input.EstimatedHours == 0 && input.ActualHours == 0
+		if !isOwn || !onlyTransfer {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: task belongs to different department"})
 			return
 		}
@@ -144,8 +199,55 @@ func UpdateSubTask(c *gin.Context) {
 	if input.Deadline != "" {
 		updates["deadline"] = input.Deadline
 	}
+	// Reassigning: 0 clears the assignee (a JSON null can't be told apart
+	// from "not sent"). Needs the "Reassign Tickets & Tasks" permission, same
+	// as reassigning a task; logged below with old -> new.
+	var assigneeChange *[2]string
 	if input.AssigneeID != nil {
-		updates["assignee_id"] = *input.AssigneeID
+		var newID *uint
+		if *input.AssigneeID != 0 {
+			newID = input.AssigneeID
+		}
+		changing := (subTask.AssigneeID == nil) != (newID == nil) ||
+			(subTask.AssigneeID != nil && newID != nil && *subTask.AssigneeID != *newID)
+		if changing {
+			if !canAssignWork(viewerFrom(c).Role) {
+				// Without the general reassign permission: the sub-task's own
+				// assignee, or the parent task's assignee, may pass it to a
+				// colleague in their own department.
+				ok, msg := canTransferOwnWork(c, subTask.AssigneeID, newID)
+				if !ok {
+					ok2, msg2 := canTransferOwnWork(c, parentTask.AssigneeID, newID)
+					ok = ok2
+					if msg2 != "" {
+						msg = msg2
+					}
+				}
+				if !ok {
+					if msg == "" {
+						msg = "You don't have permission to reassign sub-tasks"
+					}
+					c.JSON(http.StatusForbidden, gin.H{"error": msg})
+					return
+				}
+			}
+			if msg := taskAssigneeRoleError(newID); msg != "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+				return
+			}
+			if msg := assigneeError(newID); msg != "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+				return
+			}
+			if newID == nil {
+				updates["assignee_id"] = nil
+				updates["assigned_by_id"] = nil
+			} else {
+				updates["assignee_id"] = *newID
+				updates["assigned_by_id"] = viewerFrom(c).ID // who gave it to them
+			}
+			assigneeChange = &[2]string{assigneeLabel(subTask.AssigneeID), assigneeLabel(newID)}
+		}
 	}
 	if input.EstimatedHours > 0 {
 		updates["estimated_hours"] = input.EstimatedHours
@@ -159,6 +261,13 @@ func UpdateSubTask(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update subtask"})
 			return
 		}
+	}
+
+	if assigneeChange != nil {
+		utils.LogAuditWithValues(viewerFrom(c).ID, "assigned", "subtask", subTask.ID,
+			map[string]interface{}{"assignee": assigneeChange[0]}, map[string]interface{}{"assignee": assigneeChange[1]},
+			fmt.Sprintf("Sub-task %q of %s reassigned: %s -> %s", subTask.Title, parentTask.TaskNumber, assigneeChange[0], assigneeChange[1]),
+			c.ClientIP(), c.Request.UserAgent())
 	}
 
 	database.DB.First(&subTask, id)
@@ -198,18 +307,35 @@ func UpdateSubTaskStatus(c *gin.Context) {
 		return
 	}
 
+	// Allowed for anyone with full access to the parent task, and for the
+	// subtask's own assignee (spec: staff work on the subtask assigned to
+	// them). Before, the assignee was refused unless they could also see the
+	// whole parent task, and the check was skipped if the parent was missing.
 	var parentTask models.Task
-	if err := database.DB.First(&parentTask, subTask.TaskID).Error; err == nil {
-		if !userCanAccessTask(c, &parentTask) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: task belongs to different department"})
-			return
-		}
+	if err := database.DB.First(&parentTask, subTask.TaskID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Parent task not found"})
+		return
 	}
+	isOwnSubtask := subTask.AssigneeID != nil && *subTask.AssigneeID == viewerFrom(c).ID
+	if !isOwnSubtask && !userCanAccessTask(c, &parentTask) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: task belongs to different department"})
+		return
+	}
+	if subTask.Status == "archived" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "This subtask is archived"})
+		return
+	}
+	oldStatus := subTask.Status
 
 	if err := database.DB.Model(&subTask).Update("status", input.Status).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	utils.LogAuditWithValues(viewerFrom(c).ID, "status_changed", "subtask", subTask.ID,
+		statusChange(oldStatus), statusChange(input.Status),
+		fmt.Sprintf("Subtask %q of %s: %s -> %s", subTask.Title, parentTask.TaskNumber, oldStatus, input.Status),
+		c.ClientIP(), c.Request.UserAgent())
 
 	database.DB.First(&subTask, id)
 	c.JSON(http.StatusOK, gin.H{"message": "Subtask status updated successfully", "subtask": subTask})
@@ -235,11 +361,13 @@ func DeleteSubTask(c *gin.Context) {
 	}
 
 	var parentTask models.Task
-	if err := database.DB.First(&parentTask, subTask.TaskID).Error; err == nil {
-		if !userCanAccessTask(c, &parentTask) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
-			return
-		}
+	if err := database.DB.First(&parentTask, subTask.TaskID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Parent task not found"})
+		return
+	}
+	if !userCanAccessTask(c, &parentTask) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
+		return
 	}
 
 	if currentUserRole != "super_admin" && currentUserRole != "admin" {
@@ -305,8 +433,10 @@ func AddTaskDependency(c *gin.Context) {
 		return
 	}
 
-	database.DB.Preload("Dependencies").First(&task, id)
-	c.JSON(http.StatusOK, gin.H{"message": "Dependency added successfully", "task": task})
+	// Full reload — the frontend replaces its task with this response (see
+	// reloadFullTask); a Dependencies-only preload blanked its sub-tasks,
+	// comments and checklist.
+	c.JSON(http.StatusOK, gin.H{"message": "Dependency added successfully", "task": reloadFullTask(c, task)})
 }
 
 func RemoveTaskDependency(c *gin.Context) {
@@ -327,10 +457,12 @@ func RemoveTaskDependency(c *gin.Context) {
 		return
 	}
 
-	database.DB.Model(&task).Association("Dependencies").Delete(&depTask)
+	if err := database.DB.Model(&task).Association("Dependencies").Delete(&depTask); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove dependency"})
+		return
+	}
 
-	database.DB.Preload("Dependencies").First(&task, id)
-	c.JSON(http.StatusOK, gin.H{"message": "Dependency removed successfully", "task": task})
+	c.JSON(http.StatusOK, gin.H{"message": "Dependency removed successfully", "task": reloadFullTask(c, task)})
 }
 
 // Task comments
@@ -353,6 +485,7 @@ func GetTaskComments(c *gin.Context) {
 		Order("created_at asc").
 		Find(&comments)
 
+	comments = visibleComments(canSeeInternalNotes(c), comments)
 	c.JSON(http.StatusOK, gin.H{"comments": comments})
 }
 
@@ -368,6 +501,13 @@ func AddTaskComment(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Posting a private management note needs the same permission as reading
+	// one (view_internal_notes). Anyone could post them before.
+	if input.IsInternal && !canSeeInternalNotes(c) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to post internal notes"})
 		return
 	}
 
@@ -395,8 +535,14 @@ func AddTaskComment(c *gin.Context) {
 
 	database.DB.Preload("User").First(&comment, comment.ID)
 
-	utils.LogAudit(currentUserID, "commented", "task", task.ID,
-		"Added comment to task "+task.TaskNumber, "", "")
+	// Internal notes get their own action so the timeline can hide them from
+	// people who can't see internal notes.
+	action, what := "commented", "comment"
+	if input.IsInternal {
+		action, what = "internal_note_added", "internal note"
+	}
+	utils.LogAudit(currentUserID, action, "task", task.ID,
+		"Added "+what+" to task "+task.TaskNumber, c.ClientIP(), c.Request.UserAgent())
 
 	c.JSON(http.StatusCreated, gin.H{"message": "Comment added", "comment": comment})
 }
@@ -469,4 +615,16 @@ func AddTaskWorkLog(c *gin.Context) {
 		"Added work log to task "+task.TaskNumber, "", "")
 
 	c.JSON(http.StatusCreated, gin.H{"message": "Work log added", "work_log": workLog})
+}
+
+// assigneeLabel renders a user id for audit text: their name, or "unassigned".
+func assigneeLabel(id *uint) string {
+	if id == nil {
+		return "unassigned"
+	}
+	var u models.User
+	if err := database.DB.Select("id", "name").First(&u, *id).Error; err != nil {
+		return fmt.Sprintf("user #%d", *id)
+	}
+	return u.Name
 }

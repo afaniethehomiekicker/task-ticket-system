@@ -102,7 +102,10 @@ export const Profile = () => {
         name: formData.name,
         title: formData.title,
         phone: formData.phone,
-        avatar: formData.avatar,
+        // Only when actually changed: users created with the old stock-photo
+        // default avatar have an external URL the backend rejects, so
+        // re-sending it unchanged made every profile save fail for them.
+        ...(formData.avatar !== currentUser.avatar ? { avatar: formData.avatar } : {}),
         ...(passwords.newPassword ? {
           password: passwords.newPassword,
           currentPassword: passwords.currentPassword

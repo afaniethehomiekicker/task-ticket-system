@@ -269,3 +269,25 @@ func RequireDepartment(departments ...string) gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// RequireAnyPermission passes when the caller's role has at least one of the
+// given permissions (super_admin always passes).
+func RequireAnyPermission(permissionKeys ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		roleVal, exists := c.Get("user_role")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			c.Abort()
+			return
+		}
+		userRole, _ := roleVal.(string)
+		for _, key := range permissionKeys {
+			if HasPermission(userRole, key) {
+				c.Next()
+				return
+			}
+		}
+		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: Missing required permission: " + strings.Join(permissionKeys, " or ")})
+		c.Abort()
+	}
+}

@@ -12,8 +12,8 @@ export const ReportsView = () => {
     visibleTasks, 
     visibleTickets, 
     allUsers,
-    currentUser
-  } = useApp();
+    currentUser,
+    departments, getStatusCategory } = useApp();
 
   const [dateRange, setDateRange] = useState('30d');
 
@@ -26,26 +26,27 @@ export const ReportsView = () => {
   // of how many tasks were genuinely done, and Task Completion Rate
   // always showed 0% no matter what.
   const totalTasks = visibleTasks.length;
-  const completedTasks = visibleTasks.filter(t => t.status === 'done');
+  const completedTasks = visibleTasks.filter(t => getStatusCategory('task', t.status) === 'done');
   const taskCompletionRate = totalTasks > 0 ? Math.round((completedTasks.length / totalTasks) * 100) : 0;
 
   const totalTickets = visibleTickets.length;
-  const resolvedTickets = visibleTickets.filter(t => t.status === 'resolved' || t.status === 'closed');
+  const resolvedTickets = visibleTickets.filter(t => getStatusCategory('ticket', t.status) === 'done');
   const ticketResolutionRate = totalTickets > 0 ? Math.round((resolvedTickets.length / totalTickets) * 100) : 0;
 
   const breachedTickets = visibleTickets.filter(t => t.slaBreached);
   const slaCompliance = totalTickets > 0 ? Math.round(((totalTickets - breachedTickets.length) / totalTickets) * 100) : 100;
 
   // Department analytics
-  const departments = ['Engineering', 'Customer Success', 'Product & Design', 'Marketing & Growth'];
-  const departmentStats = departments.map(dept => {
+  // Managed Departments list (was four hard-coded, made-up departments).
+  const departmentNames = (departments || []).map(d => d.name);
+  const departmentStats = departmentNames.map(dept => {
     const deptProjects = visibleProjects.filter(p => p.department === dept);
     const deptUsers = allUsers.filter(u => u.department === dept);
-    const deptTasks = visibleTasks.filter(t => {
-      const p = visibleProjects.find(pr => pr.id === t.projectId);
-      return p?.department === dept;
-    });
-    const completedDeptTasks = deptTasks.filter(t => t.status === 'completed' || t.status === 'closed');
+    // A task carries its own department (set from its project when created).
+    const deptTasks = visibleTasks.filter(t => t.department === dept);
+    // A finished task's status is 'done' — this counted 'completed'/'closed',
+    // which tasks never have, so every department's velocity read 0%.
+    const completedDeptTasks = deptTasks.filter(t => getStatusCategory('task', t.status) === 'done');
     const velocity = deptTasks.length > 0 ? Math.round((completedDeptTasks.length / deptTasks.length) * 100) : 0;
 
     return {
@@ -196,8 +197,8 @@ export const ReportsView = () => {
             </thead>
             <tbody className="divide-y divide-slate-300/50 dark:divide-zinc-800/60 text-slate-800 dark:text-zinc-300">
               {allUsers.filter(u => u.role === 'staff' || u.role === 'supervisor').map(user => {
-                const userCompletedTasks = visibleTasks.filter(t => t.assignedToId === user.id && t.status === 'done').length;
-                const userActiveTickets = visibleTickets.filter(t => t.assignedToId === user.id && t.status !== 'resolved' && t.status !== 'closed').length;
+                const userCompletedTasks = visibleTasks.filter(t => t.assignedToId === user.id && getStatusCategory('task', t.status) === 'done').length;
+                const userActiveTickets = visibleTickets.filter(t => t.assignedToId === user.id && !['done', 'cancelled', 'archived'].includes(getStatusCategory('ticket', t.status))).length;
 
                 return (
                   <tr key={user.id}>

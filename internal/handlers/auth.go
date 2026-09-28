@@ -288,6 +288,14 @@ func GetUsers(c *gin.Context) {
 	// search-as-you-type call, so with more than 20 users some accounts were
 	// silently missing. Typeahead keeps its small cap; the full list doesn't.
 	db := database.DB.Order("id ASC")
+	// ?status=archived for the Archive page; otherwise archived accounts are
+	// left out (they're gone from the Team list but their names still
+	// resolve through the directory).
+	if st := strings.TrimSpace(c.Query("status")); st != "" {
+		db = db.Where("status = ?", st)
+	} else {
+		db = db.Where("status <> ?", "archived")
+	}
 	limit := 1000
 	if searchQuery != "" {
 		likeQuery := "%" + strings.ToLower(searchQuery) + "%"
@@ -356,6 +364,32 @@ func AdminCreateUser(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only a super admin can create super admin accounts"})
 		return
 	}
+	// Same avatar rule as every edit path. Creating accepted any URL, and the
+	// user could then never be edited again: AdminUpdateUser rejected the
+	// avatar the record already had.
+	if !validAvatarURL(input.Avatar) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid avatar URL"})
+		return
+	}
+	if !departmentIsKnown(input.Department) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown department"})
+		return
+	}
+	setAdmin, adminVal, msg := resolveHierarchyLink(input.AdminID, 0, adminLinkRoles, "admin")
+	if msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+	setSup, supVal, msg := resolveHierarchyLink(input.SupervisorID, 0, supervisorLinkRoles, "supervisor")
+	if msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+	tier, msg := normalizeSupportTier(input.SupportTier, input.Department)
+	if msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
 
 	plainPassword := input.Password
 	generated := false
@@ -391,9 +425,9 @@ func AdminCreateUser(c *gin.Context) {
 		Role:       input.Role,
 		Department: input.Department,
 		Title:      input.Title,
-		Phone:      input.Phone,
-		ManagerID:  input.AdminID,
-		Status:     "active",
+		Phone:       input.Phone,
+		SupportTier: tier,
+		Status:      "active",
 	}
 
 	if result := database.DB.Create(&user); result.Error != nil {
@@ -405,11 +439,18 @@ func AdminCreateUser(c *gin.Context) {
 	if input.Avatar != "" {
 		extra["avatar"] = input.Avatar
 	}
-	if input.SupervisorID != nil {
-		extra["supervisor_id"] = *input.SupervisorID
+	// The Admin link lives in manager_id (see resolveHierarchyLink).
+	if setAdmin && adminVal != nil {
+		extra["manager_id"] = adminVal
+	}
+	if setSup && supVal != nil {
+		extra["supervisor_id"] = supVal
 	}
 	if len(extra) > 0 {
-		database.DB.Model(&user).Updates(extra)
+		if err := database.DB.Model(&user).Updates(extra).Error; err != nil {
+			log.Printf("users: created %s but failed to set avatar/reporting lines: %v", user.Email, err)
+		}
+		database.DB.First(&user, user.ID)
 	}
 
 	callerIDVal, _ := c.Get("user_id")
@@ -439,10 +480,14 @@ func AdminUpdateUser(c *gin.Context) {
 		Title        string  `json:"title"`
 		Phone        string  `json:"phone"`
 		Status       string  `json:"status"`
+		// The user's Admin. Stored in manager_id; "admin_id" is what the
+		// frontend sends, "manager_id" is accepted too. 0 clears it.
+		AdminID      *uint   `json:"admin_id"`
 		ManagerID    *uint   `json:"manager_id"`
-		SupervisorID *uint   `json:"supervisor_id"`
-		Password     string  `json:"password"` // admin reset; min 6 like every other password path
+		SupervisorID *uint   `json:"supervisor_id"` // 0 clears it
+		Password     string  `json:"password"`      // admin reset; min 6 like every other password path
 		Avatar       *string `json:"avatar"`
+		SupportTier  *string `json:"support_tier"` // L1..L4, "" clears; CNOC only
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -472,7 +517,67 @@ func AdminUpdateUser(c *gin.Context) {
 		return
 	}
 
+	// Same guards as UpdateUserRole, so this endpoint isn't a way around them.
+	if code, msg := roleChangeError(c, target, input.Role); code != 0 {
+		c.JSON(code, gin.H{"error": msg})
+		return
+	}
+	if input.Status != "" && !validUserStatuses[input.Status] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status (use active or inactive)"})
+		return
+	}
+	// Same guard ToggleUserStatus has — this endpoint let you lock yourself out.
+	if input.Status == "inactive" && callerID(c) == target.ID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "You can't deactivate your own account"})
+		return
+	}
+	// Only a CHANGED department is checked against the managed list. Checking
+	// it unconditionally made every edit of a user whose existing department
+	// isn't in the list (e.g. the seeded super admin's "Management") fail,
+	// even when the department wasn't being touched.
+	if input.Department != "" && !strings.EqualFold(strings.TrimSpace(input.Department), strings.TrimSpace(target.Department)) &&
+		!departmentIsKnown(input.Department) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown department"})
+		return
+	}
+	adminIn := input.AdminID
+	if adminIn == nil {
+		adminIn = input.ManagerID
+	}
+	setAdmin, adminVal, msg := resolveHierarchyLink(adminIn, target.ID, adminLinkRoles, "admin")
+	if msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+	setSup, supVal, msg := resolveHierarchyLink(input.SupervisorID, target.ID, supervisorLinkRoles, "supervisor")
+	if msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+
+	// Tier follows the department the user will be in after this edit. Moving
+	// someone out of CNOC clears their tier.
+	finalDept := target.Department
+	if input.Department != "" {
+		finalDept = input.Department
+	}
+	tierSet := false
+	var tierVal string
+	if input.SupportTier != nil {
+		t, msg := normalizeSupportTier(*input.SupportTier, finalDept)
+		if msg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
+		tierSet, tierVal = true, t
+	} else if !isSupportDepartment(finalDept) && target.SupportTier != "" {
+		tierSet, tierVal = true, ""
+	}
+
 	updates := map[string]interface{}{}
+	if tierSet {
+		updates["support_tier"] = tierVal
+	}
 	if input.Name != "" {
 		updates["name"] = input.Name
 	}
@@ -494,11 +599,11 @@ func AdminUpdateUser(c *gin.Context) {
 	if input.Status != "" {
 		updates["status"] = input.Status
 	}
-	if input.ManagerID != nil {
-		updates["manager_id"] = *input.ManagerID
+	if setAdmin {
+		updates["manager_id"] = adminVal // nil clears it
 	}
-	if input.SupervisorID != nil {
-		updates["supervisor_id"] = *input.SupervisorID
+	if setSup {
+		updates["supervisor_id"] = supVal // nil clears it
 	}
 	if input.Password != "" {
 		hashed, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
@@ -644,6 +749,10 @@ func UpdateUserRole(c *gin.Context) {
 	}
 	if !callerMayManage(c, target.Role) || !callerMayManage(c, input.Role) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only a super admin can assign or change the super admin role"})
+		return
+	}
+	if code, msg := roleChangeError(c, target, input.Role); code != 0 {
+		c.JSON(code, gin.H{"error": msg})
 		return
 	}
 	oldRole := target.Role

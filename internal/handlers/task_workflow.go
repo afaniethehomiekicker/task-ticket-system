@@ -53,14 +53,35 @@ func taskWithRelations() *gorm.DB {
 		Preload("Project").
 		Preload("Ticket").
 		Preload("Assignee").
+		Preload("AssignedBy", userBasics).
 		Preload("Creator").
 		Preload("SubTasks.Assignee").
+		Preload("SubTasks.AssignedBy", userBasics).
 		Preload("Comments.User").
 		Preload("Dependencies")
 	if hasTaskRelation("Checklists") {
 		q = q.Preload("Checklists")
 	}
 	return q
+}
+
+// reloadFullTask re-reads a task with every relation normalizeTask reads, for
+// endpoints whose response the frontend stores as the task. It loads into a
+// fresh struct: re-using the caller's struct would keep any stale values GORM
+// wrote back into it during Updates(). If the reload fails, the caller's copy
+// is returned rather than nothing.
+// Internal notes are stripped for callers without view_internal_notes.
+func reloadFullTask(c *gin.Context, task models.Task) models.Task {
+	var full models.Task
+	if err := taskWithRelations().First(&full, task.ID).Error; err != nil {
+		log.Printf("tasks: could not reload task %d with relations: %v", task.ID, err)
+		redactTask(c, &task)
+		reduceProjectToRef(c, &task)
+		return task
+	}
+	redactTask(c, &full)
+	reduceProjectToRef(c, &full)
+	return full
 }
 
 // setReviewFields records the review state the task drawer keys off:
@@ -152,6 +173,8 @@ func applyTransition(c *gin.Context, task models.Task, userID uint, updates map[
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Task updated but could not be reloaded"})
 		return
 	}
+	redactTask(c, &task)
+	reduceProjectToRef(c, &task)
 	c.JSON(http.StatusOK, gin.H{"message": label + " successful", "task": task})
 }
 

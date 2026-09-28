@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, Fragment } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
   CheckSquare, Plus, Search, Filter, Download, Clock, 
@@ -6,9 +6,8 @@ import {
 } from 'lucide-react';
 import { PriorityBadge, TaskStatusBadge, RoleBadge } from '../common/Badge';
 
-import { canCreateTask } from '../../utils/permissions';
+import { canCreateTask, canAssignTickets, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName } from '../../utils/permissions';
 import { exportTasksToCSV } from '../../utils/exportUtils';
-import { TaskDetailDrawer } from './TaskDetailDrawer';
 
 export const TasksView = () => {
   const { 
@@ -20,15 +19,44 @@ export const TasksView = () => {
     openQuickCreate,
     permissionMatrix,
     updateTaskStatus,
-    updateTask
+    updateTask,
+    updateSubTaskStatus,
+    updateSubTaskAssignee, getStatuses,
+    taskListPreset,
+    setTaskListPreset
   } = useApp();
 
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState(taskListPreset?.status || 'all');
+
+  // Apply a filter requested by another screen (dashboard cards), once.
+  useEffect(() => {
+    if (!taskListPreset) return;
+    if (taskListPreset.status) setStatusFilter(taskListPreset.status);
+    setTaskListPreset(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskListPreset]);
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [projectFilter, setProjectFilter] = useState('all');
   const [assigneeFilter, setAssigneeFilter] = useState('all');
   const [sortBy, setSortBy] = useState('dueDate');
+  // Sub-tasks are listed under their parent task (they used to be visible
+  // only inside the task drawer).
+  const [showSubTasks, setShowSubTasks] = useState(true);
+
+  // Sub-tasks shown under a task: live ones, narrowed by the assignee filter
+  // and by search (a search that matches the parent shows all its sub-tasks).
+  const subTasksToShow = (t) => {
+    if (!showSubTasks) return [];
+    const q = search.toLowerCase();
+    const parentMatchesSearch = !q ||
+      t.title.toLowerCase().includes(q) || t.taskNumber.toLowerCase().includes(q);
+    return (t.subTasks || []).filter(st =>
+      st && st.status !== 'archived' &&
+      (assigneeFilter === 'all' || String(st.assignedToId) === assigneeFilter) &&
+      (parentMatchesSearch || (st.title || '').toLowerCase().includes(q))
+    );
+  };
 
   const filteredTasks = useMemo(() => {
     return visibleTasks.filter(t => {
@@ -46,7 +74,10 @@ export const TasksView = () => {
       const matchProject = projectFilter === 'all' || String(t.projectId) === projectFilter;
       const matchAssignee = assigneeFilter === 'all' || String(t.assignedToId) === assigneeFilter;
 
-      return matchSearch && matchStatus && matchPriority && matchProject && matchAssignee;
+      if (matchSearch && matchStatus && matchPriority && matchProject && matchAssignee) return true;
+      // Also keep a task whose sub-task matches the assignee/search filter
+      // (e.g. filtering by a person shows the tasks they have sub-tasks in).
+      return matchStatus && matchPriority && matchProject && subTasksToShow(t).length > 0;
     }).sort((a, b) => {
       if (a.isPinned && !b.isPinned) return -1;
       if (!a.isPinned && b.isPinned) return 1;
@@ -63,7 +94,7 @@ export const TasksView = () => {
       }
       return b.taskNumber.localeCompare(a.taskNumber);
     });
-  }, [visibleTasks, search, statusFilter, priorityFilter, projectFilter, assigneeFilter, sortBy]);
+  }, [visibleTasks, search, statusFilter, priorityFilter, projectFilter, assigneeFilter, sortBy, showSubTasks]);
 
   const handleExport = () => {
     exportTasksToCSV(filteredTasks, allUsers, visibleProjects);
@@ -150,12 +181,9 @@ export const TasksView = () => {
               "in_review"/"done". Every one of the old options either
               matched nothing or matched the wrong tasks. */}
           <option value="all">All Statuses</option>
-          <option value="todo">To Do</option>
-          <option value="in_progress">In Progress</option>
-          <option value="in_review">In Review</option>
-          <option value="done">Done</option>
-          <option value="blocked">Blocked</option>
-          <option value="cancelled">Cancelled</option>
+          {getStatuses('task', { includeDisabled: true }).map(st => (
+            <option key={st.key} value={st.key}>{st.label}{st.enabled ? '' : ' (disabled)'}</option>
+          ))}
         </select>
 
         {/* Priority Filter */}
@@ -204,6 +232,15 @@ export const TasksView = () => {
             <option value="status">Sort by Status</option>
             <option value="number">Sort by Task #</option>
           </select>
+          <label className="flex items-center gap-1.5 text-xs text-slate-700 dark:text-zinc-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={showSubTasks}
+              onChange={(e) => setShowSubTasks(e.target.checked)}
+              className="accent-indigo-600"
+            />
+            Show sub-tasks
+          </label>
         </div>
       </div>
 
@@ -236,9 +273,11 @@ export const TasksView = () => {
                   const project = visibleProjects.find(p => p.id === t.projectId);
                   const isUnderReview = t.status === 'in_review';
 
+                  const subRows = subTasksToShow(t);
+
                   return (
+                    <Fragment key={t.id}>
                     <tr
-                      key={t.id}
                       id={`task-row-${t.id}`}
                       onClick={() => setSelectedTaskId(t.id)}
                       className={`hover:bg-slate-300/50 dark:hover:bg-zinc-800/50 cursor-pointer transition ${
@@ -287,6 +326,9 @@ export const TasksView = () => {
                         ) : (
                           <span className="text-slate-500 dark:text-zinc-500">Unassigned</span>
                         )}
+                        {assignee && assignedByName(t, allUsers) && (
+                          <span className="block mt-0.5 text-[10px] text-slate-500 dark:text-zinc-400">by {assignedByName(t, allUsers)}</span>
+                        )}
                       </td>
                       <td className="p-3.5"><PriorityBadge priority={t.priority} /></td>
                       <td className="p-3.5">
@@ -307,6 +349,77 @@ export const TasksView = () => {
                       </td>
                       <td className="p-3.5 whitespace-nowrap">{t.dueDate}</td>
                     </tr>
+                    {subRows.map(st => {
+                      const subAssignee = allUsers.find(u => String(u.id) === String(st.assignedToId));
+                      // The backend allows the sub-task's own assignee, or
+                      // anyone with full access to the parent task.
+                      const canChange = t.accessLevel !== 'subtask' || String(st.assignedToId) === String(currentUser?.id);
+                      return (
+                        <tr
+                          key={`sub-${st.id}`}
+                          onClick={() => setSelectedTaskId(t.id)}
+                          className="bg-slate-100/60 dark:bg-zinc-950/40 hover:bg-slate-300/40 dark:hover:bg-zinc-800/40 cursor-pointer transition"
+                        >
+                          <td className="py-2 px-3.5 pl-10 font-mono text-[10px] text-slate-500 dark:text-zinc-500 whitespace-nowrap">
+                            ↳ {t.taskNumber}
+                          </td>
+                          <td className="py-2 px-3.5 max-w-xs">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 font-bold uppercase">Sub-task</span>
+                              {st.subtaskNumber && <span className="font-mono text-[10px] text-slate-500 dark:text-zinc-500">{st.subtaskNumber}</span>}
+                              <span className="text-slate-800 dark:text-zinc-200 line-clamp-1">{st.title}</span>
+                            </div>
+                          </td>
+                          <td className="py-2 px-3.5 text-slate-500 dark:text-zinc-500">{project?.code || ''}</td>
+                          <td className="py-2 px-3.5" onClick={(e) => e.stopPropagation()}>
+                            {(() => {
+                              // Same rules as the drawer / backend: reassign
+                              // anyone's (full access), or transfer within your
+                              // department if it's your sub-task or your task.
+                              const me = String(currentUser?.id);
+                              const anyRight = t.accessLevel !== 'subtask' && canAssignTickets(currentUser, permissionMatrix);
+                              const transferRight = canTransferOwnWork(currentUser, permissionMatrix) &&
+                                (String(st.assignedToId) === me || (t.accessLevel !== 'subtask' && String(t.assignedToId) === me));
+                              if (!anyRight && !transferRight) return null;
+                              const pool = (anyRight ? allUsers.filter(u => u.status === 'active') : sameDepartmentUsers(currentUser, allUsers))
+                                .filter(isTaskAssignable); // admins assign, aren't assigned
+                              const current = allUsers.find(u => String(u.id) === String(st.assignedToId));
+                              const options = current && !pool.some(u => u.id === current.id) ? [...pool, current] : pool;
+                              return (
+                                <select
+                                  value={st.assignedToId ?? ''}
+                                  onChange={(e) => updateSubTaskAssignee(t.id, st.id, e.target.value)}
+                                  className="max-w-[160px] px-2 py-1 text-[11px] rounded border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-800 dark:text-zinc-300 focus:outline-hidden"
+                                >
+                                  {anyRight && <option value="">Unassigned</option>}
+                                  {options.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                                </select>
+                              );
+                            })() ?? (
+                              subAssignee ? <span className="font-medium">{subAssignee.name}</span>
+                                : <span className="text-slate-500 dark:text-zinc-500">Unassigned</span>
+                            )}
+                          </td>
+                          <td className="py-2 px-3.5"><PriorityBadge priority={st.priority} /></td>
+                          <td className="py-2 px-3.5" onClick={(e) => e.stopPropagation()}>
+                            <select
+                              value={st.status}
+                              disabled={!canChange}
+                              onChange={(e) => updateSubTaskStatus(t.id, st.id, e.target.value)}
+                              className="px-2 py-1 text-[11px] rounded border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-800 dark:text-zinc-300 focus:outline-hidden disabled:opacity-60"
+                            >
+                              <option value="todo">To Do</option>
+                              <option value="in_progress">In Progress</option>
+                              <option value="done">Done</option>
+                              <option value="cancelled">Cancelled</option>
+                            </select>
+                          </td>
+                          <td className="py-2 px-3.5"></td>
+                          <td className="py-2 px-3.5 whitespace-nowrap text-slate-500 dark:text-zinc-400">{st.dueDate || '—'}</td>
+                        </tr>
+                      );
+                    })}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -316,7 +429,6 @@ export const TasksView = () => {
       </div>
 
       {/* Task Drawer */}
-      <TaskDetailDrawer />
     </div>
   );
 };

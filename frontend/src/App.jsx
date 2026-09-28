@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { AppProvider, useApp } from "./context/AppContext";
 import { Sidebar } from "./components/layout/Sidebar";
 import { Navbar } from "./components/layout/Navbar";
@@ -21,11 +21,28 @@ import { Profile } from "./components/profile/profile";
 import { TaskEditModal } from "./components/tasks/TaskEditModal";
 import { ProjectEditModal } from "./components/projects/ProjectEditModal";
 import { TicketEditModal } from "./components/tickets/TicketEditModal";
+import { TaskDetailDrawer } from "./components/tasks/TaskDetailDrawer";
+import { TicketDetailDrawer } from "./components/tickets/TicketDetailDrawer";
+import { ProjectDetailModal } from "./components/projects/ProjectDetailModal";
+import { FeasibilityDetailDrawer } from "./components/feasibilities/FeasibilityDetailDrawer";
 import { ClientsView } from "./components/Clients/Clientsview";
 import { DepartmentsView } from "./components/departments/DepartmentsView";
+import { ArchiveView } from "./components/archive/ArchiveView";
 const AppContent = () => {
-  const { activeTab, quickCreateOpen, setQuickCreateOpen, currentUser, authToken, dataLoaded } =
-    useApp();
+  const {
+    activeTab, quickCreateOpen, setQuickCreateOpen, currentUser, authToken, dataLoaded,
+    setSelectedTaskId, setSelectedTicketId, setSelectedProjectDetailId, setSelectedFeasibilityId,
+  } = useApp();
+
+  // Detail windows are app-level now; changing page closes whichever is
+  // open so it doesn't sit on top of the new page.
+  useEffect(() => {
+    setSelectedTaskId?.(null);
+    setSelectedTicketId?.(null);
+    setSelectedProjectDetailId?.(null);
+    setSelectedFeasibilityId?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   // Dedicated Super Admin portal — a real, separate URL path
   // (/admin-login), checked directly against window.location.pathname
@@ -85,6 +102,8 @@ const AppContent = () => {
         return <ReportsView />;
       case "audit":
         return <AuditLogsView />;
+      case "archive":
+        return <ArchiveView />;
       case "settings":
         return <SettingsView />;
       case "profile":
@@ -120,6 +139,13 @@ const AppContent = () => {
       <TaskEditModal />
       <ProjectEditModal />
       <TicketEditModal />
+      {/* Detail windows live here, once, so they open from any page — the
+          dashboard, the Client 360 view, search — not only from inside
+          their own list page (clicking a task on the dashboard did nothing). */}
+      <TaskDetailDrawer />
+      <TicketDetailDrawer />
+      <ProjectDetailModal />
+      <FeasibilityDetailDrawer />
     </div>
   );
 };

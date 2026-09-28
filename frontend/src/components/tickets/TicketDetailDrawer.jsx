@@ -2,10 +2,10 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import {
   X, Clock, AlertTriangle, ShieldAlert, Pencil, Trash2, Send, Lock,
-  User as UserIcon, Building, Paperclip, MessageSquare
+  User as UserIcon, Building, Paperclip, MessageSquare, Archive, History
 } from 'lucide-react';
 import { PriorityBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
-import { canEscalateTicket, canAssignTickets } from '../../utils/permissions';
+import { canEscalateTicket, canAssignTickets, canViewInternalNotes, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName } from '../../utils/permissions';
 
 // Rebuilt from scratch after the original file was overwritten. It reads the
 // same context state TicketsView already drives (selectedTicketId) and calls
@@ -18,15 +18,7 @@ const FALLBACK_AVATAR =
 // The backend's own ticket statuses. "escalated" isn't one: escalation is
 // tracked separately (escalationLevel), and "archived" is only reachable via
 // the archive action.
-const STATUS_OPTIONS = [
-  ['new', 'New'],
-  ['assigned', 'Assigned'],
-  ['in_progress', 'In Progress'],
-  ['pending', 'Pending'],
-  ['resolved', 'Resolved'],
-  ['closed', 'Closed'],
-  ['cancelled', 'Cancelled'],
-];
+// Status options come from the configurable catalog (getStatuses('ticket')).
 
 // Escalation chain from the spec: staff -> department head -> department
 // admin -> super admin. The values are what escalateTicket()/the backend use.
@@ -38,6 +30,9 @@ const ESCALATION_LEVELS = [
 
 const fmt = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
 
+import { TimelinePanel } from '../common/TimelinePanel';
+import { SLAStatus } from './SLAStatus';
+import { TicketFlowActions } from './TicketFlowActions';
 export const TicketDetailDrawer = () => {
   const {
     tickets,
@@ -52,8 +47,7 @@ export const TicketDetailDrawer = () => {
     addTicketComment,
     addTicketInternalNote,
     assignTicket,
-    deleteTicket,
-  } = useApp();
+    deleteTicket, getStatuses, getStatusLabel, getStatusCategory } = useApp();
 
   const [tab, setTab] = useState('public');
   const [commentText, setCommentText] = useState('');
@@ -71,17 +65,36 @@ export const TicketDetailDrawer = () => {
 
   const users = allUsers || [];
   const assignee = users.find(u => String(u.id) === String(ticket.assignedToId));
-  const agents = users.filter(u => u.status !== 'inactive');
+  // Active people, plus the current assignee even if since deactivated —
+  // otherwise the select showed the first agent as if they were assigned.
+  // Active staff / supervisors (admins assign, they aren't assigned), plus
+  // the current assignee so the select still shows who it is.
+  const agents = users.filter(u => (u.status === 'active' && isTaskAssignable(u)) || String(u.id) === String(ticket?.assignedToId));
 
-  const isClosedOut = ticket.status === 'closed' || ticket.status === 'cancelled' || ticket.status === 'archived';
+  const isClosedOut = ticket.status === 'closed' || ['cancelled', 'archived'].includes(getStatusCategory('ticket', ticket.status));
   const isEscalated = ticket.escalationLevel && ticket.escalationLevel !== 'none';
+  // Internal notes tab/composer only for people allowed to see them (the
+  // server doesn't send them to anyone else).
+  const showInternal = canViewInternalNotes(currentUser, permissionMatrix);
+  const activeTab = tab === 'internal' && !showInternal ? 'public' : tab;
+  const STATUS_OPTIONS = getStatuses('ticket').map(st => [st.key, st.label]);
   const canEscalate = !isClosedOut && ticket.status !== 'resolved' && canEscalateTicket(currentUser, ticket, permissionMatrix);
   const canAssign = canAssignTickets(currentUser, permissionMatrix);
+  // The current assignee may transfer it to a colleague in their own
+  // department (e.g. CNOC L1 -> L2), without the general reassign right.
+  const canTransfer = !canAssign &&
+    String(ticket.assignedToId) === String(currentUser?.id) &&
+    canTransferOwnWork(currentUser, permissionMatrix);
+  const agentOptions = canAssign ? agents
+    : canTransfer ? sameDepartmentUsers(currentUser, users).filter(isTaskAssignable).concat(
+        users.filter(u => String(u.id) === String(ticket.assignedToId) &&
+          !sameDepartmentUsers(currentUser, users).some(x => x.id === u.id)))
+    : agents;
   const isAdminTier = currentUser.role === 'super_admin' || currentUser.role === 'admin';
 
   const publicComments = ticket.comments || [];
   const internalNotes = ticket.internalNotes || [];
-  const visibleComments = tab === 'internal' ? internalNotes : publicComments;
+  const visibleComments = activeTab === 'internal' ? internalNotes : publicComments;
 
   const close = () => setSelectedTicketId(null);
 
@@ -129,7 +142,7 @@ export const TicketDetailDrawer = () => {
     const text = commentText.trim();
     if (!text) return;
     setIsPosting(true);
-    const saved = tab === 'internal'
+    const saved = activeTab === 'internal'
       ? await addTicketInternalNote(ticket.id, text)
       : await addTicketComment(ticket.id, text);
     setIsPosting(false);
@@ -262,6 +275,12 @@ export const TicketDetailDrawer = () => {
             )}
           </div>
 
+          {/* SLA tracking (spec slide 22) */}
+          <SLAStatus ticket={ticket} />
+
+          {/* CNOC flow (spec slide 19): route on, return to origin, reopen. */}
+          <TicketFlowActions ticket={ticket} />
+
           {/* Assignment */}
           <div>
             <h3 className="text-xs font-bold text-slate-800 dark:text-zinc-200 mb-2 flex items-center gap-1.5">
@@ -277,16 +296,19 @@ export const TicketDetailDrawer = () => {
                 id="ticket-assignee-select"
                 value={ticket.assignedToId ?? ''}
                 onChange={(e) => handleAssign(e.target.value)}
-                disabled={!canAssign || isBusy}
-                title={!canAssign ? "You don't have permission to reassign tickets" : undefined}
+                disabled={(!canAssign && !canTransfer) || isBusy}
+                title={canAssign ? undefined : canTransfer ? 'Transfer to a colleague in your department' : "You don't have permission to reassign tickets"}
                 className="flex-1 px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden disabled:opacity-60"
               >
                 {!ticket.assignedToId && <option value="">Unassigned</option>}
-                {agents.map(u => (
-                  <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
+                {agentOptions.map(u => (
+                  <option key={u.id} value={u.id}>{u.name} ({u.role}){u.supportTier ? ` · ${u.supportTier}` : ''}</option>
                 ))}
               </select>
             </div>
+            {assignedByName(ticket, users) && (
+              <p className="mt-1.5 text-[11px] text-slate-500 dark:text-zinc-400">Assigned by {assignedByName(ticket, users)}</p>
+            )}
           </div>
 
           {/* Resolution summary */}
@@ -323,30 +345,49 @@ export const TicketDetailDrawer = () => {
                 type="button"
                 onClick={() => setTab('public')}
                 className={`px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 border-b-2 -mb-px cursor-pointer ${
-                  tab === 'public'
+                  activeTab === 'public'
                     ? 'border-amber-500 text-amber-700 dark:text-amber-400'
                     : 'border-transparent text-slate-500 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200'
                 }`}
               >
                 <MessageSquare className="w-3.5 h-3.5" /> Replies ({publicComments.length})
               </button>
+{showInternal && (
               <button
                 type="button"
                 onClick={() => setTab('internal')}
                 className={`px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 border-b-2 -mb-px cursor-pointer ${
-                  tab === 'internal'
+                  activeTab === 'internal'
                     ? 'border-purple-500 text-purple-700 dark:text-purple-400'
                     : 'border-transparent text-slate-500 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200'
                 }`}
               >
                 <Lock className="w-3.5 h-3.5" /> Internal notes ({internalNotes.length})
               </button>
+              )}
+              {/* Accountability chain (spec slide 20): every event on this
+                  ticket — who, when, previous -> new, reason. */}
+              <button
+                type="button"
+                onClick={() => setTab('timeline')}
+                className={`px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 border-b-2 -mb-px cursor-pointer ${
+                  activeTab === 'timeline'
+                    ? 'border-indigo-500 text-indigo-700 dark:text-indigo-400'
+                    : 'border-transparent text-slate-500 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200'
+                }`}
+              >
+                <History className="w-3.5 h-3.5" /> Timeline
+              </button>
             </div>
+
+            {activeTab === 'timeline' ? (
+              <TimelinePanel kind="tickets" recordId={ticket.id} refreshKey={`${ticket.updatedAt}|${ticket.status}|${ticket.assignedToId}`} />
+            ) : (<>
 
             <div className="space-y-3 mb-3">
               {visibleComments.length === 0 ? (
                 <p className="text-xs text-slate-500 dark:text-zinc-500 italic">
-                  {tab === 'internal' ? 'No internal notes yet.' : 'No replies yet.'}
+                  {activeTab === 'internal' ? 'No internal notes yet.' : 'No replies yet.'}
                 </p>
               ) : (
                 visibleComments.map(c => (
@@ -377,7 +418,7 @@ export const TicketDetailDrawer = () => {
                   value={commentText}
                   onChange={(e) => setCommentText(e.target.value)}
                   disabled={isPosting}
-                  placeholder={tab === 'internal' ? 'Add an internal note (not a reply)...' : 'Write a reply...'}
+                  placeholder={activeTab === 'internal' ? 'Add an internal note (not a reply)...' : 'Write a reply...'}
                   className="flex-1 px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-amber-500 resize-none disabled:opacity-60"
                 />
                 <button
@@ -389,6 +430,7 @@ export const TicketDetailDrawer = () => {
                 </button>
               </form>
             )}
+            </>)}
           </div>
         </div>
 
@@ -405,7 +447,7 @@ export const TicketDetailDrawer = () => {
                 className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 font-medium focus:outline-hidden disabled:opacity-60"
               >
                 {!STATUS_OPTIONS.some(([v]) => v === ticket.status) && (
-                  <option value={ticket.status}>{ticket.status}</option>
+                  <option value={ticket.status}>{getStatusLabel('ticket', ticket.status)}</option>
                 )}
                 {STATUS_OPTIONS.map(([value, label]) => (
                   <option key={value} value={value}>{label}</option>
@@ -429,10 +471,10 @@ export const TicketDetailDrawer = () => {
                   type="button"
                   id="ticket-archive-btn"
                   onClick={handleArchive}
-                  className="p-1.5 text-slate-500 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 rounded-lg cursor-pointer"
-                  title="Archive ticket"
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 border border-rose-300 dark:border-rose-900 text-rose-700 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-950/40 cursor-pointer"
+                  title="Archive this ticket (it stays in the archive and audit trail)"
                 >
-                  <Trash2 className="w-4 h-4" />
+                  <Archive className="w-3.5 h-3.5" /> Archive
                 </button>
               )}
             </div>
