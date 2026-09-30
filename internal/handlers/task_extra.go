@@ -132,6 +132,11 @@ func CreateSubTask(c *gin.Context) {
 
 	utils.LogAudit(currentUserID, "created", "subtask", subTask.ID,
 		"Created subtask "+subTask.Title, "", "")
+	if subTask.AssigneeID != nil {
+		notify(currentUserID, notice{"assignment", "New sub-task: " + subTask.SubtaskNumber,
+			fmt.Sprintf("%s gave you sub-task %q of %s", actorName(currentUserID), subTask.Title, parentTask.TaskNumber),
+			"task", parentTask.ID}, *subTask.AssigneeID)
+	}
 
 	c.JSON(http.StatusCreated, gin.H{"message": "Subtask created successfully", "subtask": subTask})
 }
@@ -268,6 +273,11 @@ func UpdateSubTask(c *gin.Context) {
 			map[string]interface{}{"assignee": assigneeChange[0]}, map[string]interface{}{"assignee": assigneeChange[1]},
 			fmt.Sprintf("Sub-task %q of %s reassigned: %s -> %s", subTask.Title, parentTask.TaskNumber, assigneeChange[0], assigneeChange[1]),
 			c.ClientIP(), c.Request.UserAgent())
+		if v, ok := updates["assignee_id"].(uint); ok {
+			notify(viewerFrom(c).ID, notice{"assignment", "Sub-task " + subTask.SubtaskNumber + " is now yours",
+				fmt.Sprintf("%s gave you sub-task %q of %s", actorName(viewerFrom(c).ID), subTask.Title, parentTask.TaskNumber),
+				"task", parentTask.ID}, v)
+		}
 	}
 
 	database.DB.First(&subTask, id)

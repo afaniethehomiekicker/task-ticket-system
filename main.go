@@ -89,6 +89,12 @@ func main() {
 
 	// Fill "assigned by" and the project budget unit on existing records.
 	handlers.BackfillAssignedByAndBudget()
+
+	// Old shared pin flags become per-person pins (spec slide 28).
+	handlers.MigrateSharedPins()
+
+	// Project status follows its tasks; bring existing projects up to date.
+	handlers.SyncAllProjectStatuses()
 	handlers.StartSLAMonitor()
 
 	// Initialize Gin router. gin.New() rather than gin.Default(): Default()

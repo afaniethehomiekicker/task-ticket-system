@@ -1,0 +1,3 @@
+# Uploaded documents / evidence (spec slides 25, 27). Real business files —
+# never commit them; back this folder up with the database instead.
+/storage/

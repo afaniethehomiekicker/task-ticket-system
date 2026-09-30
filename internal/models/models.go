@@ -594,3 +594,60 @@ type ClientField struct {
 	Enabled   bool      `json:"enabled"`
 	SortOrder int       `json:"sort_order"`
 }
+
+// Notification is one alert for one person (spec slide 27: in-app is the
+// primary channel; email for assignments, SLA breaches and transfers).
+// Created by the server whenever something happens to someone — they used to
+// exist only in the sender's own browser, so the recipient never saw them.
+type Notification struct {
+	ID         uint       `gorm:"primaryKey" json:"id"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UserID     uint       `gorm:"not null;index:idx_notif_user_read" json:"user_id"` // recipient
+	ActorID    *uint      `json:"actor_id,omitempty"`                               // who caused it (nil = system)
+	Actor      *User      `json:"actor,omitempty" gorm:"foreignKey:ActorID"`
+	Type       string     `gorm:"size:30" json:"type"` // assignment, transfer, routed, returned, reopened, sla_breach, escalation, review, review_result, access
+	Title      string     `gorm:"size:200" json:"title"`
+	Message    string     `json:"message"`
+	EntityType string     `gorm:"size:20" json:"entity_type"` // task, ticket, project, feasibility, client
+	EntityID   uint       `json:"entity_id"`
+	ReadAt     *time.Time `gorm:"index:idx_notif_user_read" json:"read_at"`
+}
+
+// Pin — one person pinning one record (spec slide 28: "Pinned Items"). Pins
+// used to be a single flag on the record, shared by everyone (and for
+// projects not saved at all), so one person pinning something pinned it for
+// the whole company.
+type Pin struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	CreatedAt  time.Time `json:"created_at"`
+	UserID     uint      `gorm:"not null;uniqueIndex:idx_pin" json:"user_id"`
+	RecordType string    `gorm:"size:20;not null;uniqueIndex:idx_pin" json:"record_type"` // project | task | ticket | feasibility | client
+	RecordID   uint      `gorm:"not null;uniqueIndex:idx_pin" json:"record_id"`
+}
+
+// Document is one uploaded file (spec slide 27: "Upload PDFs, images,
+// screenshots, network diagrams, and supporting documents — tracked with who
+// uploaded it, when, on which record, with version history"; slide 25:
+// evidence per feasibility vendor).
+//
+// Files live outside the public /uploads folder and are only served through
+// an access-checked download, so nobody can open a document for a record they
+// can't see. Uploading a new version keeps the old ones (same GroupID).
+// Removing a document archives it; the file is kept.
+type Document struct {
+	ID           uint       `gorm:"primaryKey" json:"id"`
+	CreatedAt    time.Time  `json:"created_at"`
+	RecordType   string     `gorm:"size:20;not null;index:idx_doc_record" json:"record_type"` // ticket | task | project | feasibility | vendor
+	RecordID     uint       `gorm:"not null;index:idx_doc_record" json:"record_id"`
+	GroupID      uint       `gorm:"index" json:"group_id"` // first version's id
+	Version      int        `json:"version"`
+	Name         string     `gorm:"size:255" json:"name"`
+	MimeType     string     `gorm:"size:120" json:"mime_type"`
+	Size         int64      `json:"size"`
+	StoragePath  string     `json:"-"`
+	Note         string     `gorm:"size:500" json:"note"`
+	UploadedByID uint       `json:"uploaded_by_id"`
+	UploadedBy   *User      `json:"uploaded_by,omitempty" gorm:"foreignKey:UploadedByID"`
+	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
+	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
+}

@@ -57,6 +57,7 @@ const getVendorStatusColor = (status) => {
 const fmt = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
 const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString() : '—');
 
+import { DocumentsPanel } from '../common/DocumentsPanel';
 export const FeasibilityDetailDrawer = () => {
   const {
     feasibilities,
@@ -73,6 +74,8 @@ export const FeasibilityDetailDrawer = () => {
     convertFeasibilityToProject, reinstateFeasibilityVendor } = useApp();
 
   const [isBusy, setIsBusy] = useState(false);
+  // Which vendor's evidence panel is open.
+  const [evidenceOpen, setEvidenceOpen] = useState(null);
   const [showAddVendor, setShowAddVendor] = useState(false);
   const [vendorForm, setVendorForm] = useState({ vendorName: '', contactPerson: '', contactEmail: '', contactPhone: '', quotationRef: '' });
   const [showConvert, setShowConvert] = useState(false);
@@ -376,13 +379,27 @@ export const FeasibilityDetailDrawer = () => {
                       placeholder="Response notes..."
                       className="w-full px-2 py-1 text-[11px] rounded-md border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 focus:outline-hidden resize-none disabled:opacity-60"
                     />
+                    {/* Evidence for this vendor (spec slide 25: ping results,
+                        traceroutes, screenshots, diagrams, quotations). */}
+                    <button type="button" onClick={() => setEvidenceOpen(evidenceOpen === v.id ? null : v.id)}
+                      className="mt-1.5 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer">
+                      {evidenceOpen === v.id ? 'Hide evidence' : 'Evidence & quotation files'}
+                    </button>
+                    {evidenceOpen === v.id && (
+                      <div className="mt-2 p-2 rounded-lg bg-slate-50 dark:bg-zinc-950/40 border border-slate-200 dark:border-zinc-800">
+                        <DocumentsPanel recordType="vendor" recordId={v.id} compact title={`${v.vendorName} evidence`} />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
             )}
           </div>
 
-          {/* Attachments (read-only — no upload path exists for feasibilities yet) */}
+          {/* Documents for the feasibility as a whole (spec slide 27). */}
+          <DocumentsPanel recordType="feasibility" recordId={feasibility.id} title="Feasibility documents" />
+
+          {/* Older attachments recorded before uploads existed (read-only). */}
           {(feasibility.attachments || []).length > 0 && (
             <div>
               <h3 className="text-xs font-bold text-slate-800 dark:text-zinc-200 mb-2 flex items-center gap-1.5">

@@ -214,6 +214,28 @@ func escalateIfDue(t *models.Ticket, now time.Time) {
 		map[string]interface{}{"escalation_level": next.level, "reason": reason},
 		reason, "", "sla-monitor")
 	log.Printf("sla monitor: %s", reason)
+	// Who hears about it at each step (slide 22's chain): the assignee on the
+	// first breach, then the department head, department admin, super admin.
+	var to []uint
+	switch step {
+	case 0:
+		if t.AssignedToID != nil {
+			to = append(to, *t.AssignedToID)
+		}
+		to = append(to, supervisorOfUser(t.AssignedToID)...)
+		if len(to) == 0 || (t.AssignedToID != nil && len(to) == 1) {
+			to = append(to, departmentAdmins(t.Department)...)
+		}
+	case 1:
+		to = departmentAdmins(t.Department)
+	default:
+		to = superAdmins()
+	}
+	kind := "escalation"
+	if step == 0 {
+		kind = "sla_breach"
+	}
+	notify(0, notice{kind, "SLA breached: " + t.TicketNumber, reason, "ticket", t.ID}, to...)
 }
 
 // ---- tracking on status changes -----------------------------------------------

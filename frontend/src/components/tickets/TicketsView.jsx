@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
   LifeBuoy, Plus, Search, Filter, Download, Clock, 
@@ -7,7 +7,8 @@ import {
 import { PriorityBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
 import { exportTicketsToCSV } from '../../utils/exportUtils';
 
-import { assignedByName } from '../../utils/permissions';
+import { assignedByName, ticketSlaState } from '../../utils/permissions';
+import { FilterSelect } from '../common/FilterSelect';
 export const TicketsView = () => {
   const { 
     visibleTickets, 
@@ -16,13 +17,33 @@ export const TicketsView = () => {
     setSelectedTicketId, 
     setSelectedTicketEditId,
     openQuickCreate,
-    updateTicket, getStatuses } = useApp();
+    updateTicket, getStatuses,
+    listPreset,
+    setListPreset,
+    getStatusCategory,
+    clients,
+    visibleProjects,
+    departments
+  } = useApp();
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [priorityFilter, setPriorityFilter] = useState('all');
+
+  // Filter requested by the dashboard (drill-down), applied once.
+  useEffect(() => {
+    if (!listPreset || listPreset.tab !== 'tickets') return;
+    if (listPreset.status !== undefined) setStatusFilter(listPreset.status);
+    if (listPreset.priority !== undefined) setPriorityFilter(listPreset.priority);
+    setListPreset(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listPreset]);
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [assigneeFilter, setAssigneeFilter] = useState('all');
+  const [clientFilter, setClientFilter] = useState('all');
+  const [projectFilter, setProjectFilter] = useState('all');
+  const [deptFilter, setDeptFilter] = useState('all');
+  const [slaFilter, setSlaFilter] = useState('all');
   const [sortBy, setSortBy] = useState('sla');
 
   const filteredTickets = useMemo(() => {
@@ -34,13 +55,24 @@ export const TicketsView = () => {
       // Statuses are the backend's real Ticket.Status values. The old list
       // (open / pending_customer) matched nothing. "Escalated" isn't a status —
       // it's escalation_level != none.
+      // 'open' = anything not finished (dashboard drill-down).
       const matchStatus = statusFilter === 'all'
+        || (statusFilter === 'open' && !['done', 'cancelled', 'archived'].includes(getStatusCategory('ticket', t.status)))
         || (statusFilter === 'escalated' ? t.escalationLevel !== 'none' : t.status === statusFilter);
       const matchPriority = priorityFilter === 'all' || t.priority === priorityFilter;
       const matchCategory = categoryFilter === 'all' || t.category === categoryFilter;
-      const matchAssignee = assigneeFilter === 'all' || t.assignedToId === assigneeFilter;
+      // String compare: the select's value is text, the id a number (this
+      // never matched before).
+      const matchAssignee = assigneeFilter === 'all' || String(t.assignedToId) === assigneeFilter;
+      // Slide 28 filters.
+      const matchClient = clientFilter === 'all' || String(t.clientId) === clientFilter;
+      const matchProjectF = projectFilter === 'all' || String(t.projectId) === projectFilter;
+      const matchDept = deptFilter === 'all' || (t.department || '').toLowerCase() === deptFilter.toLowerCase();
+      const matchSla = slaFilter === 'all' ||
+        ticketSlaState(t, (st) => ['done', 'cancelled', 'archived'].includes(getStatusCategory('ticket', st))) === slaFilter;
 
-      return matchSearch && matchStatus && matchPriority && matchCategory && matchAssignee;
+      return matchSearch && matchStatus && matchPriority && matchCategory && matchAssignee &&
+        matchClient && matchProjectF && matchDept && matchSla;
     }).sort((a, b) => {
       if (a.isPinned && !b.isPinned) return -1;
       if (!a.isPinned && b.isPinned) return 1;
@@ -54,7 +86,8 @@ export const TicketsView = () => {
       }
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
-  }, [visibleTickets, search, statusFilter, priorityFilter, categoryFilter, assigneeFilter, sortBy]);
+  }, [visibleTickets, search, statusFilter, priorityFilter, categoryFilter, assigneeFilter, sortBy,
+      clientFilter, projectFilter, deptFilter, slaFilter]);
 
   const handleExport = () => {
     exportTicketsToCSV(filteredTickets, allUsers);
@@ -116,12 +149,21 @@ export const TicketsView = () => {
           className="px-2.5 py-1 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-800 dark:text-zinc-300 focus:outline-hidden"
         >
           <option value="all">All Statuses</option>
+          <option value="open">Open (not finished)</option>
           {/* From the configurable status catalog (Settings → Workflow Statuses). */}
           {getStatuses('ticket', { includeDisabled: true }).map(st => (
             <option key={st.key} value={st.key}>{st.label}{st.enabled ? '' : ' (disabled)'}</option>
           ))}
           <option value="escalated">Escalated (any tier)</option>
         </select>
+        <FilterSelect id="tickets-sla-filter" value={slaFilter} onChange={setSlaFilter} allLabel="Any SLA"
+          options={[['breached', 'SLA breached'], ['near', 'SLA near'], ['within', 'Within SLA'], ['none', 'No SLA / finished']]} />
+        <FilterSelect id="tickets-client-filter" value={clientFilter} onChange={setClientFilter} allLabel="All Clients"
+          options={(clients || []).filter(c => c.status !== 'archived').map(c => [String(c.id), c.companyName])} />
+        <FilterSelect id="tickets-project-filter" value={projectFilter} onChange={setProjectFilter} allLabel="All Projects"
+          options={(visibleProjects || []).map(p => [String(p.id), `${p.code} ${p.title}`])} />
+        <FilterSelect id="tickets-dept-filter" value={deptFilter} onChange={setDeptFilter} allLabel="All Departments"
+          options={(departments || []).map(d => [d.name, d.name])} />
 
         <select
           id="tickets-category-filter"

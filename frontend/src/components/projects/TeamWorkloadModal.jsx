@@ -2,7 +2,7 @@ import React from 'react';
 import { useApp } from '../../context/AppContext';
 
 export const TeamWorkloadModal = ({ isOpen, onClose, memberId, projectId }) => {
-  const { allUsers, tasks, projects } = useApp() || {};
+  const { allUsers, tasks, projects, getStatusCategory } = useApp() || {};
 
   if (!isOpen || !memberId) return null;
 
@@ -10,7 +10,10 @@ export const TeamWorkloadModal = ({ isOpen, onClose, memberId, projectId }) => {
   
   const memberTasks = (tasks || []).filter(t => t.assignedToId === memberId);
 
-  const completedCount = memberTasks.filter(t => t.status === 'completed' || t.status === 'closed').length;
+  // Finished = status category "done" (tasks never have "completed"/"closed",
+  // so this always read 0).
+  const isDone = (st) => getStatusCategory ? getStatusCategory('task', st) === 'done' : st === 'done';
+  const completedCount = memberTasks.filter(t => isDone(t.status)).length;
   const activeCount = memberTasks.length - completedCount;
 
   return (
@@ -51,7 +54,7 @@ export const TeamWorkloadModal = ({ isOpen, onClose, memberId, projectId }) => {
                     </span>
                   </div>
                   <span className={`px-2 py-0.5 text-[10px] rounded-full font-medium shrink-0 ml-2 ${
-                    task.status === 'completed' || task.status === 'closed' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                    isDone(task.status) ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
                   }`}>
                     {task.status}
                   </span>

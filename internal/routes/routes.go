@@ -202,6 +202,20 @@ func RegisterRoutes(r *gin.Engine) {
 				workflow.PUT("/sla/:id", middleware.RequireRole("super_admin"), handlers.UpdateSLAPolicy)
 			}
 
+			// Server-side notifications (spec slide 27).
+			// Per-person pins (spec slide 28).
+			// Documents & evidence (spec slides 25, 27) — access-checked downloads.
+			protected.GET("/documents", handlers.ListDocuments)
+			protected.POST("/documents", handlers.UploadDocument)
+			protected.GET("/documents/:id/download", handlers.DownloadDocument)
+			protected.DELETE("/documents/:id", handlers.ArchiveDocument)
+			protected.GET("/pins", handlers.GetPins)
+			protected.PUT("/pins/:type/:id", handlers.AddPin)
+			protected.DELETE("/pins/:type/:id", handlers.RemovePin)
+			protected.GET("/notifications", handlers.GetNotifications)
+			protected.PATCH("/notifications/:id/read", handlers.MarkNotificationRead)
+			protected.POST("/notifications/read-all", handlers.MarkAllNotificationsRead)
+
 			tasks := protected.Group("/tasks")
 			{
 				tasks.GET("", handlers.GetTasks)

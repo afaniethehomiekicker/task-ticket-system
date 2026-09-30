@@ -138,6 +138,9 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   // Guards project/task/ticket submits against double-clicks while the
   // request is in flight (client/feasibility have their own flags above).
   const submittingRef = useRef(false);
+  // Visible "Creating..." state + disabled button (the ref alone blocked a
+  // second click internally but the button still looked clickable).
+  const [isCreating, setIsCreating] = useState(false);
 
   if (!isOpen) return null;
 
@@ -319,7 +322,6 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     setProjectClients([]);
     setProjectDepartment("");
     setProjectType("general");
-    setSelectedClientName("");
     setShowNewClientForm(false);
     setNewClientName("");
     setNewClientContact("");
@@ -369,10 +371,12 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     e.preventDefault();
     if (submittingRef.current) return;
     submittingRef.current = true;
+    setIsCreating(true);
     try {
       await submitForm();
     } finally {
       submittingRef.current = false;
+      setIsCreating(false);
     }
   };
 
@@ -514,7 +518,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   }[localTab];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
       <div
         key={openNonce}
         className="bg-slate-200 dark:bg-zinc-950 rounded-xl shadow-xl w-full max-w-lg overflow-hidden border border-slate-300 dark:border-zinc-800"
@@ -751,9 +755,10 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                 <button
                   id="submit-create-project-btn"
                   type="submit"
-                  className="px-5 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-xs cursor-pointer"
+                  disabled={isCreating}
+                  className="px-5 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-xs cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  Create Project
+                  {isCreating ? 'Creating...' : 'Create Project'}
                 </button>
               </div>
             </form>
@@ -923,9 +928,10 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-xs cursor-pointer"
+                  disabled={isCreating}
+                  className="px-5 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-xs cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  Create Task
+                  {isCreating ? 'Creating...' : 'Create Task'}
                 </button>
               </div>
             </form>
@@ -1069,9 +1075,10 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg shadow-xs cursor-pointer"
+                  disabled={isCreating}
+                  className="px-5 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg shadow-xs cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  Create Ticket
+                  {isCreating ? 'Creating...' : 'Create Ticket'}
                 </button>
               </div>
             </form>

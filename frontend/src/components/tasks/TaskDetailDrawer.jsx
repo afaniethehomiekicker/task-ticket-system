@@ -9,6 +9,7 @@ import { PriorityBadge, TaskStatusBadge, RoleBadge } from '../common/Badge';
 import { canApproveWork, canViewInternalNotes, canAssignTickets, canGrantRecordAccess, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName } from '../../utils/permissions';
 
 import { TimelinePanel } from '../common/TimelinePanel';
+import { DocumentsPanel } from '../common/DocumentsPanel';
 export const TaskDetailDrawer = () => {
   const { 
     selectedTaskId, 
@@ -748,6 +749,10 @@ export const TaskDetailDrawer = () => {
           {/* Accountability chain (spec slide 20): who did what and when, with
               previous -> new and the reason. In reference view the server
               returns only the caller's own sub-task events. */}
+          {/* Documents & evidence (spec slide 27). Not in the sub-task
+              reference view — files belong to the task itself. */}
+          {!isReference && <DocumentsPanel recordType="task" recordId={task.id} />}
+
           <TimelinePanel kind="tasks" recordId={task.id} refreshKey={`${task.updatedAt}|${task.status}|${task.assignedToId}|${(task.subTasks || []).length}`} />
         </div>
 

@@ -1,272 +1,209 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Search, FolderKanban, CheckSquare, LifeBuoy, Users, ArrowRight, X } from 'lucide-react';
-import { PriorityBadge, TaskStatusBadge, TicketStatusBadge, RoleBadge } from './Badge';
+import { Search, FolderKanban, CheckSquare, LifeBuoy, Users, X, FileSearch, Building2, ListTree } from 'lucide-react';
+import { TaskStatusBadge, TicketStatusBadge } from './Badge';
+
+// Global search — spec slide 28: "Search by Unique ID, Client, Company,
+// Project, Ticket Subject, Task, Staff, Vendor, City, or keyword."
+//
+// Searches everything the user is allowed to see (the lists are already
+// scoped by the server). Typing an exact ID — TKT-100033, STK-000003,
+// PRJ-000004, CL-000012, FEA-100001, USR-000007 — puts that record first.
+// Ctrl/Cmd+K opens it from anywhere.
+
+const norm = (v) => String(v ?? '').toLowerCase();
+const has = (q, ...fields) => fields.some(f => norm(f).includes(q));
+const idRe = /^(cl|prj|tkt|tsk|stk|fea|usr|dep)-\d+$/i;
 
 export const GlobalSearchModal = () => {
-  const { 
-    globalSearchOpen, 
-    setGlobalSearchOpen, 
-    visibleProjects, 
-    visibleTasks, 
-    visibleTickets, 
-    allUsers,
-    setSelectedTaskId,
-    setSelectedTicketId,
-    setSelectedProjectDetailId,
-    setActiveTab
+  const {
+    globalSearchOpen, setGlobalSearchOpen,
+    visibleProjects, visibleTasks, visibleTickets, visibleFeasibilities, clients, allUsers,
+    setSelectedTaskId, setSelectedTicketId, setSelectedProjectDetailId, setSelectedFeasibilityId,
+    setActiveTab,
   } = useApp();
 
   const [query, setQuery] = useState('');
 
-  // Keyboard shortcut Cmd+K / Ctrl+K
+  // Ctrl/Cmd+K opens, Escape closes.
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setGlobalSearchOpen(true);
       }
-      if (e.key === 'Escape' && globalSearchOpen) {
-        setGlobalSearchOpen(false);
-      }
+      if (e.key === 'Escape' && globalSearchOpen) setGlobalSearchOpen(false);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [globalSearchOpen, setGlobalSearchOpen]);
 
-  const filtered = useMemo(() => {
+  useEffect(() => { if (!globalSearchOpen) setQuery(''); }, [globalSearchOpen]);
+
+  const results = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return { projects: [], tasks: [], tickets: [], users: [] };
+    if (q.length < 2) return null;
+    const userName = (id) => (allUsers || []).find(u => String(u.id) === String(id))?.name || '';
+
+    const tickets = (visibleTickets || []).filter(t => has(q,
+      t.ticketNumber, t.title, t.description, t.requesterCompany, t.requesterName, t.department,
+      t.category, userName(t.assignedToId)));
+
+    const tasks = (visibleTasks || []).filter(t => has(q,
+      t.taskNumber, t.title, t.description, t.department, (t.labels || []).join(' '), userName(t.assignedToId)));
+
+    // Sub-tasks, by their own STK- ID or title — opening one opens its task.
+    const subtasks = [];
+    (visibleTasks || []).forEach(t => (t.subTasks || []).forEach(st => {
+      if (st && st.status !== 'archived' && has(q, st.subtaskNumber, st.title)) subtasks.push({ st, parent: t });
+    }));
+
+    const projects = (visibleProjects || []).filter(p => has(q,
+      p.code, p.title, p.description, p.department, p.clientName,
+      (p.clients || []).map(c => `${c.companyName} ${c.clientNumber}`).join(' ')));
+
+    const feasibilities = (visibleFeasibilities || []).filter(f => has(q,
+      f.feasibilityNumber, f.product, f.capacity, f.city, f.fromLocation, f.toLocation,
+      f.client?.companyName, (f.vendors || []).map(v => v.vendorName).join(' ')));
+
+    const clientList = (clients || []).filter(c => c.status !== 'archived' && has(q,
+      c.clientNumber, c.companyName, c.clientName, c.contactPerson, c.city, c.email, c.phone, c.mobile));
+
+    const people = (allUsers || []).filter(u => u.status !== 'archived' && has(q,
+      u.userNumber, u.name, u.email, u.title, u.department));
+
+    // Exact ID match goes to the top.
+    let exact = null;
+    if (idRe.test(q)) {
+      const Q = q.toUpperCase();
+      const t1 = tickets.find(t => t.ticketNumber === Q);
+      const t2 = tasks.find(t => t.taskNumber === Q);
+      const s1 = subtasks.find(x => x.st.subtaskNumber === Q);
+      const p1 = projects.find(p => p.code === Q);
+      const f1 = feasibilities.find(f => f.feasibilityNumber === Q);
+      const c1 = clientList.find(c => c.clientNumber === Q);
+      const u1 = people.find(u => u.userNumber === Q);
+      exact = t1 ? { kind: 'ticket', rec: t1 } : t2 ? { kind: 'task', rec: t2 } : s1 ? { kind: 'subtask', rec: s1 }
+        : p1 ? { kind: 'project', rec: p1 } : f1 ? { kind: 'feasibility', rec: f1 } : c1 ? { kind: 'client', rec: c1 }
+        : u1 ? { kind: 'person', rec: u1 } : null;
+    }
 
     return {
-      projects: visibleProjects.filter(p => 
-        p.title.toLowerCase().includes(q) || 
-        p.code.toLowerCase().includes(q) ||
-        p.department.toLowerCase().includes(q)
-      ).slice(0, 3),
-      tasks: visibleTasks.filter(t => 
-        t.title.toLowerCase().includes(q) || 
-        t.taskNumber.toLowerCase().includes(q) ||
-        t.description.toLowerCase().includes(q) ||
-        t.labels.some(l => l.toLowerCase().includes(q))
-      ).slice(0, 4),
-      tickets: visibleTickets.filter(t => 
-        t.title.toLowerCase().includes(q) || 
-        t.ticketNumber.toLowerCase().includes(q) ||
-        t.requesterName.toLowerCase().includes(q) ||
-        t.requesterCompany?.toLowerCase().includes(q)
-      ).slice(0, 4),
-      users: allUsers.filter(u => 
-        u.name.toLowerCase().includes(q) || 
-        u.email.toLowerCase().includes(q) ||
-        u.title.toLowerCase().includes(q) ||
-        u.department.toLowerCase().includes(q)
-      ).slice(0, 3)
+      exact,
+      tickets: tickets.slice(0, 6), tasks: tasks.slice(0, 6), subtasks: subtasks.slice(0, 4),
+      projects: projects.slice(0, 5), feasibilities: feasibilities.slice(0, 5),
+      clients: clientList.slice(0, 5), people: people.slice(0, 5),
     };
-  }, [query, visibleProjects, visibleTasks, visibleTickets, allUsers]);
+  }, [query, visibleTickets, visibleTasks, visibleProjects, visibleFeasibilities, clients, allUsers]);
 
   if (!globalSearchOpen) return null;
 
-  const hasResults = 
-    filtered.projects.length > 0 || 
-    filtered.tasks.length > 0 || 
-    filtered.tickets.length > 0 || 
-    filtered.users.length > 0;
+  const close = () => setGlobalSearchOpen(false);
+  const open = {
+    ticket: (t) => { setSelectedTicketId(t.id); close(); },
+    task: (t) => { setSelectedTaskId(t.id); close(); },
+    subtask: (x) => { setSelectedTaskId(x.parent.id); close(); },
+    project: (p) => { setSelectedProjectDetailId(p.id); close(); },
+    feasibility: (f) => { setSelectedFeasibilityId(f.id); close(); },
+    client: () => { setActiveTab('clients'); close(); },
+    person: () => { setActiveTab('team'); close(); },
+  };
+
+  const Row = ({ icon: Icon, id, title, sub, right, onClick, highlight }) => (
+    <button type="button" onClick={onClick}
+      className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left cursor-pointer transition ${highlight
+        ? 'bg-indigo-100 dark:bg-indigo-950/50 border border-indigo-300 dark:border-indigo-800'
+        : 'hover:bg-slate-300/60 dark:hover:bg-zinc-800/70'}`}>
+      <Icon className="w-4 h-4 text-slate-500 dark:text-zinc-400 shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="text-xs text-slate-900 dark:text-zinc-100 truncate">
+          {id && <span className="font-mono text-[10px] text-indigo-600 dark:text-indigo-400 mr-1.5">{id}</span>}
+          <span className="font-semibold">{title}</span>
+        </div>
+        {sub && <div className="text-[11px] text-slate-500 dark:text-zinc-400 truncate">{sub}</div>}
+      </div>
+      {right}
+    </button>
+  );
+
+  const Group = ({ label, count, children }) => count > 0 && (
+    <div className="mb-3">
+      <div className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-500">{label} ({count})</div>
+      {children}
+    </div>
+  );
+
+  const renderExact = (x) => {
+    const r = x.rec;
+    switch (x.kind) {
+      case 'ticket': return <Row highlight icon={LifeBuoy} id={r.ticketNumber} title={r.title} sub="Exact match · ticket" onClick={() => open.ticket(r)} right={<TicketStatusBadge status={r.status} />} />;
+      case 'task': return <Row highlight icon={CheckSquare} id={r.taskNumber} title={r.title} sub="Exact match · task" onClick={() => open.task(r)} right={<TaskStatusBadge status={r.status} />} />;
+      case 'subtask': return <Row highlight icon={ListTree} id={r.st.subtaskNumber} title={r.st.title} sub={`Exact match · sub-task of ${r.parent.taskNumber}`} onClick={() => open.subtask(r)} />;
+      case 'project': return <Row highlight icon={FolderKanban} id={r.code} title={r.title} sub="Exact match · project" onClick={() => open.project(r)} />;
+      case 'feasibility': return <Row highlight icon={FileSearch} id={r.feasibilityNumber} title={[r.product, r.capacity].filter(Boolean).join(' · ')} sub="Exact match · feasibility" onClick={() => open.feasibility(r)} />;
+      case 'client': return <Row highlight icon={Building2} id={r.clientNumber} title={r.companyName} sub="Exact match · client" onClick={open.client} />;
+      default: return <Row highlight icon={Users} id={r.userNumber} title={r.name} sub="Exact match · person" onClick={open.person} />;
+    }
+  };
+
+  const nothing = results && !results.exact && ['tickets', 'tasks', 'subtasks', 'projects', 'feasibilities', 'clients', 'people']
+    .every(k => results[k].length === 0);
 
   return (
-    <div 
-      id="global-search-modal-backdrop" 
-      className="fixed inset-0 z-50 flex items-start justify-center pt-20 bg-black/60 backdrop-blur-xs p-4"
-      onClick={() => setGlobalSearchOpen(false)}
-    >
-      <div 
-        id="global-search-modal-container"
-        className="w-full max-w-2xl bg-slate-200 dark:bg-zinc-950 rounded-xl shadow-2xl border border-slate-300 dark:border-zinc-800 overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Search Bar Input */}
-        <div className="flex items-center px-4 py-3.5 border-b border-slate-300 dark:border-zinc-800">
-          <Search className="w-5 h-5 text-slate-500 dark:text-zinc-400 mr-3 shrink-0" />
+    <div id="global-search-modal-backdrop" className="fixed inset-0 z-[80] flex items-start justify-center pt-20 bg-black/60 backdrop-blur-xs p-4" onClick={close}>
+      <div className="w-full max-w-2xl bg-slate-100 dark:bg-zinc-950 rounded-xl shadow-2xl border border-slate-300 dark:border-zinc-800 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-300 dark:border-zinc-800">
+          <Search className="w-4 h-4 text-slate-500" />
           <input
-            id="global-search-input"
             autoFocus
-            type="text"
-            placeholder="Search projects, tasks, tickets, staff, or labels... (ESC to exit)"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="w-full bg-transparent text-slate-900 dark:text-zinc-100 placeholder-slate-500 dark:placeholder-zinc-500 focus:outline-hidden text-base"
+            placeholder="Search by ID (TKT-…, TSK-…, CL-…), client, project, subject, staff, vendor, city…"
+            className="flex-1 bg-transparent text-sm text-slate-900 dark:text-zinc-100 placeholder:text-slate-500 focus:outline-hidden"
           />
           {query && (
-            <button 
-              id="clear-search-btn"
-              onClick={() => setQuery('')}
-              className="text-slate-500 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200 p-1 cursor-pointer"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <button type="button" onClick={() => setQuery('')} className="p-1 rounded text-slate-500 hover:bg-slate-300/60 dark:hover:bg-zinc-800 cursor-pointer"><X className="w-4 h-4" /></button>
           )}
         </div>
-
-        {/* Results Area */}
-        <div className="max-h-[60vh] overflow-y-auto p-4 space-y-6">
-          {!query ? (
-            <div className="py-8 text-center text-slate-500 dark:text-zinc-400">
-              <Search className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              <p className="text-sm">Type keywords to search across all records visible to your role.</p>
-              <div className="mt-4 flex flex-wrap justify-center gap-2 text-xs font-medium text-slate-600 dark:text-zinc-400">
-                <span className="px-2 py-1 rounded bg-slate-300/60 dark:bg-zinc-800">Projects</span>
-                <span className="px-2 py-1 rounded bg-slate-300/60 dark:bg-zinc-800">Tasks</span>
-                <span className="px-2 py-1 rounded bg-slate-300/60 dark:bg-zinc-800">Tickets</span>
-                <span className="px-2 py-1 rounded bg-slate-300/60 dark:bg-zinc-800">Employees</span>
-              </div>
-            </div>
-          ) : !hasResults ? (
-            <div className="py-8 text-center text-slate-500 dark:text-zinc-400">
-              <p className="text-sm">No records found matching "{query}".</p>
-              <p className="text-xs mt-1 text-slate-500 dark:text-zinc-500">Ensure the requested item is within your role's visibility scope.</p>
-            </div>
-          ) : (
-            <>
-              {/* Tasks */}
-              {filtered.tasks.length > 0 && (
-                <div>
-                  <div className="flex items-center text-xs font-semibold text-slate-500 dark:text-zinc-400 uppercase tracking-wider mb-2">
-                    <CheckSquare className="w-3.5 h-3.5 mr-1.5" />
-                    Tasks ({filtered.tasks.length})
-                  </div>
-                  <div className="space-y-1.5">
-                    {filtered.tasks.map(t => (
-                      <div
-                        key={t.id}
-                        id={`search-item-task-${t.id}`}
-                        onClick={() => {
-                          setSelectedTaskId(t.id);
-                          setGlobalSearchOpen(false);
-                        }}
-                        className="flex items-center justify-between p-2.5 rounded-lg hover:bg-slate-300/50 dark:hover:bg-zinc-900 cursor-pointer border border-transparent hover:border-slate-300 dark:hover:border-zinc-800 transition"
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="font-mono text-xs font-semibold text-indigo-600 dark:text-indigo-400">{t.taskNumber}</span>
-                          <span className="text-sm font-medium text-slate-900 dark:text-zinc-100">{t.title}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <TaskStatusBadge status={t.status} />
-                          <PriorityBadge priority={t.priority} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Tickets */}
-              {filtered.tickets.length > 0 && (
-                <div>
-                  <div className="flex items-center text-xs font-semibold text-slate-500 dark:text-zinc-400 uppercase tracking-wider mb-2">
-                    <LifeBuoy className="w-3.5 h-3.5 mr-1.5" />
-                    Tickets ({filtered.tickets.length})
-                  </div>
-                  <div className="space-y-1.5">
-                    {filtered.tickets.map(t => (
-                      <div
-                        key={t.id}
-                        id={`search-item-ticket-${t.id}`}
-                        onClick={() => {
-                          setSelectedTicketId(t.id);
-                          setGlobalSearchOpen(false);
-                        }}
-                        className="flex items-center justify-between p-2.5 rounded-lg hover:bg-slate-300/50 dark:hover:bg-zinc-900 cursor-pointer border border-transparent hover:border-slate-300 dark:hover:border-zinc-800 transition"
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="font-mono text-xs font-semibold text-amber-600 dark:text-amber-400">{t.ticketNumber}</span>
-                          <div>
-                            <span className="text-sm font-medium text-slate-900 dark:text-zinc-100">{t.title}</span>
-                            <span className="text-xs text-slate-500 dark:text-zinc-400 block">{t.requesterCompany || t.requesterName}</span>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <TicketStatusBadge status={t.status} />
-                          <PriorityBadge priority={t.priority} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Projects */}
-              {filtered.projects.length > 0 && (
-                <div>
-                  <div className="flex items-center text-xs font-semibold text-slate-500 dark:text-zinc-400 uppercase tracking-wider mb-2">
-                    <FolderKanban className="w-3.5 h-3.5 mr-1.5" />
-                    Projects ({filtered.projects.length})
-                  </div>
-                  <div className="space-y-1.5">
-                    {filtered.projects.map(p => (
-                      <div
-                        key={p.id}
-                        id={`search-item-project-${p.id}`}
-                        onClick={() => {
-                          setSelectedProjectDetailId(p.id);
-                          setGlobalSearchOpen(false);
-                        }}
-                        className="flex items-center justify-between p-2.5 rounded-lg hover:bg-slate-300/50 dark:hover:bg-zinc-900 cursor-pointer border border-transparent hover:border-slate-300 dark:hover:border-zinc-800 transition"
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="font-mono text-xs font-semibold text-emerald-600 dark:text-emerald-400">{p.code}</span>
-                          <span className="text-sm font-medium text-slate-900 dark:text-zinc-100">{p.title}</span>
-                        </div>
-                        <div className="text-xs text-slate-500 dark:text-zinc-400">
-                          {p.department}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Users */}
-              {filtered.users.length > 0 && (
-                <div>
-                  <div className="flex items-center text-xs font-semibold text-slate-500 dark:text-zinc-400 uppercase tracking-wider mb-2">
-                    <Users className="w-3.5 h-3.5 mr-1.5" />
-                    Team & Users ({filtered.users.length})
-                  </div>
-                  <div className="space-y-1.5">
-                    {filtered.users.map(u => (
-                      <div
-                        key={u.id}
-                        id={`search-item-user-${u.id}`}
-                        onClick={() => {
-                          setActiveTab('team');
-                          setGlobalSearchOpen(false);
-                        }}
-                        className="flex items-center justify-between p-2.5 rounded-lg hover:bg-slate-300/50 dark:hover:bg-zinc-900 cursor-pointer border border-transparent hover:border-slate-300 dark:hover:border-zinc-800 transition"
-                      >
-                        <div className="flex items-center gap-3">
-                          <img src={u.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"} alt={u.name} className="w-7 h-7 rounded-full object-cover" />
-                          <div>
-                            <span className="text-sm font-medium text-slate-900 dark:text-zinc-100 block">{u.name}</span>
-                            <span className="text-xs text-slate-500 dark:text-zinc-400">{u.title} • {u.department}</span>
-                          </div>
-                        </div>
-                        <RoleBadge role={u.role} size="xs" />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
+        <div className="max-h-[60vh] overflow-y-auto p-2">
+          {!results && <p className="p-4 text-center text-xs text-slate-500 dark:text-zinc-400">Type at least 2 characters.</p>}
+          {nothing && <p className="p-4 text-center text-xs text-slate-500 dark:text-zinc-400">Nothing found for “{query}”.</p>}
+          {results && (<>
+            {results.exact && <div className="mb-3">{renderExact(results.exact)}</div>}
+            <Group label="Tickets" count={results.tickets.length}>
+              {results.tickets.map(t => <Row key={t.id} icon={LifeBuoy} id={t.ticketNumber} title={t.title}
+                sub={[t.requesterCompany, t.department].filter(Boolean).join(' · ')} onClick={() => open.ticket(t)} right={<TicketStatusBadge status={t.status} />} />)}
+            </Group>
+            <Group label="Tasks" count={results.tasks.length}>
+              {results.tasks.map(t => <Row key={t.id} icon={CheckSquare} id={t.taskNumber} title={t.title}
+                sub={t.department} onClick={() => open.task(t)} right={<TaskStatusBadge status={t.status} />} />)}
+            </Group>
+            <Group label="Sub-tasks" count={results.subtasks.length}>
+              {results.subtasks.map(x => <Row key={x.st.id} icon={ListTree} id={x.st.subtaskNumber} title={x.st.title}
+                sub={`of ${x.parent.taskNumber} ${x.parent.title}`} onClick={() => open.subtask(x)} />)}
+            </Group>
+            <Group label="Projects" count={results.projects.length}>
+              {results.projects.map(p => <Row key={p.id} icon={FolderKanban} id={p.code} title={p.title}
+                sub={[(p.clients || []).map(c => c.companyName).join(', ') || p.clientName, p.department].filter(Boolean).join(' · ')} onClick={() => open.project(p)} />)}
+            </Group>
+            <Group label="Feasibilities" count={results.feasibilities.length}>
+              {results.feasibilities.map(f => <Row key={f.id} icon={FileSearch} id={f.feasibilityNumber}
+                title={[f.product, f.capacity].filter(Boolean).join(' · ') || 'Feasibility'}
+                sub={[f.client?.companyName, f.city, (f.vendors || []).map(v => v.vendorName).join(', ')].filter(Boolean).join(' · ')}
+                onClick={() => open.feasibility(f)} />)}
+            </Group>
+            <Group label="Clients" count={results.clients.length}>
+              {results.clients.map(c => <Row key={c.id} icon={Building2} id={c.clientNumber} title={c.companyName}
+                sub={[c.clientName || c.contactPerson, c.city].filter(Boolean).join(' · ')} onClick={open.client} />)}
+            </Group>
+            <Group label="People" count={results.people.length}>
+              {results.people.map(u => <Row key={u.id} icon={Users} id={u.userNumber} title={u.name}
+                sub={[u.title, u.department].filter(Boolean).join(' · ')} onClick={open.person} />)}
+            </Group>
+          </>)}
         </div>
-
-        {/* Footer shortcuts */}
-        <div className="px-4 py-2.5 bg-slate-300/40 dark:bg-zinc-950 border-t border-slate-300 dark:border-zinc-800 flex items-center justify-between text-xs text-slate-500 dark:text-zinc-400">
-          <div className="flex items-center gap-3">
-            <span><kbd className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 font-mono text-slate-700 dark:text-zinc-300">ESC</kbd> to close</span>
-            <span><kbd className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 font-mono text-slate-700 dark:text-zinc-300">↵</kbd> to select</span>
-          </div>
-          <span>Role Scope: Active</span>
+        <div className="px-4 py-2 border-t border-slate-300 dark:border-zinc-800 text-[10px] text-slate-500 dark:text-zinc-500">
+          Only shows what you're allowed to see · Ctrl/⌘ + K to open · Esc to close
         </div>
       </div>
     </div>

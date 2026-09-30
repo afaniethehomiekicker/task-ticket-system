@@ -33,6 +33,7 @@ const fmt = (iso) => (iso ? new Date(iso).toLocaleString() : '—');
 import { TimelinePanel } from '../common/TimelinePanel';
 import { SLAStatus } from './SLAStatus';
 import { TicketFlowActions } from './TicketFlowActions';
+import { DocumentsPanel } from '../common/DocumentsPanel';
 export const TicketDetailDrawer = () => {
   const {
     tickets,
@@ -280,6 +281,9 @@ export const TicketDetailDrawer = () => {
 
           {/* CNOC flow (spec slide 19): route on, return to origin, reopen. */}
           <TicketFlowActions ticket={ticket} />
+
+          {/* Documents & evidence (spec slide 27): screenshots, test results… */}
+          <DocumentsPanel recordType="ticket" recordId={ticket.id} />
 
           {/* Assignment */}
           <div>

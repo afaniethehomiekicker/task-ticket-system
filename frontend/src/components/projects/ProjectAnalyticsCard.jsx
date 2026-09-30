@@ -3,21 +3,36 @@ import { useApp } from '../../context/AppContext';
 import { TrendingUp, Clock, DollarSign, AlertTriangle, CheckCircle2 } from 'lucide-react';
 
 export const ProjectAnalyticsCard = ({ projectId }) => {
-  const { tasks, projects } = useApp() || {};
+  const { tasks, projects, getStatusCategory } = useApp() || {};
   const project = (projects || []).find(p => p.id === projectId);
 
   if (!project) return null;
 
-  const projectTasks = (tasks || []).filter(t => t.projectId === projectId);
-  const totalTasks = projectTasks.length;
-  const completedTasks = projectTasks.filter(t => t.status === 'completed' || t.status === 'closed').length;
-  const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+  // Task counts: the server's figures (all the project's tasks, even ones
+  // this user can't see), else counted from the tasks loaded here. Finished
+  // = status category "done"; cancelled / archived don't count. This used to
+  // count status "completed"/"closed", which tasks never have — always 0.
+  const localTasks = (tasks || []).filter(t => String(t.projectId) === String(projectId) &&
+    !['cancelled', 'archived'].includes(getStatusCategory('task', t.status)) && t.status !== 'archived');
+  const totalTasks = project.tasksTotal || localTasks.length;
+  const completedTasks = project.tasksTotal
+    ? project.tasksDone
+    : localTasks.filter(t => getStatusCategory('task', t.status) === 'done').length;
+  const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : (project.progress || 0);
 
-  // Budget calculations
-  const budgetHours = project.budgetHours || 100;
-  const spentHours = project.spentHours || Math.round(budgetHours * (completionRate / 100));
-  const isOverBudget = spentHours > budgetHours;
-  const budgetPercentage = Math.min(Math.round((spentHours / budgetHours) * 100), 100);
+  // Budget: real figures only. It used to assume a 100 h budget when none was
+  // set, and to estimate "spent" from the completion rate.
+  const budgetHours = Number(project.budgetHours) || 0;
+  const spentHours = Number(project.spentHours) || 0;
+  const isOverBudget = budgetHours > 0 && spentHours > budgetHours;
+  const budgetPercentage = budgetHours > 0 ? Math.min(Math.round((spentHours / budgetHours) * 100), 100) : 0;
+  const budgetLabel = budgetHours > 0
+    ? (project.budgetUnit === 'days' && project.budgetValue
+        ? `of ${project.budgetValue} day${project.budgetValue === 1 ? '' : 's'} (${budgetHours}h) budget`
+        : `of ${budgetHours}h budget`)
+    : 'no budget set';
+  const isOverdue = !!project.dueDate && completionRate < 100 &&
+    new Date(String(project.dueDate).slice(0, 10) + 'T23:59:59') < new Date();
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -44,7 +59,7 @@ export const ProjectAnalyticsCard = ({ projectId }) => {
         </div>
         <div className="flex items-baseline gap-2">
           <span className="text-xl font-bold text-slate-900 dark:text-white">{spentHours}h</span>
-          <span className="text-xs text-slate-400">of {budgetHours}h budget</span>
+          <span className="text-xs text-slate-400">{budgetLabel}</span>
         </div>
         <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
           <div 
@@ -58,7 +73,7 @@ export const ProjectAnalyticsCard = ({ projectId }) => {
       <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Health Status</span>
-          {isOverBudget ? (
+          {isOverBudget || isOverdue ? (
             <AlertTriangle className="w-4 h-4 text-amber-500" />
           ) : (
             <TrendingUp className="w-4 h-4 text-indigo-500" />
@@ -66,11 +81,11 @@ export const ProjectAnalyticsCard = ({ projectId }) => {
         </div>
         <div className="pt-1">
           <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
-            isOverBudget 
+            isOverBudget || isOverdue
               ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300' 
               : 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300'
           }`}>
-            {isOverBudget ? 'Budget Attention Needed' : 'On Track & Healthy'}
+            {isOverBudget ? 'Budget Attention Needed' : isOverdue ? 'Past Due Date' : completionRate === 100 && totalTasks > 0 ? 'All Tasks Done' : 'On Track & Healthy'}
           </span>
         </div>
       </div>

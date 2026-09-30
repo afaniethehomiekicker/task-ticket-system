@@ -169,10 +169,42 @@ func applyTransition(c *gin.Context, task models.Task, userID uint, updates map[
 		fmt.Sprintf("%s on %s: status %s -> %v. Notes: %s", label, task.TaskNumber, fromStatus, updates["status"], notesForLog),
 		c.ClientIP(), c.Request.UserAgent())
 
+	// Notify: submitting tells whoever gave the task out (and the assignee's
+	// supervisor) it's ready for sign-off; approving / sending back tells the
+	// assignee.
+	extra := ""
+	if notes != "" {
+		extra = " — " + notes
+	}
+	switch label {
+	case "Submitted for review":
+		to := supervisorOfUser(task.AssigneeID)
+		if task.AssignedByID != nil {
+			to = append(to, *task.AssignedByID)
+		}
+		if task.CreatorID != nil {
+			to = append(to, *task.CreatorID)
+		}
+		notify(userID, notice{"review", task.TaskNumber + " is ready for review",
+			fmt.Sprintf("%s submitted %s for review: %s%s", actorName(userID), task.TaskNumber, task.Title, extra),
+			"task", task.ID}, to...)
+	case "Approved":
+		notifyPtr(userID, notice{"review_result", task.TaskNumber + " approved",
+			fmt.Sprintf("%s approved %s: %s%s", actorName(userID), task.TaskNumber, task.Title, extra),
+			"task", task.ID}, task.AssigneeID)
+	default:
+		if strings.HasPrefix(label, "Reopen") || strings.Contains(strings.ToLower(label), "changes") {
+			notifyPtr(userID, notice{"review_result", task.TaskNumber + " sent back",
+				fmt.Sprintf("%s sent %s back for changes: %s%s", actorName(userID), task.TaskNumber, task.Title, extra),
+				"task", task.ID}, task.AssigneeID)
+		}
+	}
+
 	if err := taskWithRelations().First(&task, task.ID).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Task updated but could not be reloaded"})
 		return
 	}
+	syncProjectStatusFromTasks(task.ProjectID, userID)
 	redactTask(c, &task)
 	reduceProjectToRef(c, &task)
 	c.JSON(http.StatusOK, gin.H{"message": label + " successful", "task": task})

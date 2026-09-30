@@ -89,6 +89,12 @@ func ConnectDB() {
 		&models.ClientField{},
 		// Atomic counters for permanent IDs (spec slide 7).
 		&models.IDCounter{},
+		// Server-side notifications (spec slide 27).
+		&models.Notification{},
+		// Per-person pins (spec slide 28).
+		&models.Pin{},
+		// Uploaded documents / evidence (spec slides 25, 27).
+		&models.Document{},
 		// Missing from this list the same way FeasibilityVendor/
 		// FeasibilityAttachment were above — the struct existing in
 		// models.go doesn't create its table on its own; it has to be

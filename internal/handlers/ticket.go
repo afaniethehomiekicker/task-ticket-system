@@ -351,6 +351,11 @@ func CreateTicket(c *gin.Context) {
 
 	utils.LogAudit(currentUserID, "created", "ticket", ticket.ID,
 		fmt.Sprintf("Created ticket %s: %s", ticket.TicketNumber, ticket.Title), c.ClientIP(), c.Request.UserAgent())
+	if ticket.AssignedToID != nil {
+		notify(currentUserID, notice{"assignment", "New ticket: " + ticket.TicketNumber,
+			fmt.Sprintf("%s assigned you %s (%s priority): %s", actorName(currentUserID), ticket.TicketNumber, ticket.Priority, ticket.Title),
+			"ticket", ticket.ID}, *ticket.AssignedToID)
+	}
 
 	// Reload with relations
 	database.DB.
@@ -484,6 +489,9 @@ func UpdateTicket(c *gin.Context) {
 				map[string]interface{}{"assignee": assigneeLabel(input.AssignedToID)},
 				fmt.Sprintf("Ticket %s transferred: %s -> %s", ticket.TicketNumber, assigneeLabel(ticket.AssignedToID), assigneeLabel(input.AssignedToID)),
 				c.ClientIP(), c.Request.UserAgent())
+			notify(viewerFrom(c).ID, notice{"transfer", "Ticket " + ticket.TicketNumber + " is now yours",
+				fmt.Sprintf("%s passed %s to you: %s", actorName(viewerFrom(c).ID), ticket.TicketNumber, ticket.Title),
+				"ticket", ticket.ID}, *input.AssignedToID)
 		}
 		updates["assigned_to_id"] = *input.AssignedToID
 		if ticket.AssignedToID == nil || *ticket.AssignedToID != *input.AssignedToID {
@@ -749,6 +757,9 @@ func AssignTicket(c *gin.Context) {
 		map[string]interface{}{"assignee": previous}, map[string]interface{}{"assignee": assignee.Name},
 		fmt.Sprintf("Ticket %s assigned: %s -> %s", ticket.TicketNumber, previous, assignee.Name),
 		c.ClientIP(), c.Request.UserAgent())
+	notify(currentUserID, notice{"assignment", "Ticket " + ticket.TicketNumber + " assigned to you",
+		fmt.Sprintf("%s assigned you %s: %s", actorName(currentUserID), ticket.TicketNumber, ticket.Title),
+		"ticket", ticket.ID}, input.AssignedToID)
 
 	database.DB.Preload("AssignedTo").Preload("AssignedBy", userBasics).First(&ticket, id)
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket assigned successfully", "ticket": ticket})

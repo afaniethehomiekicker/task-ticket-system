@@ -358,3 +358,19 @@ export function formatDate(value) {
   if (Number.isNaN(d.getTime())) return String(value);
   return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 }
+
+// SLA state of a ticket for filtering (spec slide 28: "SLA — Breached ·
+// Near · Within"): "breached" past the deadline; "near" in the last 25% of
+// the SLA window or under an hour left; "within" otherwise; "none" when there
+// is no deadline or the ticket is finished (isFinished(status)).
+export function ticketSlaState(ticket, isFinished) {
+  if (!ticket?.slaDeadline) return 'none';
+  if (isFinished && isFinished(ticket.status)) return 'none';
+  const deadline = new Date(ticket.slaDeadline).getTime();
+  const now = Date.now();
+  if (now > deadline) return 'breached';
+  const start = ticket.createdAt ? new Date(ticket.createdAt).getTime() : deadline - 3600000;
+  const remaining = deadline - now;
+  if (remaining < 3600000 || remaining < (deadline - start) * 0.25) return 'near';
+  return 'within';
+}

@@ -466,6 +466,10 @@ func UpdateProject(c *gin.Context) {
 			return
 		}
 		updates["status"] = input.Status
+		utils.LogAuditWithValues(currentUserID, "status_changed", "project", project.ID,
+			statusChange(project.Status), statusChange(input.Status),
+			fmt.Sprintf("Project %s: %s -> %s", project.Code, project.Status, input.Status),
+			c.ClientIP(), c.Request.UserAgent())
 		if input.Status == "completed" && project.CompletedAt == nil {
 			now := time.Now()
 			updates["completed_at"] = now
@@ -792,4 +796,75 @@ func fillOneProjectProgress(p *models.Project) {
 	list := []models.Project{*p}
 	fillProjectProgress(list)
 	p.Progress, p.TasksTotal, p.TasksDone = list[0].Progress, list[0].TasksTotal, list[0].TasksDone
+}
+
+// ---- Project status follows its tasks -----------------------------------------
+//
+// A project's status could not be changed at all (no field in the edit form)
+// and nothing updated it, so every project sat in "Planning" forever and the
+// dashboard's Running Projects card read 0. It now moves with the work:
+//
+//	planning  -> active     when any task is started (or finished)
+//	planning/active -> completed   when every task is done
+//	completed -> active     when a task is reopened or a new one added
+//
+// "on_hold" and "cancelled" are deliberate decisions and are never changed
+// automatically. Cancelled / archived tasks don't count. Each automatic change
+// is written to the project's audit history.
+func syncProjectStatusFromTasks(projectID *uint, actorID uint) {
+	if projectID == nil || *projectID == 0 {
+		return
+	}
+	var project models.Project
+	if err := database.DB.First(&project, *projectID).Error; err != nil {
+		return
+	}
+	if project.Status != "planning" && project.Status != "active" && project.Status != "completed" {
+		return
+	}
+	excluded := append(statusKeysIn("task", "cancelled"), "archived")
+	var total, done, started int64
+	base := database.DB.Model(&models.Task{}).Where("project_id = ? AND status NOT IN ?", project.ID, excluded)
+	base.Session(&gorm.Session{}).Count(&total)
+	base.Session(&gorm.Session{}).Where("status IN ?", statusKeysIn("task", "done")).Count(&done)
+	base.Session(&gorm.Session{}).Where("status NOT IN ?", statusKeysIn("task", "open")).Count(&started)
+
+	next := project.Status
+	reason := ""
+	switch {
+	case total > 0 && done == total && project.Status != "completed":
+		next, reason = "completed", "all tasks are done"
+	case project.Status == "completed" && total > 0 && done < total:
+		next, reason = "active", "a task was reopened or added"
+	case project.Status == "planning" && started > 0:
+		next, reason = "active", "work has started on its tasks"
+	}
+	if next == project.Status {
+		return
+	}
+	prev := project.Status // Updates() below overwrites project.Status
+	autoUpdates := map[string]interface{}{"status": next}
+	if next == "completed" && project.CompletedAt == nil {
+		autoUpdates["completed_at"] = time.Now()
+	}
+	if err := database.DB.Model(&project).Updates(autoUpdates).Error; err != nil {
+		log.Printf("projects: auto status for %s failed: %v", project.Code, err)
+		return
+	}
+	utils.LogAuditWithValues(actorID, "status_changed", "project", project.ID,
+		statusChange(prev), statusChangeWithReason(next, "automatic: "+reason),
+		fmt.Sprintf("Project %s: %s -> %s (automatic — %s)", project.Code, prev, next, reason),
+		"", "")
+}
+
+// SyncAllProjectStatuses brings every planning / active / completed project in
+// line with its tasks once at startup (so existing projects don't wait for
+// their next task change). Idempotent.
+func SyncAllProjectStatuses() {
+	var ids []uint
+	database.DB.Model(&models.Project{}).Where("status IN ?", []string{"planning", "active", "completed"}).Pluck("id", &ids)
+	for _, id := range ids {
+		pid := id
+		syncProjectStatusFromTasks(&pid, 0)
+	}
 }

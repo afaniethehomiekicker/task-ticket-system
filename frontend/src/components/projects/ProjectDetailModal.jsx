@@ -5,7 +5,7 @@ import {
   Paperclip, Plus, ArrowRight, TrendingUp, AlertCircle, Edit, Trash2, Archive, Upload, ShieldAlert, UserPlus, UserMinus, Check
 } from 'lucide-react';
 import { PriorityBadge, ProjectStatusBadge, TaskStatusBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
-import { canCreateTask, formatBudget } from '../../utils/permissions';
+import { canCreateTask, formatBudget, formatDate, canCreateProject } from '../../utils/permissions';
 import { TeamWorkloadModal } from './TeamWorkloadModal';
 import { ProjectActivityLog } from './ProjectActivityLog';
 import { ProjectAnalyticsCard } from './ProjectAnalyticsCard';
@@ -35,6 +35,12 @@ const fileToBase64 = (file) => new Promise((resolve, reject) => {
 
 
 import { ProjectClientsPanel } from './ProjectClientsPanel';
+// Project statuses (backend validProjectStatus).
+const PROJECT_STATUSES = [
+  ['planning', 'Planning'], ['active', 'Active'], ['on_hold', 'On Hold'],
+  ['completed', 'Completed'], ['cancelled', 'Cancelled'],
+];
+import { DocumentsPanel } from '../common/DocumentsPanel';
 export const ProjectDetailModal = () => {
   const { 
     selectedProjectDetailId, 
@@ -67,6 +73,7 @@ export const ProjectDetailModal = () => {
   // Edit form local state, populated when the modal opens
   const [editDescription, setEditDescription] = useState('');
   const [editDepartment, setEditDepartment] = useState('');
+  const [editStatus, setEditStatus] = useState('planning');
   const [editStartDate, setEditStartDate] = useState('');
   const [editDueDate, setEditDueDate] = useState('');
   const [editBudgetHours, setEditBudgetHours] = useState(0);
@@ -93,14 +100,15 @@ export const ProjectDetailModal = () => {
 
   const canManageTeam = currentUser.role !== 'staff';
 
-  const completedTasksCount = projectTasks.filter(t => t.status === 'completed' || t.status === 'closed').length;
-  const calculatedProgress = projectTasks.length > 0 
-    ? Math.round((completedTasksCount / projectTasks.length) * 100)
-    : project.progress;
+  // The server's progress (finished / all tasks, excluding cancelled and
+  // archived — see fillProjectProgress). This used to count status
+  // "completed"/"closed", which tasks never have, so it always read 0%.
+  const calculatedProgress = project.progress || 0;
 
   const openEditModal = () => {
     setEditDescription(project.description || '');
     setEditDepartment(project.department || '');
+    setEditStatus(project.status || 'planning');
     setEditStartDate(project.startDate || '');
     setEditDueDate(project.dueDate || '');
     setEditBudgetHours(project.budgetValue || project.budgetHours || 0);
@@ -113,6 +121,7 @@ export const ProjectDetailModal = () => {
     updateProject(project.id, {
       description: editDescription,
       department: editDepartment,
+      status: editStatus,
       startDate: editStartDate,
       dueDate: editDueDate,
       budgetValue: editBudgetHours,
@@ -208,7 +217,18 @@ export const ProjectDetailModal = () => {
           </div>
 
           <div className="flex items-center gap-2">
-            <ProjectStatusBadge status={project.status} />
+            {canCreateProject(currentUser, permissionMatrix) && project.status !== 'archived' ? (
+              <select
+                value={project.status}
+                onChange={(e) => updateProject(project.id, { status: e.target.value })}
+                title="Project status (also moves automatically with its tasks)"
+                className="px-2 py-1 text-xs font-semibold rounded-md border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-800 dark:text-zinc-200 cursor-pointer focus:outline-hidden"
+              >
+                {PROJECT_STATUSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            ) : (
+              <ProjectStatusBadge status={project.status} />
+            )}
             <button
               id="toggle-project-priority-btn"
               onClick={handleTogglePriority}
@@ -294,7 +314,7 @@ export const ProjectDetailModal = () => {
             }`}
           >
             <Paperclip className="w-3.5 h-3.5" />
-            Attachments ({project.attachments?.length || 0})
+            Files
           </button>
           <button
             id="proj-tab-activity"
@@ -336,7 +356,7 @@ export const ProjectDetailModal = () => {
                   </div>
                   <div>
                     <span className="text-slate-500 dark:text-zinc-400 block">Schedule</span>
-                    <span className="font-medium text-slate-900 dark:text-zinc-100">{project.startDate} → {project.dueDate}</span>
+                    <span className="font-medium text-slate-900 dark:text-zinc-100">{formatDate(project.startDate) || '—'} → {formatDate(project.dueDate) || '—'}</span>
                   </div>
                   <div>
                     <span className="text-slate-500 dark:text-zinc-400 block">Budget</span>
@@ -626,71 +646,10 @@ export const ProjectDetailModal = () => {
           )}
 
           {activeTab === 'files' && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-wider">
-                  Project Attachments & Blueprints
-                </span>
-                <label
-                  htmlFor="project-file-upload-input"
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg cursor-pointer transition ${
-                    isUploading
-                      ? 'bg-slate-300 dark:bg-zinc-800 text-slate-500 dark:text-zinc-400 cursor-wait'
-                      : 'bg-indigo-600 hover:bg-indigo-700 text-white'
-                  }`}
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  {isUploading ? 'Uploading...' : 'Upload File'}
-                </label>
-                <input
-                  id="project-file-upload-input"
-                  type="file"
-                  multiple
-                  accept="image/*,.pdf,.xlsx,.md"
-                  onChange={handleFileSelect}
-                  disabled={isUploading}
-                  className="hidden"
-                />
-              </div>
-
-              {uploadError && (
-                <div className="p-3 rounded-lg bg-rose-100/80 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-900 text-xs text-rose-800 dark:text-rose-300 flex items-center gap-2">
-                  <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
-                  {uploadError}
-                </div>
-              )}
-
-              <p className="text-[11px] text-slate-500 dark:text-zinc-400">
-                Supported: images (PNG/JPG/etc.), .pdf, .xlsx, .md
-              </p>
-
-              {(project.attachments?.length || 0) === 0 ? (
-                <div className="py-8 text-center text-slate-500 dark:text-zinc-500 text-xs">
-                  No files attached to this project record.
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {project.attachments?.map(att => (
-                    <div key={att.id} className="p-3 rounded-lg border border-slate-300 dark:border-zinc-800 bg-slate-100 dark:bg-zinc-900/40 flex items-center justify-between">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <FileText className="w-5 h-5 text-indigo-500 shrink-0" />
-                        <div className="min-w-0">
-                          <span className="text-xs font-medium text-slate-900 dark:text-zinc-100 block truncate">{att.name}</span>
-                          <span className="text-[10px] text-slate-500 dark:text-zinc-400">{att.size} • Uploaded by {att.uploadedByName}</span>
-                        </div>
-                      </div>
-                      <a
-                        href={att.url}
-                        download={att.name}
-                        className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer shrink-0"
-                      >
-                        Download
-                      </a>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            // Real uploads with who / when / versions, downloaded through an
+            // access-checked link (spec slide 27). This tab used to list
+            // attachments nothing could add to.
+            <DocumentsPanel recordType="project" recordId={project.id} title="Project documents" />
           )}
 
           {activeTab === 'activity' && (
@@ -730,6 +689,23 @@ export const ProjectDetailModal = () => {
                   onChange={(e) => setEditDescription(e.target.value)}
                   className="w-full p-2.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden resize-none"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Status
+                </label>
+                {/* There was no way to change a project's status at all. It
+                    also moves automatically with the tasks (Planning -> Active
+                    when work starts, -> Completed when all tasks are done);
+                    On Hold / Cancelled are only ever set here. */}
+                <select
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value)}
+                  className="w-full p-2.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                >
+                  {PROJECT_STATUSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
               </div>
 
               <div>

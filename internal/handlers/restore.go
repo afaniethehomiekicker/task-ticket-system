@@ -126,6 +126,7 @@ func RestoreTask(c *gin.Context) {
 	if !applyRestore(c, &task, "task", task.ID, task.TaskNumber, target) {
 		return
 	}
+	syncProjectStatusFromTasks(task.ProjectID, callerID(c))
 	c.JSON(http.StatusOK, gin.H{"message": "Task restored", "task": reloadFullTask(c, task)})
 }
 

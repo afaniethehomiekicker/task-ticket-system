@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
   FolderKanban, Plus, Search, Filter, Download, Pin, Star, 
@@ -8,6 +8,7 @@ import { PriorityBadge, ProjectStatusBadge } from '../common/Badge';
 import { canCreateProject, formatDate } from '../../utils/permissions';
 import { exportProjectsToCSV } from '../../utils/exportUtils';
 
+import { FilterSelect } from '../common/FilterSelect';
 export const ProjectsView = () => {
   const { 
     visibleProjects, 
@@ -17,7 +18,10 @@ export const ProjectsView = () => {
     setSelectedProjectDetailId,
     setQuickCreateOpen,
     permissionMatrix,
-    departments
+    departments,
+    listPreset,
+    setListPreset,
+    clients
   } = useApp();
 
   const deptFilterOptions = Array.from(new Set([
@@ -27,7 +31,17 @@ export const ProjectsView = () => {
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+
+  // Filter requested by the dashboard (drill-down), applied once.
+  useEffect(() => {
+    if (!listPreset || listPreset.tab !== 'projects') return;
+    if (listPreset.status !== undefined) setStatusFilter(listPreset.status);
+    setListPreset(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listPreset]);
   const [deptFilter, setDeptFilter] = useState('all');
+  const [clientFilter, setClientFilter] = useState('all');
+  const [staffFilter, setStaffFilter] = useState('all');
   const [viewMode, setViewMode] = useState('grid');
 
   const filteredProjects = useMemo(() => {
@@ -37,9 +51,14 @@ export const ProjectsView = () => {
                           p.description.toLowerCase().includes(search.toLowerCase());
       const matchStatus = statusFilter === 'all' || p.status === statusFilter;
       const matchDept = deptFilter === 'all' || p.department === deptFilter;
-      return matchSearch && matchStatus && matchDept;
+      // Slide 28 filters: any linked client; staff = project member.
+      const matchClient = clientFilter === 'all' || String(p.clientId) === clientFilter ||
+        (p.clientIds || []).some(id => String(id) === clientFilter);
+      const matchStaff = staffFilter === 'all' || (p.memberIds || []).some(id => String(id) === staffFilter) ||
+        String(p.ownerId) === staffFilter;
+      return matchSearch && matchStatus && matchDept && matchClient && matchStaff;
     });
-  }, [visibleProjects, search, statusFilter, deptFilter]);
+  }, [visibleProjects, search, statusFilter, deptFilter, clientFilter, staffFilter]);
 
   const handleExport = () => {
     exportProjectsToCSV(filteredProjects, allUsers);
@@ -126,6 +145,10 @@ export const ProjectsView = () => {
             <option value="on_hold">On Hold</option>
             <option value="completed">Completed</option>
           </select>
+          <FilterSelect id="projects-client-filter" value={clientFilter} onChange={setClientFilter} allLabel="All Clients"
+            options={(clients || []).filter(c => c.status !== 'archived').map(c => [String(c.id), c.companyName])} />
+          <FilterSelect id="projects-staff-filter" value={staffFilter} onChange={setStaffFilter} allLabel="All Staff"
+            options={(allUsers || []).filter(u => u.status !== 'archived').map(u => [String(u.id), u.name])} />
         </div>
 
         {/* View mode toggle */}

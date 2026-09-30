@@ -9,6 +9,7 @@ export const TicketEditModal = () => {
 
   const ticket = (tickets || []).find(t => String(t.id) === String(selectedTicketEditId));
 
+  const [isSaving, setIsSaving] = useState(false);
   const [formData, setFormData] = useState({
     title: '',
     description: '',
@@ -80,10 +81,16 @@ export const TicketEditModal = () => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
-  const handleSubmit = (e) => {
+  // Waits for the save and only closes on success (it used to close at once,
+  // so a failed save looked saved and the edits were lost). Locked while
+  // saving so a double click can't send it twice.
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    updateTicket(selectedTicketEditId, formData);
-    setSelectedTicketEditId(null);
+    if (isSaving) return;
+    setIsSaving(true);
+    const result = await updateTicket(selectedTicketEditId, formData);
+    setIsSaving(false);
+    if (result) setSelectedTicketEditId(null);
   };
 
   // Pre-selected assignee option for React Select
@@ -131,7 +138,7 @@ export const TicketEditModal = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
       <div className="bg-slate-200 dark:bg-zinc-950 border border-slate-300 dark:border-zinc-800 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-300 dark:border-zinc-800 bg-slate-300/40 dark:bg-zinc-900/50">
           <div>
@@ -258,9 +265,10 @@ export const TicketEditModal = () => {
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg text-xs transition shadow-xs cursor-pointer"
+                disabled={isSaving}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-semibold rounded-lg text-xs transition shadow-xs cursor-pointer"
               >
-                Save Changes
+                {isSaving ? 'Saving...' : 'Save Changes'}
               </button>
             </div>
           </div>

@@ -9,6 +9,7 @@ import { PriorityBadge, TaskStatusBadge, RoleBadge } from '../common/Badge';
 import { canCreateTask, canAssignTickets, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName } from '../../utils/permissions';
 import { exportTasksToCSV } from '../../utils/exportUtils';
 
+import { FilterSelect } from '../common/FilterSelect';
 export const TasksView = () => {
   const { 
     visibleTasks, 
@@ -23,7 +24,12 @@ export const TasksView = () => {
     updateSubTaskStatus,
     updateSubTaskAssignee, getStatuses,
     taskListPreset,
-    setTaskListPreset
+    setTaskListPreset,
+    listPreset,
+    setListPreset,
+    getStatusCategory,
+    clients,
+    departments
   } = useApp();
 
   const [search, setSearch] = useState('');
@@ -37,8 +43,19 @@ export const TasksView = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskListPreset]);
   const [priorityFilter, setPriorityFilter] = useState('all');
+
+  // Filter requested by the dashboard (drill-down), applied once.
+  useEffect(() => {
+    if (!listPreset || listPreset.tab !== 'tasks') return;
+    if (listPreset.status !== undefined) setStatusFilter(listPreset.status);
+    if (listPreset.priority !== undefined) setPriorityFilter(listPreset.priority);
+    setListPreset(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listPreset]);
   const [projectFilter, setProjectFilter] = useState('all');
   const [assigneeFilter, setAssigneeFilter] = useState('all');
+  const [clientFilter, setClientFilter] = useState('all');
+  const [deptFilter, setDeptFilter] = useState('all');
   const [sortBy, setSortBy] = useState('dueDate');
   // Sub-tasks are listed under their parent task (they used to be visible
   // only inside the task drawer).
@@ -64,7 +81,12 @@ export const TasksView = () => {
                           t.taskNumber.toLowerCase().includes(search.toLowerCase()) ||
                           (t.description || '').toLowerCase().includes(search.toLowerCase()) ||
                           (t.labels || []).some(l => l.toLowerCase().includes(search.toLowerCase()));
-      const matchStatus = statusFilter === 'all' || t.status === statusFilter;
+      // 'open' / 'overdue' are dashboard drill-downs, not real statuses.
+      const unfinished = !['done', 'cancelled', 'archived'].includes(getStatusCategory('task', t.status));
+      const today = new Date().toISOString().slice(0, 10);
+      const matchStatus = statusFilter === 'all' || t.status === statusFilter
+        || (statusFilter === 'open' && unfinished)
+        || (statusFilter === 'overdue' && unfinished && !!t.dueDate && String(t.dueDate).slice(0, 10) < today);
       const matchPriority = priorityFilter === 'all' || t.priority === priorityFilter;
       // projectId/assignedToId are numbers on normalized tasks, but a
       // native <select>'s value is always a string — comparing them
@@ -73,7 +95,13 @@ export const TasksView = () => {
       // returned zero results regardless of what was actually selected.
       const matchProject = projectFilter === 'all' || String(t.projectId) === projectFilter;
       const matchAssignee = assigneeFilter === 'all' || String(t.assignedToId) === assigneeFilter;
+      // Slide 28 filters: client (through the task's project) and department.
+      const tProject = (visibleProjects || []).find(p => String(p.id) === String(t.projectId));
+      const matchClient = clientFilter === 'all' || !!tProject && (String(tProject.clientId) === clientFilter ||
+        (tProject.clientIds || []).some(id => String(id) === clientFilter));
+      const matchDeptF = deptFilter === 'all' || (t.department || '').toLowerCase() === deptFilter.toLowerCase();
 
+      if (!matchClient || !matchDeptF) return false;
       if (matchSearch && matchStatus && matchPriority && matchProject && matchAssignee) return true;
       // Also keep a task whose sub-task matches the assignee/search filter
       // (e.g. filtering by a person shows the tasks they have sub-tasks in).
@@ -94,7 +122,8 @@ export const TasksView = () => {
       }
       return b.taskNumber.localeCompare(a.taskNumber);
     });
-  }, [visibleTasks, search, statusFilter, priorityFilter, projectFilter, assigneeFilter, sortBy, showSubTasks]);
+  }, [visibleTasks, search, statusFilter, priorityFilter, projectFilter, assigneeFilter, sortBy, showSubTasks,
+      clientFilter, deptFilter, visibleProjects]);
 
   const handleExport = () => {
     exportTasksToCSV(filteredTasks, allUsers, visibleProjects);
@@ -181,10 +210,16 @@ export const TasksView = () => {
               "in_review"/"done". Every one of the old options either
               matched nothing or matched the wrong tasks. */}
           <option value="all">All Statuses</option>
+          <option value="open">Open (not finished)</option>
+          <option value="overdue">Overdue</option>
           {getStatuses('task', { includeDisabled: true }).map(st => (
             <option key={st.key} value={st.key}>{st.label}{st.enabled ? '' : ' (disabled)'}</option>
           ))}
         </select>
+          <FilterSelect id="tasks-client-filter" value={clientFilter} onChange={setClientFilter} allLabel="All Clients"
+            options={(clients || []).filter(c => c.status !== 'archived').map(c => [String(c.id), c.companyName])} />
+          <FilterSelect id="tasks-dept-filter" value={deptFilter} onChange={setDeptFilter} allLabel="All Departments"
+            options={(departments || []).map(d => [d.name, d.name])} />
 
         {/* Priority Filter */}
         <select

@@ -158,6 +158,14 @@ func RouteTicket(c *gin.Context) {
 		map[string]interface{}{"department": dept, "assignee": assigneeLabel(newAssignee), "status": newStatus, "reason": note},
 		fmt.Sprintf("Ticket %s routed: %s -> %s (note: %s)", t.TicketNumber, deptName(t.Department), to, note),
 		c.ClientIP(), c.Request.UserAgent())
+	if newAssignee != nil {
+		notify(v.ID, notice{"routed", "Ticket " + t.TicketNumber + " routed to you",
+			fmt.Sprintf("%s routed %s to you (%s): %s", actorName(v.ID), t.TicketNumber, dept, note), "ticket", t.ID}, *newAssignee)
+	} else {
+		notify(v.ID, notice{"routed", "Ticket " + t.TicketNumber + " routed to " + dept,
+			fmt.Sprintf("%s routed %s to your department — please assign it: %s", actorName(v.ID), t.TicketNumber, note), "ticket", t.ID},
+			departmentAdmins(dept)...)
+	}
 	flowComment(t.ID, v.ID, fmt.Sprintf("Routed to %s: %s", to, note))
 
 	var full models.Ticket
@@ -230,6 +238,16 @@ func ReturnTicket(c *gin.Context) {
 		map[string]interface{}{"department": origin, "assignee": assigneeLabel(backTo), "status": "resolved", "reason": note},
 		fmt.Sprintf("Ticket %s returned to %s after %s completion (note: %s)", t.TicketNumber, origin, deptName(t.Department), note),
 		c.ClientIP(), c.Request.UserAgent())
+	returnTo := departmentAdmins(origin)
+	if backTo != nil {
+		returnTo = append(returnTo, *backTo)
+	}
+	if t.CreatedByID != nil {
+		returnTo = append(returnTo, *t.CreatedByID)
+	}
+	notify(v.ID, notice{"returned", "Ticket " + t.TicketNumber + " returned to " + origin,
+		fmt.Sprintf("%s finished work on %s and returned it — confirm with the client: %s", actorName(v.ID), t.TicketNumber, note),
+		"ticket", t.ID}, returnTo...)
 	flowComment(t.ID, v.ID, fmt.Sprintf("Returned to %s — work completed: %s", origin, note))
 
 	var full models.Ticket
@@ -298,6 +316,15 @@ func ReopenTicket(c *gin.Context) {
 		fmt.Sprintf("Ticket %s reopened — client says not resolved; back to %s (reason: %s)", t.TicketNumber, to, reason),
 		c.ClientIP(), c.Request.UserAgent())
 	flowComment(t.ID, v.ID, "Reopened — client says not resolved: "+reason)
+	reopenTo := []uint{}
+	if backTo != nil {
+		reopenTo = append(reopenTo, *backTo)
+	} else {
+		reopenTo = append(reopenTo, departmentAdmins(dept)...)
+	}
+	notify(v.ID, notice{"reopened", "Ticket " + t.TicketNumber + " reopened",
+		fmt.Sprintf("%s reopened %s — the client says it isn't resolved: %s", actorName(v.ID), t.TicketNumber, reason),
+		"ticket", t.ID}, reopenTo...)
 
 	var full models.Ticket
 	database.DB.Preload("Client").Preload("Project").Preload("AssignedTo").Preload("AssignedBy", userBasics).Preload("CreatedBy").

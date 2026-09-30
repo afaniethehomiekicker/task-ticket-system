@@ -348,10 +348,16 @@ func CreateTask(c *gin.Context) {
 
 	utils.LogAudit(currentUserID, "created", "task", task.ID,
 		fmt.Sprintf("Created task %s: %s", task.TaskNumber, task.Title), c.ClientIP(), c.Request.UserAgent())
+	if task.AssigneeID != nil {
+		notify(currentUserID, notice{"assignment", "New task: " + task.TaskNumber,
+			fmt.Sprintf("%s assigned you %s: %s", actorName(currentUserID), task.TaskNumber, task.Title),
+			"task", task.ID}, *task.AssigneeID)
+	}
 
 	// Reload with every relation the frontend's normalizeTask reads (see
 	// taskWithRelations in task_workflow.go) — the client stores whatever
 	// comes back here as the task.
+	syncProjectStatusFromTasks(task.ProjectID, currentUserID)
 	c.JSON(http.StatusCreated, gin.H{"message": "Task created successfully", "task": reloadFullTask(c, task)})
 }
 
@@ -466,6 +472,13 @@ func UpdateTask(c *gin.Context) {
 				map[string]interface{}{"assignee": assigneeLabel(input.AssigneeID)},
 				fmt.Sprintf("Task %s transferred: %s -> %s", task.TaskNumber, assigneeLabel(task.AssigneeID), assigneeLabel(input.AssigneeID)),
 				c.ClientIP(), c.Request.UserAgent())
+			kind, verb := "assignment", "assigned you"
+			if task.AssigneeID != nil && *task.AssigneeID == currentUserID {
+				kind, verb = "transfer", "transferred to you"
+			}
+			notify(currentUserID, notice{kind, "Task " + task.TaskNumber + " is now yours",
+				fmt.Sprintf("%s %s %s: %s", actorName(currentUserID), verb, task.TaskNumber, task.Title),
+				"task", task.ID}, *input.AssigneeID)
 		}
 		updates["assignee_id"] = *input.AssigneeID
 		if task.AssigneeID == nil || *task.AssigneeID != *input.AssigneeID {
@@ -521,6 +534,7 @@ func UpdateTask(c *gin.Context) {
 	// Dependencies; the frontend REPLACES its copy of the task with this
 	// response, so every edit made the task's sub-tasks, comments and
 	// checklist disappear from the UI until the next page reload.
+	syncProjectStatusFromTasks(task.ProjectID, currentUserID)
 	c.JSON(http.StatusOK, gin.H{"message": "Task updated successfully", "task": reloadFullTask(c, task)})
 }
 
@@ -579,6 +593,7 @@ func DeleteTask(c *gin.Context) {
 	utils.LogAudit(currentUserID, "archived", "task", task.ID,
 		fmt.Sprintf("Archived task %s: %s", task.TaskNumber, task.Title), c.ClientIP(), c.Request.UserAgent())
 
+	syncProjectStatusFromTasks(task.ProjectID, viewerFrom(c).ID)
 	c.JSON(http.StatusOK, gin.H{"message": "Task archived successfully"})
 }
 
@@ -662,5 +677,6 @@ func UpdateTaskStatus(c *gin.Context) {
 		statusChange(oldStatus), statusChangeWithReason(input.Status, input.Reason),
 		statusChangeDetails("task", oldStatus, input.Status, input.Reason), c.ClientIP(), c.Request.UserAgent())
 
+	syncProjectStatusFromTasks(task.ProjectID, viewerFrom(c).ID)
 	c.JSON(http.StatusOK, gin.H{"message": "Status updated successfully", "task": reloadFullTask(c, task)})
 }

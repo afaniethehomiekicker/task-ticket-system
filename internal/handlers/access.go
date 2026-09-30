@@ -138,6 +138,9 @@ func createGrant(c *gin.Context, recordType string) {
 		map[string]interface{}{}, map[string]interface{}{"user_id": grantee.ID, "user": grantee.Name},
 		fmt.Sprintf("Granted %s access to %s %s", grantee.Name, t.recordType, t.label),
 		c.ClientIP(), c.Request.UserAgent())
+	notify(viewerFrom(c).ID, notice{"access", "Shared with you: " + t.label,
+		fmt.Sprintf("%s gave you access to %s %s", actorName(viewerFrom(c).ID), t.recordType, t.label),
+		t.recordType, t.id}, grantee.ID)
 
 	database.DB.Preload("User", omitPassword).Preload("GrantedBy", omitPassword).First(&grant, grant.ID)
 	c.JSON(http.StatusCreated, gin.H{"message": "Access granted", "access": grant})

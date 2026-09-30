@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
   Search, Filter, Plus, Download, ArrowUpDown, Building, User as UserIcon, Pin, 
@@ -36,6 +36,7 @@ const getStatusColor = (status) => {
   }
 };
 
+import { FilterSelect } from '../common/FilterSelect';
 export const FeasibilitiesView = () => {
   const { 
     visibleFeasibilities, 
@@ -46,14 +47,26 @@ export const FeasibilitiesView = () => {
     setSelectedFeasibilityEditId,
     openQuickCreate,
     createFeasibility,
-    permissionMatrix
+    permissionMatrix,
+    listPreset,
+    setListPreset
   } = useApp();
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+
+  // Filter requested by the dashboard (drill-down), applied once.
+  useEffect(() => {
+    if (!listPreset || listPreset.tab !== 'feasibilities') return;
+    if (listPreset.status !== undefined) setStatusFilter(listPreset.status);
+    setListPreset(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listPreset]);
   const [productFilter, setProductFilter] = useState('all');
   const [cityFilter, setCityFilter] = useState('all');
   const [assigneeFilter, setAssigneeFilter] = useState('all');
+  const [clientFilter, setClientFilter] = useState('all');
+  const [vendorFilter, setVendorFilter] = useState('all');
   const [sortBy, setSortBy] = useState('targetDate');
 
   // Extract unique cities from feasibilities for filter dropdown
@@ -72,12 +85,19 @@ export const FeasibilitiesView = () => {
                           f.city.toLowerCase().includes(search.toLowerCase()) ||
                           f.requirementDetails.toLowerCase().includes(search.toLowerCase()) ||
                           (f.client?.companyName && f.client.companyName.toLowerCase().includes(search.toLowerCase()));
-      const matchStatus = statusFilter === 'all' || f.status === statusFilter;
+      // 'pending' = still open (draft / in progress) — dashboard drill-down.
+      const matchStatus = statusFilter === 'all' || f.status === statusFilter
+        || (statusFilter === 'pending' && ['draft', 'in_progress'].includes(f.status));
       const matchProduct = productFilter === 'all' || f.product === productFilter;
       const matchCity = cityFilter === 'all' || f.city === cityFilter;
-      const matchAssignee = assigneeFilter === 'all' || f.assignedUserId === assigneeFilter;
+      // String compare (the select's value is text; this never matched).
+      const matchAssignee = assigneeFilter === 'all' || String(f.assignedUserId) === assigneeFilter;
+      // Slide 28 filters.
+      const matchClient = clientFilter === 'all' || String(f.clientId) === clientFilter;
+      const matchVendor = vendorFilter === 'all' ||
+        (f.vendors || []).some(v => (v.vendorName || '').toLowerCase() === vendorFilter.toLowerCase());
 
-      return matchSearch && matchStatus && matchProduct && matchCity && matchAssignee;
+      return matchSearch && matchStatus && matchProduct && matchCity && matchAssignee && matchClient && matchVendor;
     }).sort((a, b) => {
       if (a.isPinned && !b.isPinned) return -1;
       if (!a.isPinned && b.isPinned) return 1;
@@ -95,7 +115,7 @@ export const FeasibilitiesView = () => {
       }
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
-  }, [visibleFeasibilities, search, statusFilter, productFilter, cityFilter, assigneeFilter, sortBy]);
+  }, [visibleFeasibilities, search, statusFilter, productFilter, cityFilter, assigneeFilter, sortBy, clientFilter, vendorFilter]);
 
   return (
     <div id="feasibilities-view" className="space-y-6 max-w-7xl mx-auto pb-12">
@@ -146,8 +166,14 @@ export const FeasibilitiesView = () => {
           className="px-3 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
         >
           <option value="all">All Statuses</option>
+          <option value="pending">Pending (draft / in progress)</option>
           {STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
         </select>
+          <FilterSelect id="feas-client-filter" value={clientFilter} onChange={setClientFilter} allLabel="All Clients"
+            options={(clients || []).filter(c => c.status !== 'archived').map(c => [String(c.id), c.companyName])} />
+          <FilterSelect id="feas-vendor-filter" value={vendorFilter} onChange={setVendorFilter} allLabel="All Vendors"
+            options={Array.from(new Set((visibleFeasibilities || []).flatMap(f => (f.vendors || []).map(v => v.vendorName)).filter(Boolean)))
+              .sort((a, b) => a.localeCompare(b)).map(v => [v, v])} />
 
         <select
           id="feasibilities-product-filter"

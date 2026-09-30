@@ -9,7 +9,9 @@ export const NotificationDrawer = ({ open, onClose }) => {
     markAllNotificationsAsRead,
     setSelectedTaskId,
     setSelectedTicketId,
-    setSelectedProjectDetailId
+    setSelectedProjectDetailId,
+    setSelectedFeasibilityId,
+    setActiveTab
   } = useApp();
 
   if (!open) return null;
@@ -25,13 +27,27 @@ export const NotificationDrawer = ({ open, onClose }) => {
     } else if (notif.entityType === 'project') {
       setSelectedProjectDetailId(notif.entityId);
       onClose();
+    } else if (notif.entityType === 'feasibility') {
+      setSelectedFeasibilityId(notif.entityId);
+      onClose();
+    } else if (notif.entityType === 'client') {
+      setActiveTab('clients');
+      onClose();
     }
   };
 
   const getIcon = (type) => {
     switch (type) {
       case 'escalation':
+      case 'sla_breach':
         return <AlertTriangle className="w-4 h-4 text-rose-500" />;
+      case 'transfer':
+      case 'routed':
+      case 'returned':
+      case 'reopened':
+        return <ArrowUpRight className="w-4 h-4 text-amber-500" />;
+      case 'review_result':
+        return <CheckCircle className="w-4 h-4 text-emerald-500" />;
       case 'review':
         return <Clock className="w-4 h-4 text-purple-500" />;
       case 'assignment':
@@ -112,7 +128,14 @@ export const NotificationDrawer = ({ open, onClose }) => {
                       {notif.title}
                     </span>
                     <span className="text-[11px] text-slate-500 dark:text-zinc-400 whitespace-nowrap ml-2">
-                      {new Date(notif.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {(() => {
+                        // Time today, date + time otherwise.
+                        const d = new Date(notif.createdAt);
+                        const today = new Date().toDateString() === d.toDateString();
+                        return today
+                          ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                          : d.toLocaleDateString([], { day: 'numeric', month: 'short' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                      })()}
                     </span>
                   </div>
                   <p className="text-xs text-slate-800 dark:text-zinc-300 line-clamp-2">
@@ -120,7 +143,7 @@ export const NotificationDrawer = ({ open, onClose }) => {
                   </p>
                   <div className="mt-2 flex items-center justify-between">
                     <span className="text-[10px] uppercase font-mono tracking-wider text-indigo-600 dark:text-indigo-400">
-                      {notif.entityType} #{notif.entityId}
+                      {notif.actorName ? `by ${notif.actorName}` : notif.entityType}
                     </span>
                     {!notif.isRead && (
                       <span className="w-2 h-2 rounded-full bg-indigo-600"></span>
@@ -134,7 +157,7 @@ export const NotificationDrawer = ({ open, onClose }) => {
 
         {/* Footer */}
         <div className="p-3 bg-slate-300/40 dark:bg-zinc-950 border-t border-slate-300 dark:border-zinc-800 text-center text-xs text-slate-500 dark:text-zinc-400">
-          Real-time activity stream & assignments
+          Checked every 30 seconds · click an item to open it
         </div>
       </div>
     </div>

@@ -588,6 +588,10 @@ export const AppProvider = ({ children }) => {
   // dashboard's "Reviews Pending" card -> tasks awaiting review). Task
   // Management applies it once and clears it.
   const [taskListPreset, setTaskListPreset] = useState(null);
+  // Same idea for every list page: { tab, status, priority } that the page
+  // applies once on opening (dashboard drill-down, spec slide 28: "Click any
+  // card -> instantly opens the exact filtered list behind that number").
+  const [listPreset, setListPreset] = useState(null);
   const [darkMode, setDarkModeState] = useState(false);
   const [permissionMatrix, setPermissionMatrix] = useState(DEFAULT_PERMISSION_MATRIX);
 
@@ -748,6 +752,18 @@ export const AppProvider = ({ children }) => {
 
   useEffect(() => {
     if (currentUserId) loadWorkflowStatuses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUserId]);
+
+  // Notifications: load on sign-in, then check every 30 seconds.
+  useEffect(() => {
+    if (!currentUserId) {
+      setNotifications([]);
+      return undefined;
+    }
+    loadNotifications();
+    const timer = setInterval(loadNotifications, 30000);
+    return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUserId]);
 
@@ -1281,40 +1297,100 @@ export const AppProvider = ({ children }) => {
     }, 800);
   };
 
-  const pushNotification = (notif) => {
-    const newNotif = {
-      ...notif,
-      id: `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      isRead: false,
-      createdAt: new Date().toISOString()
-    };
-    setNotifications(prev => [newNotif, ...prev]);
+  // Notifications are created on the server now (spec slide 27), for the
+  // person they're meant for. This used to add them to the SENDER's own
+  // browser only, so recipients never saw anything. Kept as a no-op so the
+  // existing call sites don't need touching; the server sends the real ones.
+  const pushNotification = () => {};
+
+  const loadNotifications = async () => {
+    try {
+      const res = await apiFetch('/api/notifications?limit=50');
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      setNotifications((data.notifications || []).map(n => ({
+        id: n.id,
+        type: n.type,
+        title: n.title,
+        message: n.message,
+        entityType: n.entity_type,
+        entityId: n.entity_id,
+        isRead: !!n.read_at,
+        createdAt: n.created_at,
+        actorName: n.actor?.name || (n.actor_id ? '' : 'System'),
+      })));
+    } catch {
+      // try again on the next poll
+    }
   };
 
+  // ---- Per-person pins (spec slide 28) ----
+  // "type:id" keys of what the current user pinned. Pins used to be one flag
+  // on the record shared by everyone (and project pins weren't saved).
+  const [pinKeys, setPinKeys] = useState(() => new Set());
+
+  useEffect(() => {
+    if (!currentUserId) { setPinKeys(new Set()); return; }
+    apiFetch('/api/pins')
+      .then(res => (res.ok ? res.json() : { pins: [] }))
+      .then(data => setPinKeys(new Set((data.pins || []).map(p => `${p.record_type}:${p.record_id}`))))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUserId]);
+
+  const isPinnedFor = (type, id) => pinKeys.has(`${type}:${getBackendId(id)}`);
+
+  const togglePin = async (type, id) => {
+    const bid = getBackendId(id);
+    if (!bid) return false;
+    const key = `${type}:${bid}`;
+    const pinning = !pinKeys.has(key);
+    setPinKeys(prev => {
+      const next = new Set(prev);
+      if (pinning) next.add(key); else next.delete(key);
+      return next;
+    });
+    try {
+      const res = await apiFetch(`/api/pins/${type}/${bid}`, { method: pinning ? 'PUT' : 'DELETE' });
+      if (!res.ok) throw new Error('pin failed');
+    } catch {
+      // Undo on failure.
+      setPinKeys(prev => {
+        const next = new Set(prev);
+        if (pinning) next.delete(key); else next.add(key);
+        return next;
+      });
+      return false;
+    }
+    return true;
+  };
+
+  const withPins = (list, type) => (list || []).map(r =>
+    r ? { ...r, isPinned: pinKeys.has(`${type}:${getBackendId(r.id)}`) } : r);
+  const pinnedProjectsList = useMemo(() => withPins(projects, 'project'), [projects, pinKeys]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pinnedTasksList = useMemo(() => withPins(tasks, 'task'), [tasks, pinKeys]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pinnedTicketsList = useMemo(() => withPins(tickets, 'ticket'), [tickets, pinKeys]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pinnedFeasList = useMemo(() => withPins(feasibilities, 'feasibility'), [feasibilities, pinKeys]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const visibleProjects = useMemo(() => {
-    return filterProjectsForUser(projects, currentUser, allUsers);
-  }, [projects, currentUser, allUsers]);
+    return filterProjectsForUser(pinnedProjectsList, currentUser, allUsers);
+  }, [pinnedProjectsList, currentUser, allUsers]);
 
   const visibleTasks = useMemo(() => {
-    return filterTasksForUser(tasks, currentUser, allUsers);
-  }, [tasks, currentUser, allUsers]);
+    return filterTasksForUser(pinnedTasksList, currentUser, allUsers);
+  }, [pinnedTasksList, currentUser, allUsers]);
 
   const visibleTickets = useMemo(() => {
-    return filterTicketsForUser(tickets, currentUser, allUsers);
-  }, [tickets, currentUser, allUsers]);
+    return filterTicketsForUser(pinnedTicketsList, currentUser, allUsers);
+  }, [pinnedTicketsList, currentUser, allUsers]);
 
   const visibleFeasibilities = useMemo(() => {
     // Feasibilities are visible to all authenticated users (management overview)
-    return feasibilities;
-  }, [feasibilities]);
+    return pinnedFeasList;
+  }, [pinnedFeasList]);
 
-  const userNotifications = useMemo(() => {
-    if (!currentUser) return [];
-    if (currentUser.role === 'super_admin') {
-      return notifications;
-    }
-    return notifications.filter(n => String(n.recipientId) === String(currentUser.id));
-  }, [notifications, currentUser]);
+  // The server returns only the caller's own notifications.
+  const userNotifications = notifications;
 
   const unreadNotificationCount = useMemo(() => {
     return userNotifications.filter(n => !n.isRead).length;
@@ -1626,9 +1702,8 @@ export const AppProvider = ({ children }) => {
     return savedProject || true;
   };
 
-  const togglePinProject = (id) => {
-    setProjects(prev => prev.map(p => String(p.id) === String(id) ? { ...p, isPinned: !p.isPinned } : p));
-  };
+  // Saved per person on the server (it used to only flip a local flag).
+  const togglePinProject = (id) => togglePin('project', id);
 
   // Archives (the backend never hard-deletes). Only removed from the UI when
   // the server confirms — it used to vanish locally even on a 403.
@@ -2012,6 +2087,11 @@ export const AppProvider = ({ children }) => {
   };
 
   const updateFeasibility = async (id, updates) => {
+    // Pinning is per person now (spec slide 28), not a field on the record.
+    if (updates && Object.keys(updates).length === 1 && updates.isPinned !== undefined) {
+      await togglePin('feasibility', id);
+      return true;
+    }
     const targetId = getBackendId(id);
 
     // Same class of fix as updateProject/updateClient above — raw
@@ -2316,7 +2396,9 @@ export const AppProvider = ({ children }) => {
       if (!data.project) return;
       const fresh = normalizeProject(data.project);
       setProjects(prev => prev.map(p => String(p.id) === String(projectId)
-        ? { ...p, progress: fresh.progress, tasksTotal: fresh.tasksTotal, tasksDone: fresh.tasksDone }
+        // Status too: it moves automatically with the tasks (backend
+        // syncProjectStatusFromTasks).
+        ? { ...p, progress: fresh.progress, tasksTotal: fresh.tasksTotal, tasksDone: fresh.tasksDone, status: fresh.status }
         : p));
     } catch {
       // Best effort — the next reload shows it anyway.
@@ -2424,6 +2506,11 @@ export const AppProvider = ({ children }) => {
   };
 
   const updateTask = async (id, updates) => {
+    // Pinning is per person now (spec slide 28), not a field on the record.
+    if (updates && Object.keys(updates).length === 1 && updates.isPinned !== undefined) {
+      await togglePin('task', id);
+      return true;
+    }
     const targetId = getBackendId(id);
 
     // This used to spread the camelCase `updates` straight onto the wire
@@ -3253,6 +3340,11 @@ export const AppProvider = ({ children }) => {
   };
 
   const updateTicket = async (id, updates) => {
+    // Pinning is per person now (spec slide 28), not a field on the record.
+    if (updates && Object.keys(updates).length === 1 && updates.isPinned !== undefined) {
+      await togglePin('ticket', id);
+      return true;
+    }
     const targetId = getBackendId(id);
     const hasAssignedProp = 'assignedToId' in updates || 'assigned_to_id' in updates;
     const rawAssignedId = updates.assignedToId !== undefined ? updates.assignedToId : updates.assigned_to_id;
@@ -4124,10 +4216,12 @@ export const AppProvider = ({ children }) => {
 
   const markNotificationAsRead = (id) => {
     setNotifications(prev => prev.map(n => String(n.id) === String(id) ? { ...n, isRead: true } : n));
+    apiFetch(`/api/notifications/${id}/read`, { method: 'PATCH' }).catch(() => {});
   };
 
   const markAllNotificationsAsRead = () => {
     setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
+    apiFetch('/api/notifications/read-all', { method: 'POST' }).catch(() => {});
   };
 
   return (
@@ -4140,11 +4234,11 @@ export const AppProvider = ({ children }) => {
         apiFetch,
         setAuthToken,
         dataLoaded,
-        projects,
+        projects: pinnedProjectsList,
         clients,
-        feasibilities,
-        tasks,
-        tickets,
+        feasibilities: pinnedFeasList,
+        tasks: pinnedTasksList,
+        tickets: pinnedTicketsList,
         auditLogs,
         auditPagination,
         auditLoading,
@@ -4173,6 +4267,8 @@ export const AppProvider = ({ children }) => {
         setActiveTab,
         taskListPreset,
         setTaskListPreset,
+        listPreset,
+        setListPreset,
         darkMode,
         setDarkMode,
         selectedProjectId,
@@ -4183,6 +4279,8 @@ export const AppProvider = ({ children }) => {
         visibleTasks,
         visibleTickets,
         visibleFeasibilities,
+        togglePin,
+        isPinnedFor,
         userNotifications,
         unreadNotificationCount,
         setCurrentUserId,
