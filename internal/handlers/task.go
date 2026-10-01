@@ -306,7 +306,7 @@ func CreateTask(c *gin.Context) {
 
 	// Create task
 	if err := database.DB.Create(&task).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create task: " + err.Error()})
+		serverError(c, "Failed to create task", err)
 		return
 	}
 

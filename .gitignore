@@ -1,3 +1,12 @@
 # Uploaded documents / evidence (spec slides 25, 27). Real business files —
 # never commit them; back this folder up with the database instead.
 /storage/
+
+# Secrets and local/build output — never commit these.
+# NOTE: .env is already tracked in this repo; adding it here does not remove
+# it from git by itself (see the deploy notes before running git rm --cached).
+.env
+node_modules/
+tls/
+uploads/
+*.exe

@@ -12,7 +12,8 @@ export const PERMISSION_KEYS = {
   VIEW_INTERNAL_NOTES: 'view_internal_notes',
   CREATE_FEASIBILITIES: 'create_feasibilities',
   GRANT_RECORD_ACCESS: 'grant_record_access',
-  TRANSFER_ASSIGNED_WORK: 'transfer_assigned_work'
+  TRANSFER_ASSIGNED_WORK: 'transfer_assigned_work',
+  MANAGE_VENDORS: 'manage_vendors'
 };
 
 export const PERMISSION_LABELS = {
@@ -29,7 +30,8 @@ export const PERMISSION_LABELS = {
   [PERMISSION_KEYS.VIEW_INTERNAL_NOTES]: 'View & Write Internal Notes',
   [PERMISSION_KEYS.CREATE_FEASIBILITIES]: 'Create Feasibility Requests',
   [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: 'Grant Record Access',
-  [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: 'Transfer My Work Within Department'
+  [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: 'Transfer My Work Within Department',
+  [PERMISSION_KEYS.MANAGE_VENDORS]: 'Manage Vendor List'
 };
 
 // Default role -> permission matrix. Super Admin is deliberately excluded —
@@ -49,7 +51,8 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.VIEW_INTERNAL_NOTES]: true,
     [PERMISSION_KEYS.CREATE_FEASIBILITIES]: true,
     [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: true,
-    [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true
+    [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true,
+    [PERMISSION_KEYS.MANAGE_VENDORS]: true
   },
   supervisor: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -65,7 +68,8 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.VIEW_INTERNAL_NOTES]: true,
     [PERMISSION_KEYS.CREATE_FEASIBILITIES]: true,
     [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: false,
-    [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true
+    [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true,
+    [PERMISSION_KEYS.MANAGE_VENDORS]: false
   },
   staff: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -81,7 +85,8 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.VIEW_INTERNAL_NOTES]: false,
     [PERMISSION_KEYS.CREATE_FEASIBILITIES]: true,
     [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: false,
-    [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true
+    [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true,
+    [PERMISSION_KEYS.MANAGE_VENDORS]: false
   }
 };
 
@@ -207,6 +212,14 @@ export function canManageDepartments(user, permissionMatrix = DEFAULT_PERMISSION
   if (!user) return false;
   if (user.role === 'super_admin') return true;
   return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.MANAGE_DEPARTMENTS];
+}
+
+// Vendor master (Vendors page): add, edit, archive and restore vendors.
+// Everyone can view the list — feasibility vendor pickers need it.
+export function canManageVendors(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (!user) return false;
+  if (user.role === 'super_admin') return true;
+  return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.MANAGE_VENDORS];
 }
 
 export function getRoleBadgeColor(role) {

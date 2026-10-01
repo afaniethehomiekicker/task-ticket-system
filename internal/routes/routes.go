@@ -14,7 +14,10 @@ func RegisterRoutes(r *gin.Engine) {
 	// Serve static uploads
 	r.Static("/uploads", "./uploads")
 
-	api := r.Group("/api")
+	// NumericIDParams: every :id / :userId / :vendorId ... must be a plain
+	// number. Handlers pass these straight to GORM's First(&row, id), which
+	// treats a non-numeric string as raw SQL (see middleware/idparams.go).
+	api := r.Group("/api", middleware.NumericIDParams())
 	{
 		// Health check
 		api.GET("/health", func(c *gin.Context) {
@@ -33,16 +36,23 @@ func RegisterRoutes(r *gin.Engine) {
 			if os.Getenv("ALLOW_PUBLIC_REGISTRATION") == "true" {
 				auth.POST("/register", handlers.Register)
 			}
-			// One limiter shared by both login routes: 10 rejected logins from
-			// an IP in 15 minutes locks that IP out for the rest of the window.
+			// 10 rejected logins from an IP in 15 minutes locks that IP out
+			// for the rest of the window.
 			loginLimit := middleware.LoginRateLimit(10, 15*time.Minute)
-			auth.POST("/login", loginLimit, handlers.Login)
-			auth.POST("/admin-login", loginLimit, handlers.AdminLogin)
+			// Captcha (see middleware/captcha.go): runs after the limiter so a
+			// locked-out IP never costs a verify call. Off when no keys are set.
+			captcha := middleware.RequireCaptcha()
+			auth.GET("/captcha-config", middleware.CaptchaConfigHandler)
+			// One login for every role. The separate /auth/admin-login
+			// endpoint was removed: the frontend no longer uses it.
+			auth.POST("/login", loginLimit, captcha, handlers.Login)
 		}
 
 		// All routes below require JWT authentication
 		protected := api.Group("/")
-		protected.Use(middleware.AuthenticateJWT())
+		// RedactEmbeddedClients: clients embedded in any response are cut down
+		// to reference fields for people not allowed the full record.
+		protected.Use(middleware.AuthenticateJWT(), handlers.RedactEmbeddedClients())
 		{
 			// User profile
 			protected.GET("/me", handlers.GetCurrentUser)
@@ -157,9 +167,12 @@ func RegisterRoutes(r *gin.Engine) {
 			tickets := protected.Group("/tickets")
 			{
 				tickets.GET("", handlers.GetTickets)
-				tickets.POST("", handlers.CreateTicket)
+				// GuardLinkedRecords: you can only link a project/client you can
+				// see, and assigning on create follows the Assign rules
+				// (see handlers/link_guard.go).
+				tickets.POST("", handlers.GuardLinkedRecords(), handlers.CreateTicket)
 				tickets.GET("/:id", handlers.GetTicket)
-				tickets.PUT("/:id", handlers.UpdateTicket)
+				tickets.PUT("/:id", handlers.GuardLinkedRecords(), handlers.UpdateTicket)
 				tickets.DELETE("/:id", handlers.DeleteTicket)
 				// Per-record history (spec slide 20 accountability chain).
 				tickets.GET("/:id/timeline", handlers.GetTicketTimeline)
@@ -216,6 +229,18 @@ func RegisterRoutes(r *gin.Engine) {
 			protected.PATCH("/notifications/:id/read", handlers.MarkNotificationRead)
 			protected.POST("/notifications/read-all", handlers.MarkAllNotificationsRead)
 
+			// Vendor master (spec slides 30-31). Everyone reads it (feasibility
+			// vendor pickers); changes need "Manage Vendor List".
+			vendors := protected.Group("/vendors")
+			{
+				vendors.GET("", handlers.GetVendors)
+				vendors.GET("/:id", handlers.GetVendor)
+				vendors.POST("", middleware.RequirePermission("manage_vendors"), handlers.CreateVendor)
+				vendors.PUT("/:id", middleware.RequirePermission("manage_vendors"), handlers.UpdateVendor)
+				vendors.DELETE("/:id", middleware.RequirePermission("manage_vendors"), handlers.ArchiveVendor) // archives
+				vendors.PATCH("/:id/restore", middleware.RequirePermission("manage_vendors"), handlers.RestoreVendor)
+			}
+
 			tasks := protected.Group("/tasks")
 			{
 				tasks.GET("", handlers.GetTasks)
@@ -223,7 +248,7 @@ func RegisterRoutes(r *gin.Engine) {
 				// matrix client-side and hides the button accordingly, but
 				// nothing stopped anyone with a valid token from calling
 				// this directly regardless of their actual permission.
-				tasks.POST("", middleware.RequirePermission("create_tasks"), handlers.CreateTask)
+				tasks.POST("", middleware.RequirePermission("create_tasks"), handlers.GuardLinkedRecords(), handlers.CreateTask)
 				tasks.GET("/:id", handlers.GetTask)
 				tasks.PUT("/:id", handlers.UpdateTask)
 				tasks.DELETE("/:id", handlers.DeleteTask)
@@ -271,7 +296,9 @@ func RegisterRoutes(r *gin.Engine) {
 
 			// User management (admin only)
 			users := protected.Group("/users")
-			users.Use(middleware.RequirePermission("manage_users"))
+			// ScopeUserManagement: department admins manage only their own
+			// department's users (see middleware/user_scope.go).
+			users.Use(middleware.RequirePermission("manage_users"), middleware.ScopeUserManagement())
 			{
 				users.GET("", handlers.GetUsers)
 				users.POST("", handlers.AdminCreateUser)

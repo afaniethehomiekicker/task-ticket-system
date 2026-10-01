@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -69,6 +70,9 @@ type CreateFeasibilityInput struct {
 }
 
 type CreateFeasibilityVendorInput struct {
+	// From the vendor master (vendor_id), or by name: a new name is added to
+	// the master automatically (see models/vendor.go).
+	VendorID      *uint  `json:"vendor_id"`
 	VendorName    string `json:"vendor_name" binding:"required"`
 	ContactPerson string `json:"contact_person"`
 	ContactEmail  string `json:"contact_email"`
@@ -108,6 +112,9 @@ type UpdateFeasibilityInput struct {
 // endpoint in this file), so every add-vendor request failed with
 // "Field validation for 'FeasibilityID' failed on the 'required' tag."
 type CreateFeasibilityVendorInputDirect struct {
+	// Picked from the vendor master (vendor_id), or typed: an unknown name is
+	// added to the master automatically (see models/vendor.go).
+	VendorID      *uint  `json:"vendor_id"`
 	VendorName    string `json:"vendor_name" binding:"required"`
 	ContactPerson string `json:"contact_person"`
 	ContactEmail  string `json:"contact_email"`
@@ -119,6 +126,7 @@ type CreateFeasibilityVendorInputDirect struct {
 }
 
 type UpdateFeasibilityVendorInput struct {
+	VendorID      *uint  `json:"vendor_id"`
 	VendorName    string `json:"vendor_name"`
 	ContactPerson string `json:"contact_person"`
 	ContactEmail  string `json:"contact_email"`
@@ -178,7 +186,7 @@ func GetFeasibilities(c *gin.Context) {
 
 	var feasibilities []models.Feasibility
 	if result := query.Order("created_at desc").Find(&feasibilities); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch feasibilities: " + result.Error.Error()})
+		serverError(c, "Failed to fetch feasibilities", result.Error)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"feasibilities": feasibilities})
@@ -277,8 +285,17 @@ func CreateFeasibility(c *gin.Context) {
 	}
 
 	// Create feasibility first
+	// Vendors must not be archived in the vendor master. Checked before
+	// anything is saved so a bad vendor doesn't leave a half-made feasibility.
+	for _, v := range input.Vendors {
+		if msg := archivedVendorMessage(v.VendorID, v.VendorName); msg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
+	}
+
 	if result := database.DB.Omit("Client", "AssignedUser", "CreatedBy", "Vendors", "Attachments", "ConvertedProject").Create(&feasibility); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create feasibility: " + result.Error.Error()})
+		serverError(c, "Failed to create feasibility", result.Error)
 		return
 	}
 
@@ -286,6 +303,7 @@ func CreateFeasibility(c *gin.Context) {
 	for _, v := range input.Vendors {
 		vendor := models.FeasibilityVendor{
 			FeasibilityID: feasibility.ID,
+			VendorID:      v.VendorID,
 			VendorName:    v.VendorName,
 			ContactPerson: v.ContactPerson,
 			ContactEmail:  v.ContactEmail,
@@ -293,7 +311,9 @@ func CreateFeasibility(c *gin.Context) {
 			QuotationRef:  v.QuotationRef,
 			Status:        "pending",
 		}
-		database.DB.Create(&vendor)
+		if err := database.DB.Create(&vendor).Error; err != nil {
+			log.Printf("feasibility %s: adding vendor %q failed: %v", feasibility.FeasibilityNumber, v.VendorName, err)
+		}
 	}
 
 	auditFeasibility(c, "created", feasibility.ID,
@@ -437,7 +457,7 @@ func UpdateFeasibility(c *gin.Context) {
 		// Captured BEFORE Updates(): GORM writes map values back into the model.
 		oldStatus := feasibility.Status
 		if err := database.DB.Model(&feasibility).Updates(updates).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update feasibility: " + err.Error()})
+			serverError(c, "Failed to update feasibility", err)
 			return
 		}
 		details := fmt.Sprintf("Updated feasibility %s", feasibility.FeasibilityNumber)
@@ -524,6 +544,7 @@ func AddFeasibilityVendor(c *gin.Context) {
 
 	vendor := models.FeasibilityVendor{
 		FeasibilityID: feasibility.ID,
+		VendorID:      input.VendorID,
 		VendorName:    input.VendorName,
 		ContactPerson: input.ContactPerson,
 		ContactEmail:  input.ContactEmail,
@@ -542,8 +563,20 @@ func AddFeasibilityVendor(c *gin.Context) {
 		return
 	}
 
+	// The same vendor only once per feasibility (a withdrawn one can be
+	// reinstated instead of added again).
+	if msg := duplicateVendorMessage(feasibility.ID, input.VendorID, input.VendorName); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+
 	if result := database.DB.Create(&vendor); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add vendor: " + result.Error.Error()})
+		if msg, ok := vendorErrorMessage(result.Error); ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
+		log.Printf("feasibility %s: adding vendor failed: %v", feasibility.FeasibilityNumber, result.Error)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add vendor"})
 		return
 	}
 	auditFeasibility(c, "vendor_added", feasibility.ID, fmt.Sprintf("Added vendor %s to %s", vendor.VendorName, feasibility.FeasibilityNumber))
@@ -583,8 +616,27 @@ func UpdateFeasibilityVendor(c *gin.Context) {
 	}
 
 	updates := map[string]interface{}{}
-	if input.VendorName != "" {
-		updates["vendor_name"] = input.VendorName
+	// Changing which vendor this row is: re-link it to the vendor master.
+	nameChanged := input.VendorName != "" && !strings.EqualFold(strings.TrimSpace(input.VendorName), strings.TrimSpace(vendor.VendorName))
+	idChanged := input.VendorID != nil && *input.VendorID != 0 && (vendor.VendorID == nil || *vendor.VendorID != *input.VendorID)
+	if nameChanged || idChanged {
+		var pickID *uint
+		if idChanged {
+			pickID = input.VendorID
+		}
+		uid := callerID(c)
+		master, err := models.ResolveVendor(database.DB, pickID, input.VendorName, &uid)
+		if err != nil {
+			if msg, ok := vendorErrorMessage(err); ok {
+				c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+				return
+			}
+			log.Printf("feasibility vendor %d: re-linking failed: %v", vendor.ID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update vendor"})
+			return
+		}
+		updates["vendor_id"] = master.ID
+		updates["vendor_name"] = master.Name
 	}
 	if input.ContactPerson != "" {
 		updates["contact_person"] = input.ContactPerson
@@ -621,7 +673,7 @@ func UpdateFeasibilityVendor(c *gin.Context) {
 	if len(updates) > 0 {
 		oldVendorStatus := vendor.Status
 		if err := database.DB.Model(&vendor).Updates(updates).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update vendor: " + err.Error()})
+			serverError(c, "Failed to update vendor", err)
 			return
 		}
 		if newStatus, ok := updates["status"]; ok && fmt.Sprint(newStatus) != oldVendorStatus {
@@ -804,7 +856,7 @@ func ConvertFeasibilityToProject(c *gin.Context) {
 	})
 
 	if txErr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to convert feasibility: " + txErr.Error()})
+		serverError(c, "Failed to convert feasibility", txErr)
 		return
 	}
 

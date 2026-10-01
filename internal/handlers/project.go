@@ -354,7 +354,7 @@ func CreateProject(c *gin.Context) {
 	}
 
 	if err := database.DB.Create(&project).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create project: " + err.Error()})
+		serverError(c, "Failed to create project", err)
 		return
 	}
 

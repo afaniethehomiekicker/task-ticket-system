@@ -15,7 +15,7 @@ import {
   Plus,
   UserCircle,
   Building2,
-  Network, Archive
+  Network, Archive, Truck
 } from 'lucide-react';
 // canManageDepartments: same unverified-import note as DepartmentsView.jsx —
 // I don't have the current permissions.js in this session, so this mirrors
@@ -51,6 +51,9 @@ export const Sidebar = () => {
     { id: 'tickets', label: 'Tickets Desk', icon: LifeBuoy, badge: openTicketsCount },
     { id: 'feasibilities', label: 'Feasibilities', icon: Network, badge: visibleFeasibilities?.length },
     { id: 'clients', label: 'Clients', icon: Building2 },
+    // Vendor master (spec slide 31). Everyone can view it; managing it
+    // needs "Manage Vendor List" (checked inside VendorsView).
+    { id: 'vendors', label: 'Vendors', icon: Truck },
     // New — the spec lists Departments as its own module (slide 32), and
     // it didn't exist in this app's navigation at all until now. Viewable
     // by anyone the same way Clients is; DepartmentsView.jsx itself hides

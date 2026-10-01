@@ -12,7 +12,7 @@ import (
 //
 //	CL-000001 client       PRJ-000001 project     TKT-000001 ticket
 //	TSK-000001 task        STK-000001 subtask     FEA-000001 feasibility
-//	USR-000001 user        DEP-000001 department
+//	USR-000001 user        DEP-000001 department  VEN-000001 vendor
 //
 // Numbers come from IDCounter, one row per prefix, incremented atomically
 // in the database. The old "highest existing number + 1" approach let two

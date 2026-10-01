@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
   Users, Plus, Search, Shield, UserCheck, Mail, Building, 
-  CheckCircle, AlertCircle, Edit, ToggleLeft, ToggleRight, X, Phone, Archive
+  CheckCircle, AlertCircle, Edit, ToggleLeft, ToggleRight, X, Phone, Archive,
+  Eye, EyeOff
 } from 'lucide-react';
 import { RoleBadge } from '../common/Badge';
 import { canManageUsers, getRoleDisplayName } from '../../utils/permissions';
@@ -41,6 +42,8 @@ export const TeamView = () => {
   const [selectedMemberDetailId, setSelectedMemberDetailId] = useState(null);
   const [isSavingUser, setIsSavingUser] = useState(false);
   const [tempPasswordBanner, setTempPasswordBanner] = useState(null);
+  const [passwordError, setPasswordError] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   // No default avatar: the old stock-photo URL was stored on every new user,
   // and the backend (correctly) rejects external avatar URLs on edit, so
@@ -55,10 +58,30 @@ export const TeamView = () => {
     title: '',
     adminId: '',
     supervisorId: '',
-    supportTier: ''
+    supportTier: '',
+    // New members only: the admin sets the first password themselves (no
+    // more random temporary passwords). Never sent when editing.
+    password: '',
+    confirmPassword: ''
   };
+  const MIN_PASSWORD_LENGTH = 8;
 
   const [formData, setFormData] = useState(EMPTY_FORM);
+
+  // Department admins manage only their own department's people (the
+  // server enforces the same rule); everyone else is listed read-only.
+  // Department admins can only add people to their own department.
+  const ownDeptOnly = (currentUser && currentUser.role !== 'super_admin' && (currentUser.department || '').trim())
+    ? currentUser.department.trim().toLowerCase()
+    : '';
+
+  const canManageMember = (u) => {
+    if (!currentUser) return false;
+    if (currentUser.role === 'super_admin') return true;
+    const myDept = (currentUser.department || '').trim().toLowerCase();
+    if (currentUser.role === 'admin' && !myDept) return true;
+    return !!myDept && (u.department || '').trim().toLowerCase() === myDept;
+  };
 
   // Active people only, plus whoever is currently linked (so an existing link
   // to a since-deactivated person still displays instead of blanking).
@@ -74,6 +97,9 @@ export const TeamView = () => {
     const matchRole = roleFilter === 'all' || u.role === roleFilter;
     // Archived accounts live in Archive → Users, not on the Team page.
     if (u.status === 'archived') return false;
+    // Department admins (and everyone else with a department) see their own
+    // department's people here; super admins and company-wide admins see all.
+    if (ownDeptOnly && (u.department || '').trim().toLowerCase() !== ownDeptOnly) return false;
     const matchDept = deptFilter === 'all' || u.department === deptFilter;
     return matchSearch && matchRole && matchDept;
   });
@@ -85,6 +111,18 @@ export const TeamView = () => {
   const handleSaveUser = async (e) => {
     e.preventDefault();
     if (!formData.name || !formData.email) return;
+
+    if (!editingUser) {
+      if ((formData.password || '').length < MIN_PASSWORD_LENGTH) {
+        setPasswordError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+        return;
+      }
+      if (formData.password !== formData.confirmPassword) {
+        setPasswordError('The two passwords do not match.');
+        return;
+      }
+    }
+    setPasswordError('');
 
     setIsSavingUser(true);
     try {
@@ -122,6 +160,7 @@ export const TeamView = () => {
         const result = await createUser({
           name: formData.name,
           email: formData.email,
+          password: formData.password,
           role: formData.role || 'staff',
           department: formData.department || '',
           title: formData.title || '',
@@ -180,6 +219,8 @@ export const TeamView = () => {
               // by the backend) and other leftover fields.
               setEditingUser(null);
               setFormData(EMPTY_FORM);
+              setPasswordError('');
+              setShowPassword(false);
               setShowAddModal(true);
             }}
             className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition cursor-pointer"
@@ -323,7 +364,7 @@ export const TeamView = () => {
                 </div>
               </div>
 
-              {canManageUsers(currentUser, permissionMatrix) && (
+              {canManageUsers(currentUser, permissionMatrix) && canManageMember(user) && (
                 <div 
                   className="pt-3 border-t border-slate-300/60 dark:border-zinc-800/80 flex items-center justify-between text-xs"
                   onClick={(e) => e.stopPropagation()}
@@ -520,6 +561,49 @@ export const TeamView = () => {
                 </div>
               </div>
 
+              {!editingUser && (
+                <div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="font-semibold text-slate-700 dark:text-zinc-300 block mb-1">Password</label>
+                      <div className="relative">
+                        <input
+                          type={showPassword ? 'text' : 'password'}
+                          required
+                          minLength={MIN_PASSWORD_LENGTH}
+                          autoComplete="new-password"
+                          value={formData.password || ''}
+                          onChange={(e) => { setPasswordError(''); setFormData({ ...formData, password: e.target.value }); }}
+                          className="w-full p-2 pr-8 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword(v => !v)}
+                          className="absolute inset-y-0 right-0 px-2 flex items-center text-slate-500 dark:text-zinc-400 hover:text-slate-700 dark:hover:text-zinc-200 cursor-pointer"
+                          title={showPassword ? 'Hide password' : 'Show password'}
+                        >
+                          {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="font-semibold text-slate-700 dark:text-zinc-300 block mb-1">Confirm Password</label>
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        autoComplete="new-password"
+                        value={formData.confirmPassword || ''}
+                        onChange={(e) => { setPasswordError(''); setFormData({ ...formData, confirmPassword: e.target.value }); }}
+                        className="w-full p-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                      />
+                    </div>
+                  </div>
+                  <p className={`mt-1 text-[11px] ${passwordError ? 'text-rose-500' : 'text-slate-500 dark:text-zinc-400'}`}>
+                    {passwordError || `At least ${MIN_PASSWORD_LENGTH} characters. Share it with the new member directly.`}
+                  </p>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="font-semibold text-slate-700 dark:text-zinc-300 block mb-1">Role</label>
@@ -552,10 +636,12 @@ export const TeamView = () => {
                     onChange={(e) => setFormData({ ...formData, department: e.target.value })}
                     className="w-full p-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
                   >
-                    <option value="">No department</option>
-                    {(departments || []).map(d => (
-                      <option key={d.id} value={d.name}>{d.name}</option>
-                    ))}
+                    {!ownDeptOnly && <option value="">No department</option>}
+                    {(departments || [])
+                      .filter(d => !ownDeptOnly || d.name.trim().toLowerCase() === ownDeptOnly)
+                      .map(d => (
+                        <option key={d.id} value={d.name}>{d.name}</option>
+                      ))}
                     {/* Keep a legacy value visible instead of silently blanking it. */}
                     {formData.department && !(departments || []).some(d => d.name === formData.department) && (
                       <option value={formData.department}>{formData.department} (not in list)</option>

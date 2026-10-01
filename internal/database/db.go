@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"task-ticket-backend/internal/models"
 
@@ -44,14 +45,34 @@ func ConnectDB() {
 	}
 
 	var err error
+	// Logging every SQL statement (the old LogMode(logger.Info)) slowed the
+	// server, filled the disk and copied record contents into the logs. Now
+	// only warnings, errors and slow queries are logged; set DB_LOG=info to
+	// see every statement while debugging.
+	logLevel := logger.Warn
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("DB_LOG")), "info") {
+		logLevel = logger.Info
+	}
 	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
+		Logger: logger.Default.LogMode(logLevel),
 	})
 
 	if err != nil {
 		log.Fatal("Failed to connect to database: ", err)
 	}
 	log.Println("Database connected successfully!")
+
+	// Connection pool. Go's default keeps only 2 idle connections, so when the
+	// app loads a page (about ten requests at once) most requests had to open
+	// a brand-new database connection, which takes 100-300 ms on Windows.
+	// That showed up as "SLOW SQL" on simple lookups such as the per-request
+	// user check. Keeping connections open removes that cost.
+	if sqlDB, err := DB.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(50)
+		sqlDB.SetMaxIdleConns(25)
+		sqlDB.SetConnMaxIdleTime(10 * time.Minute)
+		sqlDB.SetConnMaxLifetime(time.Hour)
+	}
 
 	// Auto-Migrate all your modern models
 	err = DB.AutoMigrate(
@@ -78,6 +99,8 @@ func ConnectDB() {
 		// DeleteFeasibilityVendor fails on first use with "relation does
 		// not exist."
 		&models.FeasibilityVendor{},
+		// Vendor master (spec slides 30-31).
+		&models.Vendor{},
 		&models.FeasibilityAttachment{},
 		// Explicit per-record access grants (spec slide 16, record-level layer).
 		&models.RecordAccess{},
@@ -105,6 +128,19 @@ func ConnectDB() {
 
 	if err != nil {
 		log.Fatal("Failed to run database migrations: ", err)
+	}
+
+	// Clients, projects, tasks, sub-tasks, tickets and feasibilities used to
+	// declare an "ArchivedBy *User" relation keyed on ArchivedByID. Because
+	// users have an archived_by_id column too, GORM read each one backwards
+	// ("the user whose archived_by_id is this task's id") and tried to put
+	// foreign keys on users.archived_by_id pointing at tasks, tickets, etc.
+	// On an empty database that stopped the server from starting at all; on
+	// an existing one it could make archiving a user fail. The relations were
+	// never used (archived_by_id is all the code reads) and are gone; drop any
+	// such constraint an earlier version created.
+	for _, t := range []string{"clients", "projects", "tasks", "sub_tasks", "tickets", "feasibilities"} {
+		DB.Exec(`ALTER TABLE users DROP CONSTRAINT IF EXISTS fk_` + t + `_archived_by`)
 	}
 	log.Println("Database auto-migration completed successfully!")
 

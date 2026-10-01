@@ -15,6 +15,11 @@ export function exportToCSV(filename, rows) {
             : typeof cell === 'object'
             ? JSON.stringify(cell).replace(/"/g, '""')
             : cell.toString().replace(/"/g, '""');
+          // A cell starting with = + - @ (or a tab / carriage return) is run
+          // as a formula when the file is opened in Excel — a ticket title
+          // like =HYPERLINK(...) could do that. A leading apostrophe makes
+          // it plain text.
+          if (/^[=+\-@\t\r]/.test(cell)) cell = `'${cell}`;
           return `"${cell}"`;
         })
         .join(separator);

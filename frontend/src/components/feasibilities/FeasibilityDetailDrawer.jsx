@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { PriorityBadge } from '../common/Badge';
 import { canCreateProject } from '../../utils/permissions';
+import { useVendorList, findVendorByName, invalidateVendorList } from '../vendors/vendorList';
 
 // New file — FeasibilitiesView.jsx's onClick (setSelectedFeasibilityId) has
 // been wired to this since the view was first built; nothing rendered it,
@@ -71,13 +72,14 @@ export const FeasibilityDetailDrawer = () => {
     deleteFeasibilityVendor,
     addFeasibilityVendor,
     deleteFeasibility,
-    convertFeasibilityToProject, reinstateFeasibilityVendor } = useApp();
+    convertFeasibilityToProject, reinstateFeasibilityVendor, apiFetch } = useApp();
 
   const [isBusy, setIsBusy] = useState(false);
   // Which vendor's evidence panel is open.
   const [evidenceOpen, setEvidenceOpen] = useState(null);
   const [showAddVendor, setShowAddVendor] = useState(false);
   const [vendorForm, setVendorForm] = useState({ vendorName: '', contactPerson: '', contactEmail: '', contactPhone: '', quotationRef: '' });
+  const vendorList = useVendorList(apiFetch);
   const [showConvert, setShowConvert] = useState(false);
   const [convertForm, setConvertForm] = useState({ projectTitle: '', projectDescription: '', projectPriority: 'normal' });
 
@@ -132,11 +134,30 @@ export const FeasibilityDetailDrawer = () => {
     setIsBusy(false);
   };
 
+  // Picking a name from the vendor list links the row to that vendor and
+  // fills in its contacts; a new name is added to the list automatically.
+  const pickedVendor = findVendorByName(vendorList, vendorForm.vendorName);
+  const handleVendorNameChange = (name) => {
+    const match = findVendorByName(vendorList, name);
+    if (match) {
+      setVendorForm(f => ({
+        ...f,
+        vendorName: name,
+        contactPerson: f.contactPerson || match.contactPerson,
+        contactEmail: f.contactEmail || match.email,
+        contactPhone: f.contactPhone || match.phone,
+      }));
+    } else {
+      setVendorForm(f => ({ ...f, vendorName: name }));
+    }
+  };
+
   const handleAddVendor = async (e) => {
     e.preventDefault();
     if (!vendorForm.vendorName.trim()) return;
     setIsBusy(true);
     const saved = await addFeasibilityVendor(feasibility.id, {
+      vendor_id: pickedVendor?.id || null,
       vendor_name: vendorForm.vendorName.trim(),
       contact_person: vendorForm.contactPerson.trim(),
       contact_email: vendorForm.contactEmail.trim(),
@@ -145,6 +166,8 @@ export const FeasibilityDetailDrawer = () => {
     });
     setIsBusy(false);
     if (saved) {
+      // A new name was just added to the vendor list — refresh pickers.
+      if (!pickedVendor) invalidateVendorList();
       setVendorForm({ vendorName: '', contactPerson: '', contactEmail: '', contactPhone: '', quotationRef: '' });
       setShowAddVendor(false);
     }
@@ -311,11 +334,25 @@ export const FeasibilityDetailDrawer = () => {
               <form onSubmit={handleAddVendor} className="mb-3 p-3 rounded-xl bg-slate-100 dark:bg-zinc-900/60 border border-slate-300 dark:border-zinc-800 space-y-2">
                 <input
                   type="text"
-                  placeholder="Vendor name (required)"
+                  list="feasibility-vendor-options"
+                  autoComplete="off"
+                  placeholder="Vendor — pick from the list or type a new name"
                   value={vendorForm.vendorName}
-                  onChange={(e) => setVendorForm({ ...vendorForm, vendorName: e.target.value })}
+                  onChange={(e) => handleVendorNameChange(e.target.value)}
                   className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
                 />
+                <datalist id="feasibility-vendor-options">
+                  {vendorList.map(v => (
+                    <option key={v.id} value={v.name}>{[v.vendorNumber, v.cities].filter(Boolean).join(' · ')}</option>
+                  ))}
+                </datalist>
+                {vendorForm.vendorName.trim() && (
+                  <p className="text-[10px] text-slate-500 dark:text-zinc-400">
+                    {pickedVendor
+                      ? `From the vendor list (${pickedVendor.vendorNumber}).`
+                      : 'New vendor — it will be added to the vendor list.'}
+                  </p>
+                )}
                 <div className="grid grid-cols-2 gap-2">
                   <input type="text" placeholder="Contact person" value={vendorForm.contactPerson} onChange={(e) => setVendorForm({ ...vendorForm, contactPerson: e.target.value })} className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden" />
                   <input type="email" placeholder="Contact email" value={vendorForm.contactEmail} onChange={(e) => setVendorForm({ ...vendorForm, contactEmail: e.target.value })} className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden" />

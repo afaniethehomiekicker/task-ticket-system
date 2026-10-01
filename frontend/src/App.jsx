@@ -27,6 +27,7 @@ import { ProjectDetailModal } from "./components/projects/ProjectDetailModal";
 import { FeasibilityDetailDrawer } from "./components/feasibilities/FeasibilityDetailDrawer";
 import { ClientsView } from "./components/Clients/Clientsview";
 import { DepartmentsView } from "./components/departments/DepartmentsView";
+import { VendorsView } from "./components/vendors/VendorsView";
 import { ArchiveView } from "./components/archive/ArchiveView";
 const AppContent = () => {
   const {
@@ -94,6 +95,8 @@ const AppContent = () => {
         return <FeasibilitiesView />;
       case "clients":
         return <ClientsView />;
+      case "vendors":
+        return <VendorsView />;
       case "departments":
         return <DepartmentsView />;
       case "team":

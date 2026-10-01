@@ -56,7 +56,7 @@ func CreateChecklistItem(c *gin.Context) {
 	}
 
 	if result := database.DB.Create(&item); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create checklist item: " + result.Error.Error()})
+		serverError(c, "Failed to create checklist item", result.Error)
 		return
 	}
 

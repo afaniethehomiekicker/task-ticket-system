@@ -55,7 +55,7 @@ func GetClients(c *gin.Context) {
 	}
 
 	if result := db.Order("company_name ASC").Find(&clients); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch clients: " + result.Error.Error()})
+		serverError(c, "Failed to fetch clients", result.Error)
 		return
 	}
 	markClientAccess(c, clients) // reference-only rows lose contact details
@@ -179,7 +179,7 @@ func CreateClient(c *gin.Context) {
 		client.CreatedByID = &creator
 	}
 	if result := database.DB.Create(&client); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
+		serverError(c, "Something went wrong. Please try again.", result.Error)
 		return
 	}
 

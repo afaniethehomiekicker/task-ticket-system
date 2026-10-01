@@ -18,6 +18,10 @@ const backendPort = process.env.PORT || "8087";
 const backendTarget =
   process.env.VITE_PROXY_TARGET || `http://${publicHost}:${backendPort}`;
 
+const stripOrigin = (proxy) => {
+  proxy.on("proxyReq", (proxyReq) => proxyReq.removeHeader("origin"));
+};
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
@@ -33,9 +37,13 @@ export default defineConfig({
     // from the backend itself so these resolve same-origin. In dev, vite
     // lives on :3000 and has no backend of its own — proxy those paths to
     // the backend at http://<PUBLIC_HOST>:<PORT> from the root .env.
+    // The browser sees the dev server and the API as one site, so the
+    // forwarded request drops its Origin header: the backend then treats it
+    // as same-site instead of a cross-site call from localhost:3000 (which
+    // release mode refuses).
     proxy: {
-      "/api": { target: backendTarget, changeOrigin: true },
-      "/uploads": { target: backendTarget, changeOrigin: true },
+      "/api": { target: backendTarget, changeOrigin: true, configure: stripOrigin },
+      "/uploads": { target: backendTarget, changeOrigin: true, configure: stripOrigin },
     },
   },
   build: {

@@ -1,14 +1,25 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Lock, Mail } from 'lucide-react';
+import { CaptchaWidget } from './CaptchaWidget';
+import { Lock, Mail, Eye, EyeOff } from 'lucide-react';
 
+// The single login page for every role. The old separate Super Admin portal
+// (/admin-login) now shows this same page — see Adminlogin.jsx.
 export const Login = () => {
   const { setCurrentUserId, setAuthToken } = useApp();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Security check (see CaptchaWidget). When the server has captcha turned
+  // off, the widget reports 'off' and login works without a token.
+  const captchaRef = useRef(null);
+  const [captchaToken, setCaptchaToken] = useState(null);
+  const [captchaStatus, setCaptchaStatus] = useState('loading');
+  const captchaRequired = captchaStatus !== 'off';
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -20,11 +31,20 @@ export const Login = () => {
       return;
     }
 
+    if (captchaRequired && !captchaToken) {
+      setError('Please complete the security check.');
+      return;
+    }
+
     setIsSubmitting(true);
+    let loggedIn = false;
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(captchaToken ? { 'X-Captcha-Token': captchaToken } : {}),
+        },
         body: JSON.stringify({ email: cleanEmail, password }),
       });
 
@@ -57,11 +77,15 @@ export const Login = () => {
       // consumer of backend user data already handles this via
       // normalizeUser's raw.id ?? raw.ID; this was the one place still
       // reading the raw response directly instead.
+      loggedIn = true;
       setAuthToken(data.token);
       setCurrentUserId(data.user.id ?? data.user.ID);
     } catch (err) {
       setError('Could not reach the server. Please try again.');
     } finally {
+      // A captcha token works only once, so every failed attempt needs a
+      // fresh check before the next try.
+      if (!loggedIn) captchaRef.current?.reset();
       setIsSubmitting(false);
     }
   };
@@ -73,9 +97,9 @@ export const Login = () => {
           <div className="inline-flex p-3 bg-indigo-600/20 text-indigo-400 rounded-xl mb-3">
             <Lock className="w-6 h-6" />
           </div>
-          <h2 className="text-xl font-bold text-white">Ticket System Login</h2>
+          <h2 className="text-xl font-bold text-white">Sign In</h2>
           <p className="text-xs text-slate-400 mt-1">
-            Staff Portal (Login via Email)
+            Sign in with your email and password
           </p>
         </div>
 
@@ -112,27 +136,32 @@ export const Login = () => {
                 <Lock className="w-4 h-4" />
               </span>
               <input
-                type="password"
+                type={showPassword ? 'text' : 'password'}
                 required
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
-                className="w-full pl-9 pr-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-indigo-500"
+                className="w-full pl-9 pr-9 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-indigo-500"
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                title={showPassword ? 'Hide password' : 'Show password'}
+                className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-200 cursor-pointer"
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
             </div>
           </div>
 
-          {/* Navigates to the dedicated Super Admin portal (/admin-login)
-              — a real page navigation, not SPA state, since that portal
-              is a genuinely separate entry point with its own backend
-              gate (see AdminLogin in auth.go). */}
-          <button
-            type="button"
-            onClick={() => { window.location.href = '/admin-login'; }}
-            className="text-xs text-indigo-400 hover:text-indigo-300 transition cursor-pointer"
-          >
-            Login as Super Admin?
-          </button>
+          <CaptchaWidget
+            ref={captchaRef}
+            onToken={setCaptchaToken}
+            onStatus={setCaptchaStatus}
+            theme="dark"
+          />
 
           <button
             type="submit"

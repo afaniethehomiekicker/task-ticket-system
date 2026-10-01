@@ -345,7 +345,7 @@ func CreateTicket(c *gin.Context) {
 	}
 
 	if err := database.DB.Create(&ticket).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create ticket: " + err.Error()})
+		serverError(c, "Failed to create ticket", err)
 		return
 	}
 

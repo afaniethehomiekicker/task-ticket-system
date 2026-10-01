@@ -68,6 +68,10 @@ export const Profile = () => {
         setError('New passwords do not match.');
         return;
       }
+      if (passwords.newPassword.length < 8) {
+        setError('New password must be at least 8 characters.');
+        return;
+      }
       if (!passwords.currentPassword) {
         setError('Please enter your current password to update it.');
         return;

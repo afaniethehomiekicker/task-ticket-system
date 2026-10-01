@@ -12,6 +12,11 @@ type FeasibilityVendor struct {
 	gorm.Model
 	FeasibilityID uint         `json:"feasibility_id" binding:"required"`
 	Feasibility   *Feasibility `json:"feasibility,omitempty" gorm:"foreignKey:FeasibilityID"`
+	// The vendor in the vendor master (spec slides 30-31: Vendors). Filled
+	// in automatically on create (see vendor.go). VendorName keeps the name
+	// as it was on this feasibility, so history reads correctly even if the
+	// master record is renamed later.
+	VendorID      *uint        `json:"vendor_id,omitempty" gorm:"index"`
 	VendorName    string       `json:"vendor_name" binding:"required"`
 	Status        string       `json:"status"`
 	ResponseNotes string       `json:"response_notes"`
@@ -74,7 +79,6 @@ type Feasibility struct {
 	// See the matching comment on Project.ArchivedAt further up this file.
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
 	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
-	ArchivedBy   *User      `json:"archived_by,omitempty" gorm:"foreignKey:ArchivedByID"`
 	PreArchiveStatus string     `json:"pre_archive_status,omitempty"` // status before archiving; Restore returns to it
 
 	ConvertedProjectID *uint      `json:"converted_project_id,omitempty"`
@@ -111,6 +115,9 @@ type User struct {
 	Manager      *User      `json:"manager,omitempty" gorm:"foreignKey:ManagerID"`
 	SupervisorID *uint      `json:"supervisor_id,omitempty"`
 	Supervisor   *User      `json:"supervisor,omitempty" gorm:"foreignKey:SupervisorID"`
+	// Set whenever the password changes; sessions issued before it stop
+	// working (see middleware.AuthenticateJWT).
+	PasswordChangedAt *time.Time `json:"-"`
 	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
 }
 
@@ -158,7 +165,6 @@ type Client struct {
 	// explicitly names as "never permanently deleted."
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
 	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
-	ArchivedBy   *User      `json:"archived_by,omitempty" gorm:"foreignKey:ArchivedByID"`
 	PreArchiveStatus string     `json:"pre_archive_status,omitempty"` // status before archiving; Restore returns to it
 }
 
@@ -193,7 +199,6 @@ type Project struct {
 	// field below, rather than something buried only in the audit log.
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
 	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
-	ArchivedBy   *User      `json:"archived_by,omitempty" gorm:"foreignKey:ArchivedByID"`
 	PreArchiveStatus string     `json:"pre_archive_status,omitempty"` // status before archiving; Restore returns to it
 	Priority     string     `json:"priority" gorm:"default:'normal'"` // low, normal, high, critical
 	StartDate    *time.Time `json:"start_date"`
@@ -246,7 +251,6 @@ type Ticket struct {
 	// same reasoning, same "delete" behavior, applied consistently.
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
 	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
-	ArchivedBy   *User      `json:"archived_by,omitempty" gorm:"foreignKey:ArchivedByID"`
 	PreArchiveStatus string     `json:"pre_archive_status,omitempty"` // status before archiving; Restore returns to it
 	Priority     string     `json:"priority" gorm:"default:'normal'"` // low, normal, high, critical
 	Severity     string     `json:"severity"`                         // minor, major, critical
@@ -321,7 +325,6 @@ type Task struct {
 	// See the matching comment on Project.ArchivedAt in this file.
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
 	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
-	ArchivedBy   *User      `json:"archived_by,omitempty" gorm:"foreignKey:ArchivedByID"`
 	PreArchiveStatus string     `json:"pre_archive_status,omitempty"` // status before archiving; Restore returns to it
 	Priority     string     `json:"priority" gorm:"default:'normal'"` // low, normal, high, critical
 	StoryPoints  int        `json:"story_points"`
@@ -408,7 +411,6 @@ type SubTask struct {
 	// list.
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
 	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
-	ArchivedBy   *User      `json:"archived_by,omitempty" gorm:"foreignKey:ArchivedByID"`
 }
 
 // --- ChecklistItem -------------------------------------------------------

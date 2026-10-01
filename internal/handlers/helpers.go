@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -311,4 +312,13 @@ func taskAssigneeRoleError(id *uint) string {
 // userBasics limits a preloaded user to what "assigned by" displays.
 func userBasics(db *gorm.DB) *gorm.DB {
 	return db.Select("id", "name", "role", "department", "user_number")
+}
+
+// serverError answers a request that failed on the server side. The real
+// error goes to the server log; the person only gets msg. Database errors
+// used to be passed straight to the browser, showing table and column names
+// and constraint details to anyone who triggered them.
+func serverError(c *gin.Context, msg string, err error) {
+	log.Printf("%s %s: %s: %v", c.Request.Method, c.FullPath(), msg, err)
+	c.JSON(http.StatusInternalServerError, gin.H{"error": msg})
 }

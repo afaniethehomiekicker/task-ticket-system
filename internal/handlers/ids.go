@@ -29,6 +29,7 @@ func EnsureIDCounters() {
 		{"STK", "sub_tasks", "subtask_number"},
 		{"USR", "users", "user_number"},
 		{"DEP", "departments", "dept_number"},
+		{"VEN", "vendors", "vendor_number"},
 	}
 	for _, s := range sources {
 		pattern := "^" + s.prefix + "-[0-9]+$"
@@ -67,6 +68,7 @@ func EnsureIDCounters() {
 	backfill("USR", "users", "user_number")
 	backfill("DEP", "departments", "dept_number")
 	backfill("STK", "sub_tasks", "subtask_number")
+	backfill("VEN", "vendors", "vendor_number")
 
 	for _, s := range sources {
 		idx := "uniq_" + s.table + "_" + s.column

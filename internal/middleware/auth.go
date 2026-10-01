@@ -85,6 +85,9 @@ type Claims struct {
 	UserID     uint   `json:"user_id"`
 	Role       string `json:"role"`
 	Department string `json:"department"`
+	// When the password was last changed, as known when this token was
+	// issued (Unix microseconds; 0 = never). See authenticateAndSetContext.
+	PasswordAt int64 `json:"pwd_at,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -94,6 +97,7 @@ func GenerateToken(user *models.User) (string, error) {
 		UserID:     user.ID,
 		Role:       user.Role,
 		Department: user.Department,
+		PasswordAt: passwordStamp(user.PasswordChangedAt),
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(TokenLifetime)),
@@ -157,6 +161,15 @@ func authenticateAndSetContext(c *gin.Context) {
 	if err := database.DB.First(&user, claims.UserID).Error; err != nil {
 		// The account this token was issued for no longer exists.
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Account no longer exists"})
+		c.Abort()
+		return
+	}
+	// A password change (by the user or an admin reset) ends every session
+	// issued before it: each token carries the password-change time it was
+	// issued under, and must match the account's current one. (Comparing the
+	// token's issue time instead only had one-second precision.)
+	if claims.PasswordAt != passwordStamp(user.PasswordChangedAt) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Your password was changed. Please sign in again."})
 		c.Abort()
 		return
 	}
@@ -290,4 +303,13 @@ func RequireAnyPermission(permissionKeys ...string) gin.HandlerFunc {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Forbidden: Missing required permission: " + strings.Join(permissionKeys, " or ")})
 		c.Abort()
 	}
+}
+
+// passwordStamp is the password-change time carried in tokens: Unix
+// microseconds (the database's precision), 0 when never changed.
+func passwordStamp(t *time.Time) int64 {
+	if t == nil {
+		return 0
+	}
+	return t.UnixMicro()
 }

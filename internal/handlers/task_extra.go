@@ -124,7 +124,7 @@ func CreateSubTask(c *gin.Context) {
 	}
 
 	if result := database.DB.Omit("Assignee").Create(&subTask); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create subtask: " + result.Error.Error()})
+		serverError(c, "Failed to create subtask", result.Error)
 		return
 	}
 
@@ -338,7 +338,7 @@ func UpdateSubTaskStatus(c *gin.Context) {
 	oldStatus := subTask.Status
 
 	if err := database.DB.Model(&subTask).Update("status", input.Status).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		serverError(c, "Something went wrong. Please try again.", err)
 		return
 	}
 

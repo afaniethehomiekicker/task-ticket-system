@@ -95,7 +95,7 @@ func CreateDepartment(c *gin.Context) {
 
 	dept := models.Department{Name: name, Description: strings.TrimSpace(input.Description)}
 	if result := database.DB.Create(&dept); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
+		serverError(c, "Something went wrong. Please try again.", result.Error)
 		return
 	}
 
@@ -173,7 +173,7 @@ func UpdateDepartment(c *gin.Context) {
 		return nil
 	})
 	if txErr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update department: " + txErr.Error()})
+		serverError(c, "Failed to update department", txErr)
 		return
 	}
 

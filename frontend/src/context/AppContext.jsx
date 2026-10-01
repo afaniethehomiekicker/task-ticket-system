@@ -406,6 +406,8 @@ const normalizeFeasibilityVendor = (raw) => {
   if (!raw) return null;
   return {
     id: raw.id ?? raw.ID,
+    // Link to the vendor master (Vendors page).
+    vendorId: raw.vendor_id ?? null,
     vendorName: raw.vendor_name || '',
     // Withdrawn vendors stay on the feasibility (greyed out), reinstatable.
     withdrawn: !!raw.withdrawn,
@@ -595,7 +597,12 @@ export const AppProvider = ({ children }) => {
   const [darkMode, setDarkModeState] = useState(false);
   const [permissionMatrix, setPermissionMatrix] = useState(DEFAULT_PERMISSION_MATRIX);
 
+  // Set once a 401 has signed the user out, so a burst of failing requests
+  // produces one notice, not one per request.
+  const sessionEndedRef = useRef(false);
+
   const setAuthToken = (token) => {
+    if (token) sessionEndedRef.current = false;
     setAuthTokenState(token);
     if (token) {
       localStorage.setItem(AUTH_TOKEN_KEY, token);
@@ -609,7 +616,23 @@ export const AppProvider = ({ children }) => {
     if (authToken) {
       headers['Authorization'] = `Bearer ${authToken}`;
     }
-    return fetch(url, { ...options, headers });
+    return fetch(url, { ...options, headers }).then((res) => {
+      // 401 means this session is no longer valid: it expired (24 hours),
+      // the password was changed or reset, or the account was removed.
+      // Go back to the login page instead of showing an error for every
+      // action. The request is left pending: the screen that made it is
+      // replaced by the login page, so its own error pop-up never appears.
+      if (res.status === 401 && authToken) {
+        if (!sessionEndedRef.current) {
+          sessionEndedRef.current = true;
+          setCurrentUserIdState(null);
+          setAuthToken(null);
+          setTimeout(() => alert('Your session has ended. Please sign in again.'), 0);
+        }
+        return new Promise(() => {});
+      }
+      return res;
+    });
   };
 
   // List endpoints are paginated server-side (default 20 per page) and the
@@ -2033,6 +2056,7 @@ export const AppProvider = ({ children }) => {
       target_date: data.targetDate || '',
       notes: data.notes || '',
       vendors: (data.vendors || []).map(v => ({
+        vendor_id: v.vendorId || null,
         vendor_name: v.vendorName,
         contact_person: v.contactPerson || '',
         contact_email: v.contactEmail || '',
@@ -3891,6 +3915,11 @@ export const AppProvider = ({ children }) => {
             ok = false;
             const errData = await res.json().catch(() => ({}));
             alert(errData.error || 'Failed to change password.');
+          } else {
+            // Changing the password ends all other sessions; the server hands
+            // this one a fresh token so it carries on.
+            const data = await res.json().catch(() => ({}));
+            if (data.token) setAuthToken(data.token);
           }
         }
         succeeded = ok;

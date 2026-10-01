@@ -28,6 +28,7 @@ var AllPermissionKeys = []string{
 	"create_feasibilities",
 	"grant_record_access",
 	"transfer_assigned_work",
+	"manage_vendors",
 }
 
 var PermissionLabels = map[string]string{
@@ -45,6 +46,7 @@ var PermissionLabels = map[string]string{
 	"create_feasibilities":      "Create Feasibility Requests",
 	"grant_record_access":       "Grant Record Access",
 	"transfer_assigned_work":    "Transfer My Work Within Department",
+	"manage_vendors":            "Manage Vendor List",
 }
 
 var roleKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -92,6 +94,7 @@ func seedDefaultPermissions() {
 		"create_feasibilities":      true,
 		"grant_record_access":       true,
 		"transfer_assigned_work":    true,
+		"manage_vendors":            true,
 	}
 	// Supervisor defaults
 	supervisorPerms := map[string]bool{
@@ -109,6 +112,7 @@ func seedDefaultPermissions() {
 		"create_feasibilities":      true,
 		"grant_record_access":       false,
 		"transfer_assigned_work":    true,
+		"manage_vendors":            false,
 	}
 	// Staff defaults
 	staffPerms := map[string]bool{
@@ -126,6 +130,7 @@ func seedDefaultPermissions() {
 		"create_feasibilities":      true,
 		"grant_record_access":       false,
 		"transfer_assigned_work":    true,
+		"manage_vendors":            false,
 	}
 
 	rolePerms := map[string]map[string]bool{
@@ -182,7 +187,7 @@ func CreateRole(c *gin.Context) {
 
 	role := models.Role{Key: key, Label: strings.TrimSpace(input.Label), IsBuiltIn: false}
 	if result := database.DB.Create(&role); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
+		serverError(c, "Something went wrong. Please try again.", result.Error)
 		return
 	}
 
@@ -216,7 +221,7 @@ func UpdateRole(c *gin.Context) {
 	}
 
 	if err := database.DB.Model(&role).Update("label", input.Label).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update role: " + err.Error()})
+		serverError(c, "Failed to update role", err)
 		return
 	}
 
@@ -321,18 +326,26 @@ func SetPermission(c *gin.Context) {
 		return
 	}
 
+	// Nobody but a super admin may change their OWN role's permissions —
+	// otherwise anyone given "Settings & Matrix" could grant themselves
+	// every other permission.
+	if v := viewerFrom(c); v.Role != "super_admin" && v.Role == roleKey {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can't change the permissions of your own role. Ask a super admin."})
+		return
+	}
+
 	var existing models.RolePermission
 	err := database.DB.Where("role_key = ? AND permission_key = ?", roleKey, permissionKey).First(&existing).Error
 	oldGranted := err == nil && existing.Granted
 	if err != nil {
 		existing = models.RolePermission{RoleKey: roleKey, PermissionKey: permissionKey, Granted: input.Granted}
 		if result := database.DB.Create(&existing); result.Error != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
+			serverError(c, "Something went wrong. Please try again.", result.Error)
 			return
 		}
 	} else {
 		if err := database.DB.Model(&existing).Update("granted", input.Granted).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update permission: " + err.Error()})
+			serverError(c, "Failed to update permission", err)
 			return
 		}
 	}

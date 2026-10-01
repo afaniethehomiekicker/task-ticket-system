@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"task-ticket-backend/internal/database"
 	"task-ticket-backend/internal/middleware"
@@ -30,7 +31,7 @@ type AuthInput struct {
 type RegisterInput struct {
 	Name         string `json:"name" binding:"required"`
 	Email        string `json:"email" binding:"required,email"`
-	Password     string `json:"password" binding:"required,min=6"`
+	Password     string `json:"password" binding:"required,min=8"`
 	Role         string `json:"role" binding:"required"`
 	Department   string `json:"department"`
 	Title        string `json:"title"`
@@ -49,7 +50,7 @@ type UpdateProfileInput struct {
 
 type ChangePasswordInput struct {
 	OldPassword string `json:"old_password" binding:"required"`
-	NewPassword string `json:"new_password" binding:"required,min=6"`
+	NewPassword string `json:"new_password" binding:"required,min=8"`
 }
 
 // Register creates a new user
@@ -84,6 +85,10 @@ func Register(c *gin.Context) {
 }
 
 // Login authenticates a user and returns a JWT
+// dummyPasswordHash is compared against when a login names an unknown email
+// (see Login).
+var dummyPasswordHash, _ = bcrypt.GenerateFromPassword([]byte("not-a-real-password"), bcrypt.DefaultCost)
+
 func Login(c *gin.Context) {
 	var input AuthInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -93,6 +98,9 @@ func Login(c *gin.Context) {
 
 	var user models.User
 	if err := database.DB.Where("email = ?", input.Email).First(&user).Error; err != nil {
+		// Spend the same time as a wrong password, so response timing
+		// doesn't reveal which emails have accounts.
+		bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(input.Password))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
 		return
 	}
@@ -266,15 +274,38 @@ func ChangePassword(c *gin.Context) {
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.OldPassword)); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Incorrect old password"})
+		// 400, not 401: a 401 means "your session is no longer valid" and
+		// makes the app sign the user out.
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Your current password is incorrect"})
 		return
 	}
 
-	hashedPassword, _ := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
-	user.Password = string(hashedPassword)
-	database.DB.Save(&user)
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to change password"})
+		return
+	}
+	// Changing the password ends every other session (stolen or forgotten
+	// logins stop working at once); this one continues with a fresh token.
+	// Microsecond precision, the same the database stores, so the fresh
+	// token below matches what the next request reads back.
+	changedAt := time.Now().Truncate(time.Microsecond)
+	user.PasswordChangedAt = &changedAt
+	if err := database.DB.Model(&user).Updates(map[string]interface{}{
+		"password":            string(hashedPassword),
+		"password_changed_at": changedAt,
+	}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to change password"})
+		return
+	}
+	utils.LogAudit(user.ID, "password_changed", "user", user.ID, "Changed own password", c.ClientIP(), c.Request.UserAgent())
 
-	c.JSON(http.StatusOK, gin.H{"message": "Password changed successfully"})
+	token, err := middleware.GenerateToken(&user)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "Password changed. Please sign in again."})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Password changed successfully", "token": token})
 }
 
 // GetUsers fetches users with cross-database search filtering.
@@ -296,6 +327,12 @@ func GetUsers(c *gin.Context) {
 	} else {
 		db = db.Where("status <> ?", "archived")
 	}
+	// Department admins manage (and so list) only their own department's
+	// accounts — same rule as middleware.ScopeUserManagement. The people
+	// directory used by pickers is separate (directory.go).
+	if v := viewerFrom(c); !v.seesEverything() {
+		db = db.Where("LOWER(TRIM(department)) = LOWER(?)", v.Dept)
+	}
 	limit := 1000
 	if searchQuery != "" {
 		likeQuery := "%" + strings.ToLower(searchQuery) + "%"
@@ -304,7 +341,7 @@ func GetUsers(c *gin.Context) {
 	}
 
 	if result := db.Limit(limit).Find(&users); result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
+		serverError(c, "Something went wrong. Please try again.", result.Error)
 		return
 	}
 
@@ -338,7 +375,7 @@ func callerMayManage(c *gin.Context, targetRole string) bool {
 // AdminCreateUser creates a new user (admin only).
 //
 // Was binding RegisterInput, the SAME struct /auth/register uses for public
-// self-signup — whose Password field is `binding:"required,min=6"`. That's
+// self-signup — whose Password field is `binding:"required,min=8"`. That's
 // why "Add New Team Member" (which has no password field at all) always
 // failed with "Field validation for 'Password' failed on the 'required'
 // tag": there was no way to satisfy that requirement from this form.
@@ -401,8 +438,8 @@ func AdminCreateUser(c *gin.Context) {
 			return
 		}
 		generated = true
-	} else if len(plainPassword) < 6 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be at least 6 characters"})
+	} else if len(plainPassword) < 8 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be at least 8 characters"})
 		return
 	}
 
@@ -502,8 +539,8 @@ func AdminUpdateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid avatar URL"})
 		return
 	}
-	if input.Password != "" && len(input.Password) < 6 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be at least 6 characters"})
+	if input.Password != "" && len(input.Password) < 8 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Password must be at least 8 characters"})
 		return
 	}
 
@@ -612,6 +649,8 @@ func AdminUpdateUser(c *gin.Context) {
 			return
 		}
 		updates["password"] = string(hashed)
+		// An admin reset signs the user out everywhere (see AuthenticateJWT).
+		updates["password_changed_at"] = time.Now().Truncate(time.Microsecond)
 	}
 	if input.Avatar != nil {
 		if !userHasAvatarColumn() {

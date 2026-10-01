@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -42,12 +43,18 @@ func main() {
 	// Resolve the JWT signing key now that .env has been loaded (it used to be
 	// resolved during package init, before this point, so a JWT_SECRET set in
 	// .env was ignored) and fail fast if it is missing in release mode.
+	// Release mode unless told otherwise: debug mode prints every route and
+	// extra detail, and it is what lets the server start without a JWT_SECRET.
+	// Set GIN_MODE=debug in your local .env for development.
+	if strings.TrimSpace(os.Getenv("GIN_MODE")) == "" {
+		os.Setenv("GIN_MODE", "release")
+	}
 	middleware.InitJWT()
 
 	// Server configuration
 	port := getEnv("PORT", "8080")
 	publicHost := getEnv("PUBLIC_HOST", "localhost")
-	ginMode := getEnv("GIN_MODE", "debug")
+	ginMode := getEnv("GIN_MODE", "release")
 
 	// Set Gin mode
 	gin.SetMode(ginMode)
@@ -83,6 +90,10 @@ func main() {
 	// in use; users / departments / sub-tasks get their IDs.
 	handlers.EnsureIDCounters()
 
+	// Vendor master (spec slides 30-31): links vendors typed on existing
+	// feasibilities to the shared vendor list. Idempotent.
+	handlers.EnsureVendorMaster()
+
 	// Nothing is hard-deleted (spec slides 4/29): rows deleted before
 	// archiving existed become archived / withdrawn, restorable from the UI.
 	handlers.MigrateSoftDeletedToArchived()
@@ -111,9 +122,6 @@ func main() {
 		log.Fatalf("Invalid TRUSTED_PROXIES: %v", err)
 	}
 
-	// Configure CORS
-	configureCORS(r, publicHost, port)
-
 	// Request logging middleware
 	r.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
 		return param.TimeStamp.Format(time.RFC3339) + " | " +
@@ -125,6 +133,9 @@ func main() {
 
 	// Recovery middleware
 	r.Use(gin.Recovery())
+
+	// CORS after the logger, so a request it refuses still shows in the log.
+	configureCORS(r, publicHost, port)
 
 	// Security headers
 	// Was securityHeaders(false) hardcoded unconditionally — meaning
@@ -310,23 +321,35 @@ func trustedProxies() []string {
 
 // configureCORS sets up CORS middleware
 func configureCORS(r *gin.Engine, publicHost, port string) {
-	origins := []string{
-		"http://localhost:5173",
-		"http://localhost:3000",
-		"http://" + publicHost + ":" + port,
-		"https://" + publicHost + ":" + port,
-	}
-
-	// Add Vite dev server defaults
+	allowed := map[string]bool{}
 	for _, scheme := range []string{"http", "https"} {
 		base := scheme + "://" + publicHost
-		origins = append(origins, base, base+":"+port)
+		allowed[base] = true
+		allowed[base+":"+port] = true
+	}
+	// The Vite dev-server addresses (npm run dev) are only allowed outside
+	// release mode.
+	if gin.Mode() != gin.ReleaseMode {
+		allowed["http://localhost:5173"] = true
+		allowed["http://localhost:3000"] = true
 	}
 
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     origins,
+		// A page served by this server itself (same scheme-less host:port as
+		// the request) is always allowed, whatever PUBLIC_HOST says. Before,
+		// only the PUBLIC_HOST address was: opening the app by any other name
+		// (localhost vs 127.0.0.1, the server's IP, a new subdomain) made
+		// every login and save fail with an empty 403, while page loads still
+		// worked because browsers don't send an Origin on plain GETs.
+		AllowOriginWithContextFunc: func(c *gin.Context, origin string) bool {
+			if allowed[origin] {
+				return true
+			}
+			u, err := url.Parse(origin)
+			return err == nil && u.Host != "" && strings.EqualFold(u.Host, c.Request.Host)
+		},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-Requested-With"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-Requested-With", "X-Captcha-Token"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}))
