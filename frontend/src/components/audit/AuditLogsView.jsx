@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
   ScrollText, Search, Filter, Download, ShieldCheck, 
-  Clock, ShieldAlert, FileText, CheckCircle, RefreshCw
+  Clock, ShieldAlert, FileText, CheckCircle, RefreshCw,
+  ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight
 } from 'lucide-react';
 import { RoleBadge } from '../common/Badge';
 import { exportAuditLogsToCSV } from '../../utils/exportUtils';
@@ -44,7 +45,53 @@ export const AuditLogsView = () => {
   }, [search, entityFilter, actionFilter, allowed]);
 
   const filteredLogs = auditLogs;
-  const canLoadMore = auditPagination.page > 0 && auditPagination.page < auditPagination.pages;
+
+  // Offset pagination: page N of size S shows rows (N-1)*S+1 .. N*S.
+  const PAGE_SIZES = [10, 20, 50, 100, 500];
+  const pageSize = auditPagination.limit || 50;
+  const currentPage = Math.max(1, auditPagination.page || 1);
+  const totalPages = Math.max(1, auditPagination.pages || 0);
+  const total = auditPagination.total || 0;
+  const firstRow = total === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const lastRow = Math.min(total, (currentPage - 1) * pageSize + filteredLogs.length);
+
+  const currentFilters = () => ({
+    search: search.trim() || undefined,
+    action: actionFilter === 'all' ? undefined : actionFilter,
+    resourceType: entityFilter === 'all' ? undefined : entityFilter,
+  });
+
+  const goToPage = (n) => {
+    const target = Math.min(Math.max(1, n), totalPages);
+    if (target === currentPage || auditLoading) return;
+    fetchAuditLogs({ page: target, ...currentFilters() });
+    document.getElementById('audit-logs-view')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  // A new page size starts again at page 1 (the old page number may not
+  // exist any more), and is remembered for next time.
+  const changePageSize = (size) => {
+    try { localStorage.setItem('audit_page_size', String(size)); } catch { /* ignore */ }
+    fetchAuditLogs({ page: 1, limit: size, ...currentFilters() });
+  };
+
+  // Page buttons: first, last, and two either side of the current page,
+  // with "…" for the gaps — e.g. 1 … 4 5 [6] 7 8 … 20.
+  const pageButtons = (() => {
+    const out = [];
+    const add = (n) => { if (!out.includes(n)) out.push(n); };
+    add(1);
+    for (let n = currentPage - 2; n <= currentPage + 2; n++) {
+      if (n > 1 && n < totalPages) add(n);
+    }
+    if (totalPages > 1) add(totalPages);
+    const withGaps = [];
+    out.forEach((n, i) => {
+      if (i > 0 && n - out[i - 1] > 1) withGaps.push(`gap-${n}`);
+      withGaps.push(n);
+    });
+    return withGaps;
+  })();
 
   const handleExport = () => {
     exportAuditLogsToCSV(filteredLogs);
@@ -199,17 +246,56 @@ export const AuditLogsView = () => {
             <p className="p-6 text-center text-xs text-slate-500 dark:text-zinc-400">No audit entries match.</p>
           )}
         </div>
-        <div className="flex items-center justify-between px-3.5 py-2.5 border-t border-slate-300 dark:border-zinc-800 text-[11px] text-slate-500 dark:text-zinc-400">
-          <span>Showing {filteredLogs.length} of {auditPagination.total} entries</span>
-          {canLoadMore && (
-            <button
-              type="button"
-              onClick={() => fetchAuditLogs({ page: auditPagination.page + 1, append: true })}
-              disabled={auditLoading}
-              className="px-3 py-1 rounded-lg font-semibold bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-60 cursor-pointer"
-            >
-              {auditLoading ? 'Loading...' : 'Load more'}
-            </button>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-3.5 py-2.5 border-t border-slate-300 dark:border-zinc-800 text-[11px] text-slate-500 dark:text-zinc-400">
+          <div className="flex items-center gap-3">
+            <span>
+              {total === 0 ? 'No entries' : `Showing ${firstRow}–${lastRow} of ${total} entries`}
+            </span>
+            <label className="flex items-center gap-1.5">
+              Rows per page
+              <select
+                id="audit-page-size"
+                value={pageSize}
+                onChange={(e) => changePageSize(Number(e.target.value))}
+                disabled={auditLoading}
+                className="px-2 py-1 rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-slate-800 dark:text-zinc-200 text-[11px] cursor-pointer"
+              >
+                {PAGE_SIZES.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+          </div>
+
+          {totalPages > 1 && (
+            <nav className="flex items-center gap-1" aria-label="Audit log pages">
+              <button type="button" onClick={() => goToPage(1)} disabled={currentPage === 1 || auditLoading} title="First page" className="p-1.5 rounded-lg border border-slate-300 dark:border-zinc-700 text-slate-600 dark:text-zinc-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer">
+                <ChevronsLeft className="w-3.5 h-3.5" />
+              </button>
+              <button type="button" onClick={() => goToPage(currentPage - 1)} disabled={currentPage === 1 || auditLoading} title="Previous page" className="p-1.5 rounded-lg border border-slate-300 dark:border-zinc-700 text-slate-600 dark:text-zinc-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer">
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              {pageButtons.map(p => (typeof p === 'string' ? (
+                <span key={p} className="px-1 text-slate-400">…</span>
+              ) : (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => goToPage(p)}
+                  disabled={auditLoading}
+                  aria-current={p === currentPage ? 'page' : undefined}
+                  className={`min-w-[28px] px-2 py-1 rounded-lg border text-[11px] font-semibold cursor-pointer disabled:cursor-not-allowed ${p === currentPage
+                    ? 'bg-indigo-600 border-indigo-600 text-white'
+                    : 'border-slate-300 dark:border-zinc-700 text-slate-700 dark:text-zinc-300 hover:bg-slate-300/60 dark:hover:bg-zinc-800'}`}
+                >
+                  {p}
+                </button>
+              )))}
+              <button type="button" onClick={() => goToPage(currentPage + 1)} disabled={currentPage === totalPages || auditLoading} title="Next page" className="p-1.5 rounded-lg border border-slate-300 dark:border-zinc-700 text-slate-600 dark:text-zinc-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer">
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+              <button type="button" onClick={() => goToPage(totalPages)} disabled={currentPage === totalPages || auditLoading} title="Last page" className="p-1.5 rounded-lg border border-slate-300 dark:border-zinc-700 text-slate-600 dark:text-zinc-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer">
+                <ChevronsRight className="w-3.5 h-3.5" />
+              </button>
+            </nav>
           )}
         </div>
       </div>

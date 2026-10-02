@@ -1169,16 +1169,32 @@ export const AppProvider = ({ children }) => {
   //    gates on the view_audit_logs permission;
   //  - logAudit() pushed made-up browser-only entries into the same list,
   //    which vanished on reload and mixed with real ones.
-  const [auditPagination, setAuditPagination] = useState({ page: 0, pages: 0, total: 0 });
+  const [auditPagination, setAuditPagination] = useState({ page: 0, pages: 0, total: 0, limit: 50 });
   const [auditLoading, setAuditLoading] = useState(false);
   const auditQueryRef = useRef({});
+  const auditLimitRef = useRef((() => {
+    try {
+      const saved = Number(localStorage.getItem('audit_page_size'));
+      return [10, 20, 50, 100, 500].includes(saved) ? saved : 50;
+    } catch { return 50; }
+  })());
+  const auditPageRef = useRef(1);
+  const auditRequestRef = useRef(0);
   const auditRefreshTimerRef = useRef(null);
 
-  const fetchAuditLogs = async ({ page = 1, append = false, search, action, resourceType, resourceId } = {}) => {
+  const fetchAuditLogs = async ({ page = 1, limit, append = false, search, action, resourceType, resourceId } = {}) => {
     // Remember the filters so background refreshes (see logAudit) keep them.
     if (!append) auditQueryRef.current = { search, action, resourceType, resourceId };
     const q = append ? auditQueryRef.current : { search, action, resourceType, resourceId };
-    const params = new URLSearchParams({ page: String(page), limit: '50' });
+    // Rows per page (Audit Logs page: 10/20/50/100/500). Remembered, so
+    // refreshes and page changes keep the size the person picked.
+    if (limit) auditLimitRef.current = limit;
+    const pageSize = auditLimitRef.current;
+    auditPageRef.current = page;
+    // Only the newest request may update the list: quick page clicks can
+    // otherwise answer out of order and show the wrong page.
+    const requestNo = ++auditRequestRef.current;
+    const params = new URLSearchParams({ page: String(page), limit: String(pageSize) });
     if (q.search) params.set('search', q.search);
     if (q.action) params.set('action', q.action);
     if (q.resourceType) params.set('resource_type', q.resourceType);
@@ -1188,6 +1204,7 @@ export const AppProvider = ({ children }) => {
     try {
       const res = await apiFetch(`/api/audit?${params.toString()}`);
       const data = await res.json().catch(() => ({}));
+      if (requestNo !== auditRequestRef.current) return false;
       if (!res.ok) {
         console.warn('Audit logs request refused:', data.error);
         return false;
@@ -1198,13 +1215,14 @@ export const AppProvider = ({ children }) => {
         page: data.pagination?.page || page,
         pages: data.pagination?.pages || 0,
         total: data.pagination?.total || 0,
+        limit: data.pagination?.limit || pageSize,
       });
       return true;
     } catch (err) {
       console.warn('Failed to fetch audit logs from backend:', err);
       return false;
     } finally {
-      setAuditLoading(false);
+      if (requestNo === auditRequestRef.current) setAuditLoading(false);
     }
   };
 
@@ -1216,7 +1234,7 @@ export const AppProvider = ({ children }) => {
   useEffect(() => {
     if (!mayViewAudit) {
       setAuditLogs([]);
-      setAuditPagination({ page: 0, pages: 0, total: 0 });
+      setAuditPagination({ page: 0, pages: 0, total: 0, limit: auditLimitRef.current });
       return;
     }
     fetchAuditLogs({ page: 1 });
@@ -1316,7 +1334,8 @@ export const AppProvider = ({ children }) => {
     if (!mayViewAudit) return;
     if (auditRefreshTimerRef.current) clearTimeout(auditRefreshTimerRef.current);
     auditRefreshTimerRef.current = setTimeout(() => {
-      fetchAuditLogs({ page: 1, ...auditQueryRef.current });
+      // Stay on the page being viewed; new entries appear on page 1.
+      fetchAuditLogs({ page: auditPageRef.current || 1, ...auditQueryRef.current });
     }, 800);
   };
 

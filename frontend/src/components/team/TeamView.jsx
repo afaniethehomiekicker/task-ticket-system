@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useApp, getBackendId } from '../../context/AppContext';
 import { 
   Users, Plus, Search, Shield, UserCheck, Mail, Building, 
   CheckCircle, AlertCircle, Edit, ToggleLeft, ToggleRight, X, Phone, Archive,
-  Eye, EyeOff
+  Eye, EyeOff, KeyRound
 } from 'lucide-react';
 import { RoleBadge } from '../common/Badge';
 import { canManageUsers, getRoleDisplayName } from '../../utils/permissions';
@@ -21,7 +21,8 @@ export const TeamView = () => {
     customRoles,
     departments,
     permissionMatrix,
-    archiveUser
+    archiveUser,
+    apiFetch
   } = useApp();
 
   // L1..L4 are support tiers inside CNOC (spec), not departments. The tier
@@ -44,6 +45,57 @@ export const TeamView = () => {
   const [tempPasswordBanner, setTempPasswordBanner] = useState(null);
   const [passwordError, setPasswordError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+
+  // Reset password (Edit Member → Reset Password). Super admin only, for
+  // anyone except themselves (own password: My Profile). Saving signs that
+  // person out everywhere; they log in again with the new password.
+  const EMPTY_RESET = { password: '', confirm: '', showPassword: false, showConfirm: false };
+  const [resetFor, setResetFor] = useState(null); // user being reset, or null
+  const [resetForm, setResetForm] = useState(EMPTY_RESET);
+  const [resetError, setResetError] = useState('');
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetDoneFor, setResetDoneFor] = useState(null); // name, for the confirmation
+  const canResetPassword = (u) =>
+    currentUser?.role === 'super_admin' && !!u && String(u.id) !== String(currentUser?.id);
+
+  const openReset = (u) => {
+    setResetFor(u);
+    setResetForm(EMPTY_RESET);
+    setResetError('');
+  };
+
+  const handleResetPassword = async (e) => {
+    e.preventDefault();
+    if (resetForm.password.length < MIN_PASSWORD_LENGTH) {
+      setResetError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+      return;
+    }
+    if (resetForm.password !== resetForm.confirm) {
+      setResetError('The two passwords do not match.');
+      return;
+    }
+    setIsResetting(true);
+    setResetError('');
+    try {
+      const res = await apiFetch(`/api/users/${getBackendId(resetFor.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: resetForm.password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setResetError(data.error || 'Could not change the password.');
+        return;
+      }
+      setResetDoneFor(resetFor.name);
+      setResetFor(null);
+      setResetForm(EMPTY_RESET);
+    } catch {
+      setResetError('Could not reach the server.');
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   // No default avatar: the old stock-photo URL was stored on every new user,
   // and the backend (correctly) rejects external avatar URLs on edit, so
@@ -692,7 +744,16 @@ export const TeamView = () => {
                 </div>
               </div>
 
-              <div className="flex gap-2 justify-end pt-3 border-t border-slate-300 dark:border-zinc-800">
+              <div className="flex gap-2 justify-end items-center pt-3 border-t border-slate-300 dark:border-zinc-800">
+                {editingUser && canResetPassword(editingUser) && (
+                  <button
+                    type="button"
+                    onClick={() => openReset(editingUser)}
+                    className="mr-auto flex items-center gap-1.5 px-3 py-2 rounded-lg text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-950/40 cursor-pointer"
+                  >
+                    <KeyRound className="w-4 h-4" /> Reset Password
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}
@@ -709,6 +770,105 @@ export const TeamView = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {resetFor && (
+        <div
+          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => !isResetting && setResetFor(null)}
+        >
+          <div
+            className="bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-sm shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-base font-bold text-slate-900 dark:text-zinc-100 flex items-center gap-2">
+                <KeyRound className="w-5 h-5 text-amber-500" /> Reset Password
+              </h3>
+              <button
+                type="button"
+                onClick={() => setResetFor(null)}
+                disabled={isResetting}
+                className="text-slate-500 dark:text-zinc-400 hover:text-slate-700 dark:hover:text-zinc-200 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-zinc-400 mb-4">
+              New password for <span className="font-semibold">{resetFor.name}</span>. They will be signed out
+              everywhere and must log in with this password.
+            </p>
+            <form onSubmit={handleResetPassword} className="space-y-3 text-xs">
+              {[
+                ['password', 'showPassword', 'New Password', 'new-password'],
+                ['confirm', 'showConfirm', 'Confirm New Password', 'new-password'],
+              ].map(([field, showKey, label, ac]) => (
+                <div key={field}>
+                  <label className="font-semibold text-slate-700 dark:text-zinc-300 block mb-1">{label}</label>
+                  <div className="relative">
+                    <input
+                      type={resetForm[showKey] ? 'text' : 'password'}
+                      required
+                      autoComplete={ac}
+                      autoFocus={field === 'password'}
+                      value={resetForm[field]}
+                      onChange={(e) => { setResetError(''); setResetForm(f => ({ ...f, [field]: e.target.value })); }}
+                      className="w-full p-2 pr-9 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setResetForm(f => ({ ...f, [showKey]: !f[showKey] }))}
+                      title={resetForm[showKey] ? 'Hide password' : 'Show password'}
+                      aria-label={resetForm[showKey] ? 'Hide password' : 'Show password'}
+                      className="absolute inset-y-0 right-0 px-2.5 flex items-center text-slate-500 dark:text-zinc-400 hover:text-slate-700 dark:hover:text-zinc-200 cursor-pointer"
+                    >
+                      {resetForm[showKey] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+              ))}
+              <p className={`text-[11px] ${resetError ? 'text-rose-500' : 'text-slate-500 dark:text-zinc-400'}`}>
+                {resetError || `At least ${MIN_PASSWORD_LENGTH} characters.`}
+              </p>
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setResetFor(null)}
+                  disabled={isResetting}
+                  className="px-4 py-2 rounded-lg text-slate-700 dark:text-zinc-300 hover:bg-slate-300/60 dark:hover:bg-zinc-800 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isResetting}
+                  className="px-4 py-2 rounded-lg font-semibold bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white cursor-pointer"
+                >
+                  {isResetting ? 'Updating...' : 'Update Password'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {resetDoneFor && (
+        <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4" onClick={() => setResetDoneFor(null)}>
+          <div className="bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-sm shadow-2xl space-y-3" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2">
+              <CheckCircle className="w-5 h-5 text-emerald-500" />
+              <h3 className="text-base font-bold text-slate-900 dark:text-zinc-100">Password updated</h3>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-zinc-400">
+              {resetDoneFor} has been signed out and can now log in with the new password. Share it with them directly.
+            </p>
+            <div className="flex justify-end">
+              <button onClick={() => setResetDoneFor(null)} className="px-4 py-2 rounded-lg font-semibold bg-indigo-600 hover:bg-indigo-700 text-white text-xs cursor-pointer">
+                OK
+              </button>
+            </div>
           </div>
         </div>
       )}

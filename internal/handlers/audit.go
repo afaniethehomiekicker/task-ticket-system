@@ -27,7 +27,17 @@ import (
 func GetAuditLogs(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	page, limit = clampPagination(page, limit)
+	// The audit page offers 10/20/50/100/500 rows per page, so this list
+	// allows up to 500 (other lists stay capped at 200 by clampPagination).
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
 
 	query := database.DB.Model(&models.AuditLog{})
 	// Only entries the caller may see (see auditScopeClause). Everyone with
