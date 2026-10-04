@@ -18,9 +18,13 @@ import (
 // directly saw everything.
 //
 //	super_admin        everything
-//	admin              their department (an admin with NO department is treated
-//	                   as a system admin and sees everything, so an account
-//	                   created without one can't be locked out)
+//	admin              their department. Every Admin is a Department Admin
+//	                   (spec slide 5); company-wide visibility belongs to the
+//	                   Super Admin alone. An admin with no department used to
+//	                   be treated as a "system admin" who saw everything — a
+//	                   tier the spec doesn't have. Such an account now sees only
+//	                   its own work, and an Admin can't be saved without a
+//	                   department (see auth.go).
 //	supervisor         work assigned to them, work assigned to people they
 //	                   supervise, and work they created
 //	staff / any other  work assigned to them and work they created
@@ -47,7 +51,7 @@ func viewerFrom(c *gin.Context) viewer {
 }
 
 func (v viewer) seesEverything() bool {
-	return v.Role == "super_admin" || (v.Role == "admin" && v.Dept == "")
+	return v.Role == "super_admin"
 }
 
 func (v viewer) isDeptAdmin() bool { return v.Role == "admin" && v.Dept != "" }
@@ -103,13 +107,16 @@ func ticketScopeClause(v viewer) (string, []interface{}) {
 		// Also tickets their department raised and routed elsewhere (CNOC
 		// follows the tickets it sent to Technical / L2).
 		// Plus tickets they raised and tickets assigned to their people.
-		return "(LOWER(tickets.department) = LOWER(?) OR LOWER(tickets.origin_department) = LOWER(?) OR tickets.created_by_id = ? OR tickets.assigned_to_id IN (SELECT id FROM users WHERE LOWER(department) = LOWER(?) AND deleted_at IS NULL))",
-			[]interface{}{v.Dept, v.Dept, v.ID, v.Dept}
+		// And tickets their department worked on and returned (read-only —
+		// see userCanViewTicket in ticket_flow_rules.go).
+		return "(LOWER(tickets.department) = LOWER(?) OR LOWER(tickets.origin_department) = LOWER(?) OR tickets.created_by_id = ? OR tickets.assigned_to_id IN (SELECT id FROM users WHERE LOWER(department) = LOWER(?) AND deleted_at IS NULL) OR LOWER(tickets.returned_from_dept) = LOWER(?) OR tickets.returned_by_id = ?)",
+			[]interface{}{v.Dept, v.Dept, v.ID, v.Dept, v.Dept, v.ID}
 	case v.Role == "supervisor":
-		return "(tickets.assigned_to_id = ? OR tickets.created_by_id = ? OR tickets.assigned_to_id IN (SELECT id FROM users WHERE supervisor_id = ? AND deleted_at IS NULL))",
-			[]interface{}{v.ID, v.ID, v.ID}
+		return "(tickets.assigned_to_id = ? OR tickets.created_by_id = ? OR tickets.assigned_to_id IN (SELECT id FROM users WHERE supervisor_id = ? AND deleted_at IS NULL) OR tickets.returned_by_id = ?)",
+			[]interface{}{v.ID, v.ID, v.ID, v.ID}
 	default:
-		return "(tickets.assigned_to_id = ? OR tickets.created_by_id = ?)", []interface{}{v.ID, v.ID}
+		// Plus tickets they worked on and returned (read-only).
+		return "(tickets.assigned_to_id = ? OR tickets.created_by_id = ? OR tickets.returned_by_id = ?)", []interface{}{v.ID, v.ID, v.ID}
 	}
 }
 

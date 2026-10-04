@@ -31,6 +31,8 @@ import (
 //
 // Each step is written to the ticket's timeline (audit) and added to the
 // ticket as a public comment, so the whole loop reads in one place.
+//
+// Who may do each step (handler / raiser) is in ticket_flow_rules.go.
 
 // loadTicketForFlow loads the ticket and checks the caller can see it.
 func loadTicketForFlow(c *gin.Context, t *models.Ticket) bool {
@@ -69,18 +71,21 @@ func deptName(d string) string {
 
 // RouteTicket sends the ticket to another department (optionally to a named
 // person there): "Routed to Technical Dept / L1 / L2 / L3 / staff".
-// Allowed for the ticket's creator, its current assignee, or anyone with
-// "Reassign Tickets & Tasks".
+//
+// Allowed for the ticket's current handlers — its assignee, anyone in the
+// department it is with who can reassign tickets, a super admin — and for
+// its creator while it is still in their own department. It used to be open
+// to the creator and to anyone with the reassign permission who could see
+// the ticket, at any time: the raising department could pull a ticket away
+// from the team in the middle of working on it.
 func RouteTicket(c *gin.Context) {
 	var t models.Ticket
 	if !loadTicketForFlow(c, &t) {
 		return
 	}
 	v := viewerFrom(c)
-	isCreator := t.CreatedByID != nil && *t.CreatedByID == v.ID
-	isAssignee := t.AssignedToID != nil && *t.AssignedToID == v.ID
-	if !isCreator && !isAssignee && !canAssignWork(v.Role) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Only the ticket's creator, its assignee, or someone who can reassign tickets can route it"})
+	if !canWorkTicket(v, &t) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the team currently handling this ticket can route it — it is with " + deptName(t.Department)})
 		return
 	}
 	if isFinishedTicketStatus(t.Status) {
@@ -96,9 +101,16 @@ func RouteTicket(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "department is required"})
 		return
 	}
-	dept := strings.TrimSpace(input.Department)
-	if dept == "" || !departmentIsKnown(dept) {
+	// Stored with its real spelling ("technical" -> "Technical").
+	dept, ok := canonicalDepartment(input.Department)
+	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown department"})
+		return
+	}
+	// Routing to where it already is used to reset it to New and drop its
+	// assignee.
+	if sameDept(dept, t.Department) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "This ticket is already with " + dept + ". To give it to someone there, use Assign"})
 		return
 	}
 	note := strings.TrimSpace(input.Note)
@@ -126,7 +138,18 @@ func RouteTicket(c *gin.Context) {
 		assignee = &u
 	}
 
-	updates := map[string]interface{}{"department": dept}
+	updates := map[string]interface{}{
+		"department": dept,
+		// A new leg of the loop: forget who returned it last time, so a later
+		// Reopen goes to the team that handles it from here — not to an
+		// earlier team.
+		"returned_by_id":     nil,
+		"returned_from_dept": "",
+		// Same deadline, but the escalation chain starts again for the new
+		// department — its supervisor and admin hear about a breach, instead
+		// of the chain carrying on from where the old department left it.
+		"auto_escalation_step": 0,
+	}
 	if t.OriginDepartment == "" {
 		// Older tickets: the department it's leaving is where it came from.
 		updates["origin_department"] = t.Department
@@ -169,8 +192,8 @@ func RouteTicket(c *gin.Context) {
 	flowComment(t.ID, v.ID, fmt.Sprintf("Routed to %s: %s", to, note))
 
 	var full models.Ticket
-	database.DB.Preload("Client").Preload("Project").Preload("AssignedTo").Preload("AssignedBy", userBasics).Preload("CreatedBy").
-		Preload("Comments.User").First(&full, t.ID)
+	database.DB.Preload("Client").Preload("Project").Preload("AssignedTo", userCard).Preload("AssignedBy", userBasics).Preload("CreatedBy", userCard).
+		Preload("Comments.User", userCard).First(&full, t.ID)
 	redactTicket(c, &full)
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket routed", "ticket": full})
 }
@@ -185,9 +208,12 @@ func ReturnTicket(c *gin.Context) {
 		return
 	}
 	v := viewerFrom(c)
-	isAssignee := t.AssignedToID != nil && *t.AssignedToID == v.ID
-	if !isAssignee && !canAssignWork(v.Role) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Only the ticket's assignee (or someone who can reassign tickets) can return it"})
+	// The team that did the work hands it back — not the raising department
+	// on its behalf (which used to be possible for anyone there with the
+	// reassign permission, recording the work as done by the wrong team and
+	// leaving a later Reopen nowhere to go).
+	if !handlesTicketNow(v, &t) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the team handling this ticket (" + deptName(t.Department) + ") can return it"})
 		return
 	}
 	origin := strings.TrimSpace(t.OriginDepartment)
@@ -251,8 +277,8 @@ func ReturnTicket(c *gin.Context) {
 	flowComment(t.ID, v.ID, fmt.Sprintf("Returned to %s — work completed: %s", origin, note))
 
 	var full models.Ticket
-	database.DB.Preload("Client").Preload("Project").Preload("AssignedTo").Preload("AssignedBy", userBasics).Preload("CreatedBy").
-		Preload("Comments.User").First(&full, t.ID)
+	database.DB.Preload("Client").Preload("Project").Preload("AssignedTo", userCard).Preload("AssignedBy", userBasics).Preload("CreatedBy", userCard).
+		Preload("Comments.User", userCard).First(&full, t.ID)
 	redactTicket(c, &full)
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket returned", "ticket": full})
 }
@@ -260,17 +286,17 @@ func ReturnTicket(c *gin.Context) {
 // ReopenTicket: the client says it isn't resolved. The reason is added to the
 // ticket and it goes straight back to whoever returned it (in their
 // department) — "the loop is fully tracked, not restarted". Allowed for the
-// ticket's creator, its current assignee, or anyone who can reassign tickets.
+// raising department (its creator, anyone there who can reassign tickets, a
+// super admin) and the ticket's current assignee — the people talking to the
+// client.
 func ReopenTicket(c *gin.Context) {
 	var t models.Ticket
 	if !loadTicketForFlow(c, &t) {
 		return
 	}
 	v := viewerFrom(c)
-	isCreator := t.CreatedByID != nil && *t.CreatedByID == v.ID
-	isAssignee := t.AssignedToID != nil && *t.AssignedToID == v.ID
-	if !isCreator && !isAssignee && !canAssignWork(v.Role) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Only the ticket's creator, its assignee, or someone who can reassign tickets can reopen it"})
+	if !raisedTicket(v, &t) && !isTicketAssignee(v, &t) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the department that raised this ticket (" + deptName(originOf(&t)) + ") can reopen it"})
 		return
 	}
 	if statusCategory("ticket", t.Status) != "done" {
@@ -327,8 +353,8 @@ func ReopenTicket(c *gin.Context) {
 		"ticket", t.ID}, reopenTo...)
 
 	var full models.Ticket
-	database.DB.Preload("Client").Preload("Project").Preload("AssignedTo").Preload("AssignedBy", userBasics).Preload("CreatedBy").
-		Preload("Comments.User").First(&full, t.ID)
+	database.DB.Preload("Client").Preload("Project").Preload("AssignedTo", userCard).Preload("AssignedBy", userBasics).Preload("CreatedBy", userCard).
+		Preload("Comments.User", userCard).First(&full, t.ID)
 	redactTicket(c, &full)
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket reopened", "ticket": full})
 }

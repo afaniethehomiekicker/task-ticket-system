@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"log"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -16,49 +16,49 @@ import (
 )
 
 type CreateProjectInput struct {
-	Code          string     `json:"code"` // optional — auto-generated (PRJ-000001 style) if omitted
-	Title         string     `json:"title" binding:"required"`
-	Description   string     `json:"description"`
-	Type          string     `json:"type"`       // general, ticketing
-	Department    string     `json:"department"` // owning department
-	Status        string     `json:"status"`
-	Priority      string     `json:"priority"`
-	StartDate     *time.Time `json:"start_date"`
-	DueDate       *time.Time `json:"due_date"`
-	ClientID      *uint      `json:"client_id"`
-	ClientIDs     []uint     `json:"client_ids"` // all clients (slide 9); first = primary
-	OwnerID       *uint      `json:"owner_id"`
-	AdminID       *uint      `json:"admin_id"`
-	BudgetHours   float64    `json:"budget_hours"`
+	Code        string     `json:"code"` // optional — auto-generated (PRJ-000001 style) if omitted
+	Title       string     `json:"title" binding:"required"`
+	Description string     `json:"description"`
+	Type        string     `json:"type"`       // general, ticketing
+	Department  string     `json:"department"` // owning department
+	Status      string     `json:"status"`
+	Priority    string     `json:"priority"`
+	StartDate   *time.Time `json:"start_date"`
+	DueDate     *time.Time `json:"due_date"`
+	ClientID    *uint      `json:"client_id"`
+	ClientIDs   []uint     `json:"client_ids"` // all clients (slide 9); first = primary
+	OwnerID     *uint      `json:"owner_id"`
+	AdminID     *uint      `json:"admin_id"`
+	BudgetHours float64    `json:"budget_hours"`
 	// Budget as entered: a number in "hours" or "days" (1 day = 8 h). When
 	// sent, budget_hours is derived from it.
-	BudgetValue *float64 `json:"budget_value"`
-	BudgetUnit  string   `json:"budget_unit"`
-	MemberIDs     []uint     `json:"member_ids"`
-	SupervisorIDs []uint     `json:"supervisor_ids"`
+	BudgetValue   *float64 `json:"budget_value"`
+	BudgetUnit    string   `json:"budget_unit"`
+	MemberIDs     []uint   `json:"member_ids"`
+	SupervisorIDs []uint   `json:"supervisor_ids"`
 }
 
 type UpdateProjectInput struct {
-	Title         string     `json:"title"`
-	Description   string     `json:"description"`
-	Type          string     `json:"type"`
-	Department    string     `json:"department"`
-	Status        string     `json:"status"`
-	Priority      string     `json:"priority"`
-	StartDate     *time.Time `json:"start_date"`
-	DueDate       *time.Time `json:"due_date"`
-	ClientID      *uint      `json:"client_id"`
-	ClientIDs     []uint     `json:"client_ids"` // replaces the linked clients when sent
-	OwnerID       *uint      `json:"owner_id"`
-	AdminID       *uint      `json:"admin_id"`
-	BudgetHours   float64    `json:"budget_hours"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	Type        string     `json:"type"`
+	Department  string     `json:"department"`
+	Status      string     `json:"status"`
+	Priority    string     `json:"priority"`
+	StartDate   *time.Time `json:"start_date"`
+	DueDate     *time.Time `json:"due_date"`
+	ClientID    *uint      `json:"client_id"`
+	ClientIDs   []uint     `json:"client_ids"` // replaces the linked clients when sent
+	OwnerID     *uint      `json:"owner_id"`
+	AdminID     *uint      `json:"admin_id"`
+	BudgetHours float64    `json:"budget_hours"`
 	// Budget as entered: a number in "hours" or "days" (1 day = 8 h). When
 	// sent, budget_hours is derived from it.
-	BudgetValue *float64 `json:"budget_value"`
-	BudgetUnit  string   `json:"budget_unit"`
-	Progress      *int       `json:"progress"` // pointer: "not sent" must not mean "0"
-	MemberIDs     []uint     `json:"member_ids"`
-	SupervisorIDs []uint     `json:"supervisor_ids"`
+	BudgetValue   *float64 `json:"budget_value"`
+	BudgetUnit    string   `json:"budget_unit"`
+	Progress      *int     `json:"progress"` // pointer: "not sent" must not mean "0"
+	MemberIDs     []uint   `json:"member_ids"`
+	SupervisorIDs []uint   `json:"supervisor_ids"`
 }
 
 type ProjectQueryParams struct {
@@ -614,9 +614,7 @@ func DeleteProject(c *gin.Context) {
 	id := c.Param("id")
 
 	userIDVal, _ := c.Get("user_id")
-	userRoleVal, _ := c.Get("user_role")
 	currentUserID := userIDVal.(uint)
-	currentUserRole := userRoleVal.(string)
 
 	var project models.Project
 	if err := database.DB.First(&project, id).Error; err != nil {
@@ -634,8 +632,8 @@ func DeleteProject(c *gin.Context) {
 		return
 	}
 
-	// Only super_admin and admin can archive
-	if currentUserRole != "super_admin" && currentUserRole != "admin" {
+	// The archive_records matrix permission (see restore.go).
+	if !canArchiveRecords(c) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions to archive project"})
 		return
 	}
@@ -649,10 +647,10 @@ func DeleteProject(c *gin.Context) {
 
 	now := time.Now()
 	if err := database.DB.Model(&project).Updates(map[string]interface{}{
-		"status":         "archived",
+		"status":             "archived",
 		"pre_archive_status": project.Status,
-		"archived_at":    now,
-		"archived_by_id": currentUserID,
+		"archived_at":        now,
+		"archived_by_id":     currentUserID,
 	}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to archive project"})
 		return

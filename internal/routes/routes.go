@@ -36,9 +36,15 @@ func RegisterRoutes(r *gin.Engine) {
 			if os.Getenv("ALLOW_PUBLIC_REGISTRATION") == "true" {
 				auth.POST("/register", handlers.Register)
 			}
-			// 10 rejected logins from an IP in 15 minutes locks that IP out
-			// for the rest of the window.
-			loginLimit := middleware.LoginRateLimit(10, 15*time.Minute)
+			// Wrong-password limits inside 15 minutes (see ratelimit.go):
+			// 5 for one account from one address, 10 for one account from
+			// anywhere, 30 for one address across all accounts.
+			loginLimit := middleware.LoginRateLimit(middleware.LoginLimits{
+				PerAccountIP: 5,
+				PerAccount:   10,
+				PerIP:        30,
+				Window:       15 * time.Minute,
+			})
 			// Captcha (see middleware/captcha.go): runs after the limiter so a
 			// locked-out IP never costs a verify call. Off when no keys are set.
 			captcha := middleware.RequireCaptcha()

@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"log"
+	"mime"
 	"net/http"
 	"net/smtp"
 	"os"
@@ -87,7 +88,7 @@ func departmentAdmins(dept string) []uint {
 		return ids
 	}
 	database.DB.Model(&models.User{}).
-		Where("role = ? AND LOWER(department) = LOWER(?) AND status = ?", "admin", dept, "active").
+		Where("role = ? AND LOWER(TRIM(department)) = LOWER(?) AND status = ?", "admin", strings.TrimSpace(dept), "active").
 		Pluck("id", &ids)
 	return ids
 }
@@ -135,9 +136,14 @@ func emailNotice(userID uint, n notice) {
 	if base := strings.TrimRight(os.Getenv("APP_URL"), "/"); base != "" {
 		link = "\r\n\r\nOpen the system: " + base
 	}
-	subject := strings.ReplaceAll(n.Title, "\n", " ")
+	// Every header value goes through headerValue. The subject only had "\n"
+	// replaced, so a carriage return in it — subjects include text people
+	// type, e.g. a client's company name — could start a new header line
+	// (an extra Bcc:, a different From:). The subject is also MIME-encoded,
+	// so names in Urdu or other non-ASCII text arrive intact.
+	subject := mime.QEncoding.Encode("UTF-8", headerValue(n.Title))
 	body := fmt.Sprintf("Hello %s,\r\n\r\n%s%s\r\n\r\n— APEX Core", u.Name, n.Message, link)
-	msg := "From: " + from + "\r\nTo: " + u.Email + "\r\nSubject: " + subject +
+	msg := "From: " + headerValue(from) + "\r\nTo: " + headerValue(u.Email) + "\r\nSubject: " + subject +
 		"\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + body
 	var auth smtp.Auth
 	if user := os.Getenv("SMTP_USER"); user != "" {
@@ -146,6 +152,19 @@ func emailNotice(userID uint, n notice) {
 	if err := smtp.SendMail(host+":"+port, auth, from, []string{u.Email}, []byte(msg)); err != nil {
 		log.Printf("notify: email to %s failed: %v", u.Email, err)
 	}
+}
+
+// headerValue makes text safe to put in an email header: every control
+// character (CR, LF, tab, ...) and Unicode line/paragraph separator becomes a
+// space, so the value can never break onto a new header line.
+func headerValue(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r == '\u2028' || r == '\u2029' || (r >= 0x80 && r < 0xa0) {
+			return ' '
+		}
+		return r
+	}, s)
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // ---- endpoints ----------------------------------------------------------------

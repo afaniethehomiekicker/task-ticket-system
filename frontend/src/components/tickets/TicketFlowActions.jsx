@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { canAssignTickets, isTaskAssignable } from '../../utils/permissions';
+import { isTaskAssignable, canWorkTicket, handlesTicketNow, raisedTicket } from '../../utils/permissions';
 import { Route, Undo2, RotateCcw, Building2 } from 'lucide-react';
 
 // CNOC / Support flow for one ticket — spec slide 19:
@@ -67,17 +67,18 @@ export const TicketFlowActions = ({ ticket }) => {
   }, [dept, mode]);
 
   const me = String(currentUser?.id);
-  const isCreator = String(ticket.createdById ?? ticket.createdBy) === me;
   const isAssignee = String(ticket.assignedToId) === me;
-  const canReassign = canAssignTickets(currentUser, permissionMatrix);
   const category = getStatusCategory('ticket', ticket.status);
   const finished = ['done', 'cancelled', 'archived'].includes(category);
   const origin = (ticket.originDepartment || '').trim();
   const awayFromOrigin = origin && origin.toLowerCase() !== (ticket.department || '').trim().toLowerCase();
 
-  const canRoute = !finished && (isCreator || isAssignee || canReassign);
-  const canReturn = !finished && awayFromOrigin && (isAssignee || canReassign);
-  const canReopen = category === 'done' && (isCreator || isAssignee || canReassign);
+  // Same rules as the server (ticket_flow_rules.go): the team the ticket is
+  // with routes it on and returns it; the creator may route it only while it
+  // is still in their own department; the raising department reopens it.
+  const canRoute = !finished && canWorkTicket(currentUser, ticket, permissionMatrix);
+  const canReturn = !finished && awayFromOrigin && handlesTicketNow(currentUser, ticket, permissionMatrix);
+  const canReopen = category === 'done' && (raisedTicket(currentUser, ticket, permissionMatrix) || isAssignee);
 
   if (ticket.status === 'archived' || (!canRoute && !canReturn && !canReopen && !origin)) return null;
 

@@ -13,7 +13,8 @@ export const PERMISSION_KEYS = {
   CREATE_FEASIBILITIES: 'create_feasibilities',
   GRANT_RECORD_ACCESS: 'grant_record_access',
   TRANSFER_ASSIGNED_WORK: 'transfer_assigned_work',
-  MANAGE_VENDORS: 'manage_vendors'
+  MANAGE_VENDORS: 'manage_vendors',
+  ARCHIVE_RECORDS: 'archive_records'
 };
 
 export const PERMISSION_LABELS = {
@@ -31,7 +32,8 @@ export const PERMISSION_LABELS = {
   [PERMISSION_KEYS.CREATE_FEASIBILITIES]: 'Create Feasibility Requests',
   [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: 'Grant Record Access',
   [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: 'Transfer My Work Within Department',
-  [PERMISSION_KEYS.MANAGE_VENDORS]: 'Manage Vendor List'
+  [PERMISSION_KEYS.MANAGE_VENDORS]: 'Manage Vendor List',
+  [PERMISSION_KEYS.ARCHIVE_RECORDS]: 'Archive & Restore Projects, Tasks & Tickets'
 };
 
 // Default role -> permission matrix. Super Admin is deliberately excluded —
@@ -52,7 +54,8 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.CREATE_FEASIBILITIES]: true,
     [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: true,
     [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true,
-    [PERMISSION_KEYS.MANAGE_VENDORS]: true
+    [PERMISSION_KEYS.MANAGE_VENDORS]: true,
+    [PERMISSION_KEYS.ARCHIVE_RECORDS]: true
   },
   supervisor: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -69,7 +72,8 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.CREATE_FEASIBILITIES]: true,
     [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: false,
     [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true,
-    [PERMISSION_KEYS.MANAGE_VENDORS]: false
+    [PERMISSION_KEYS.MANAGE_VENDORS]: false,
+    [PERMISSION_KEYS.ARCHIVE_RECORDS]: false
   },
   staff: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -86,7 +90,8 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.CREATE_FEASIBILITIES]: true,
     [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: false,
     [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true,
-    [PERMISSION_KEYS.MANAGE_VENDORS]: false
+    [PERMISSION_KEYS.MANAGE_VENDORS]: false,
+    [PERMISSION_KEYS.ARCHIVE_RECORDS]: false
   }
 };
 
@@ -208,10 +213,13 @@ export function canManageClients(user, permissionMatrix = DEFAULT_PERMISSION_MAT
 // Matches role.go's manage_departments defaults exactly (admin: true,
 // supervisor/staff: false) — used by DepartmentsView.jsx (gates
 // create/edit/delete) and Sidebar.jsx (gates the nav entry).
+// Departments are configured by the Super Admin only (spec slide 5; the
+// backend enforces the same in Department.go). The matrix toggle no longer
+// grants this to other roles. permissionMatrix is kept in the signature so
+// existing call sites don't change.
+// eslint-disable-next-line no-unused-vars
 export function canManageDepartments(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
-  if (!user) return false;
-  if (user.role === 'super_admin') return true;
-  return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.MANAGE_DEPARTMENTS];
+  return !!user && user.role === 'super_admin';
 }
 
 // Vendor master (Vendors page): add, edit, archive and restore vendors.
@@ -220,6 +228,15 @@ export function canManageVendors(user, permissionMatrix = DEFAULT_PERMISSION_MAT
   if (!user) return false;
   if (user.role === 'super_admin') return true;
   return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.MANAGE_VENDORS];
+}
+
+// Archive and restore projects, tasks, tickets and subtasks (the backend's
+// archive_records permission). Was hard-coded to admin / super_admin in
+// every component, so the matrix toggle didn't exist.
+export function canArchiveRecords(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (!user) return false;
+  if (user.role === 'super_admin') return true;
+  return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.ARCHIVE_RECORDS];
 }
 
 export function getRoleBadgeColor(role) {
@@ -255,19 +272,17 @@ export function getRoleDisplayName(role) {
 // these functions would keep. Change one, change the other.
 //
 //   super_admin   everything
-//   admin         their department; an admin with NO department is a system
-//                 admin and sees everything (otherwise such an account would
-//                 see nothing at all)
+//   admin         their department. Every Admin is a Department Admin (spec
+//                 slide 5); only the Super Admin sees everything. There is no
+//                 "admin with no department sees everything" tier any more.
 //   supervisor    work assigned to them, work assigned to people they
 //                 supervise, work they created
 //   staff/other   work assigned to them, work they created
 //   projects      department / owner (admins) or membership (everyone)
 
-const isSystemAdmin = (user) => user.role === 'admin' && !safeLower(user.department);
-
 export function filterProjectsForUser(projects = [], user, allUsers = []) {
   if (!Array.isArray(projects) || !user) return [];
-  if (user.role === 'super_admin' || isSystemAdmin(user)) return projects;
+  if (user.role === 'super_admin') return projects;
 
   const isMember = (p) => (p.memberIds || []).includes(user.id);
 
@@ -285,7 +300,7 @@ export function filterProjectsForUser(projects = [], user, allUsers = []) {
 
 export const filterTasksForUser = (tasks = [], user, allUsers = []) => {
   if (!Array.isArray(tasks) || !user) return [];
-  if (user.role === 'super_admin' || isSystemAdmin(user)) return tasks;
+  if (user.role === 'super_admin') return tasks;
 
   const userDept = safeLower(user.department);
 
@@ -317,9 +332,56 @@ export const filterTasksForUser = (tasks = [], user, allUsers = []) => {
   });
 };
 
+// ---- CNOC ticket flow (spec slides 19-20) -------------------------------
+// Mirrors internal/handlers/ticket_flow_rules.go — the server enforces these;
+// the screens use them to only offer what will work.
+//   HANDLER: the team the ticket is with now — its assignee, or anyone in
+//            that department who can reassign tickets (or a super admin).
+//   RAISER:  the department it came from — its creator, or anyone there
+//            who can reassign tickets (or a super admin).
+const normDept = (d) => (d || '').trim().toLowerCase();
+const sameDeptName = (a, b) => !!normDept(a) && normDept(a) === normDept(b);
+export const ticketOrigin = (t) => (t?.originDepartment || '').trim() || (t?.department || '').trim();
+export const isTicketAwayFromOrigin = (t) =>
+  !!(t?.originDepartment || '').trim() && !sameDeptName(t.originDepartment, t.department);
+
+export function handlesTicketNow(user, t, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (!user || !t) return false;
+  if (user.role === 'super_admin' || String(t.assignedToId) === String(user.id)) return true;
+  return canAssignTickets(user, permissionMatrix) && sameDeptName(user.department, t.department);
+}
+
+export function raisedTicket(user, t, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (!user || !t) return false;
+  if (user.role === 'super_admin' || String(t.createdById) === String(user.id)) return true;
+  return canAssignTickets(user, permissionMatrix) && sameDeptName(user.department, ticketOrigin(t));
+}
+
+// May change the status / assignment / route: its handlers, plus its
+// creator while it is still in their own department.
+export function canWorkTicket(user, t, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (handlesTicketNow(user, t, permissionMatrix)) return true;
+  return !!user && String(t?.createdById) === String(user.id) && !isTicketAwayFromOrigin(t);
+}
+
+// Which statuses this person may pick for this ticket (the status dropdown
+// and the edit form). "Reopened" only through the Reopen step; while the
+// ticket is away from the department that raised it, finishing it goes
+// through Return, not a status. The current status is always kept.
+export function allowedTicketStatuses(user, t, statuses = [], getCategory = () => '', permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  const away = isTicketAwayFromOrigin(t) && user?.role !== 'super_admin';
+  return statuses.filter(st => {
+    if (st.key === t?.status) return true;
+    if (st.key === 'reopened') return false;
+    if (!canWorkTicket(user, t, permissionMatrix)) return false;
+    const cat = getCategory('ticket', st.key);
+    return !(away && (cat === 'done' || cat === 'cancelled'));
+  });
+}
+
 export function filterTicketsForUser(tickets = [], user, allUsers = []) {
   if (!Array.isArray(tickets) || !user) return [];
-  if (user.role === 'super_admin' || isSystemAdmin(user)) return tickets;
+  if (user.role === 'super_admin') return tickets;
 
   const userDept = safeLower(user.department);
 
@@ -334,14 +396,22 @@ export function filterTicketsForUser(tickets = [], user, allUsers = []) {
       if (ticketDept && ticketDept === userDept) return true;
       if (userDept && safeLower(t.originDepartment) === userDept) return true;
       if (String(t.createdById) === String(user.id)) return true;
+      // Tickets their department worked on and returned (read-only).
+      if (userDept && safeLower(t.returnedFromDept) === userDept) return true;
+      if (String(t.returnedById) === String(user.id)) return true;
       const assignee = (allUsers || []).find(u => String(u.id) === String(t.assignedToId));
       return !!assignee && !!userDept && safeLower(assignee.department) === userDept;
     }
 
-    // Assigned to me, or created by me (the spec has the creator close the
-    // ticket after the client confirms).
-    if (t.assignedToId === user.id || t.createdById === user.id) return true;
-    return user.role === 'supervisor' && t.supervisorId === user.id;
+    // Assigned to me, created by me (the spec has the creator close the
+    // ticket after the client confirms), or worked on and returned by me.
+    if (String(t.assignedToId) === String(user.id) || String(t.createdById) === String(user.id)) return true;
+    if (String(t.returnedById) === String(user.id)) return true;
+    if (user.role !== 'supervisor') return false;
+    // Tickets assigned to the people they supervise. Read from the people
+    // directory — tickets no longer carry the assignee's full record.
+    const assignee = (allUsers || []).find(u => String(u.id) === String(t.assignedToId));
+    return String(assignee?.supervisorId ?? t.supervisorId) === String(user.id);
   });
 }
 // "5 days (40 h)" / "40 h" — a project's budget as entered, with hours.

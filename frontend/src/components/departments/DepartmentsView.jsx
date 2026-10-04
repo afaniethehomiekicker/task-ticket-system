@@ -21,6 +21,8 @@ import { canManageDepartments } from '../../utils/permissions';
 export const DepartmentsView = () => {
   const { departments, currentUser, permissionMatrix, createDepartment, updateDepartment, deleteDepartment } = useApp();
 
+  // Super Admin only (spec slide 5) — canManageDepartments and the backend
+  // (Department.go) apply the same rule.
   const canManage = canManageDepartments(currentUser, permissionMatrix);
 
   const [showCreate, setShowCreate] = useState(false);
@@ -99,7 +101,7 @@ export const DepartmentsView = () => {
       {!canManage && (
         <div className="flex items-start gap-2 p-3 rounded-xl bg-slate-200/60 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-800 text-xs text-slate-600 dark:text-zinc-400">
           <Info className="w-4 h-4 shrink-0 mt-0.5" />
-          You can view departments, but only an Admin or Super Admin can create, rename, or delete one.
+          You can view departments, but only a Super Admin can create, rename, or archive one.
         </div>
       )}
 

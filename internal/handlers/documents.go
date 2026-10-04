@@ -178,8 +178,18 @@ func UploadDocument(c *gin.Context) {
 	// New version of an existing document?
 	group, version := uint(0), 1
 	if rep := strings.TrimSpace(c.PostForm("replaces_id")); rep != "" {
+		// Must be parsed to a number BEFORE it reaches GORM. First(&row, s)
+		// with a non-numeric string is not a primary-key lookup: GORM pastes
+		// the string into the WHERE clause as raw SQL. This form field was
+		// passed straight through, and NumericIDParams only guards PATH
+		// parameters, so any signed-in user could run their own SQL here.
+		repID, err := strconv.ParseUint(rep, 10, 64)
+		if err != nil || repID == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "replaces_id must be a document id"})
+			return
+		}
 		var prev models.Document
-		if err := database.DB.First(&prev, rep).Error; err != nil || prev.RecordType != rt || prev.RecordID != rid || prev.ArchivedAt != nil {
+		if err := database.DB.Where("id = ?", repID).First(&prev).Error; err != nil || prev.RecordType != rt || prev.RecordID != rid || prev.ArchivedAt != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "The document to replace wasn't found on this record"})
 			return
 		}

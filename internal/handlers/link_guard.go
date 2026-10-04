@@ -2,16 +2,15 @@ package handlers
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"task-ticket-backend/internal/database"
 	"task-ticket-backend/internal/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 )
 
 // GuardLinkedRecords checks the records a ticket or task is being linked to,
@@ -30,6 +29,16 @@ import (
 //
 // Kept as a separate guard (instead of edits inside ticket.go / task.go) so
 // it applies cleanly whatever else has changed in those handlers.
+//
+// The body is decoded with gin's own JSON binding — the exact decoder the
+// handlers' ShouldBindJSON uses — into fields with the same JSON names and
+// types. It used to be read into a map and looked up by the exact key
+// "project_id", while the handler's decoder also accepts "Project_ID",
+// "PROJECT_ID", ... (encoding/json matches field names case-insensitively,
+// and the last duplicate key wins). Any differently-cased key therefore
+// skipped this guard but still set the link in the handler. Decoding the same
+// way the handler does means this guard always checks the value the handler
+// will actually use.
 func GuardLinkedRecords() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
@@ -41,9 +50,18 @@ func GuardLinkedRecords() gin.HandlerFunc {
 		c.Request.Body = io.NopCloser(bytes.NewReader(raw))
 		c.Request.ContentLength = int64(len(raw))
 
-		var body map[string]json.RawMessage
-		if json.Unmarshal(raw, &body) != nil {
-			c.Next() // malformed: the handler reports it
+		var links struct {
+			ProjectID    *uint `json:"project_id"`
+			ClientID     *uint `json:"client_id"`
+			TicketID     *uint `json:"ticket_id"`
+			AssignedToID *uint `json:"assigned_to_id"`
+		}
+		if err := binding.JSON.BindBody(raw, &links); err != nil {
+			// Malformed JSON, or a link that isn't a plain id. The handler
+			// would reject it too; refusing here means nothing is ever let
+			// through unchecked.
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+			c.Abort()
 			return
 		}
 
@@ -54,15 +72,15 @@ func GuardLinkedRecords() gin.HandlerFunc {
 		var current models.Ticket
 		isEdit := c.Param("id") != ""
 		if isEdit {
-			database.DB.Select("id", "project_id", "client_id").First(&current, c.Param("id"))
+			database.DB.Select("id", "project_id", "client_id").Where("id = ?", c.Param("id")).First(&current)
 		}
 		unchanged := func(id uint, cur *uint) bool {
 			return isEdit && cur != nil && *cur == id
 		}
 
-		if id, ok := linkedID(body, "project_id"); ok && !unchanged(id, current.ProjectID) {
+		if id, ok := linkedID(links.ProjectID); ok && !unchanged(id, current.ProjectID) {
 			var p models.Project
-			if database.DB.First(&p, id).Error != nil {
+			if database.DB.Where("id = ?", id).First(&p).Error != nil {
 				denyLink(c, http.StatusBadRequest, "Project not found")
 				return
 			}
@@ -72,9 +90,9 @@ func GuardLinkedRecords() gin.HandlerFunc {
 			}
 		}
 
-		if id, ok := linkedID(body, "client_id"); ok && !unchanged(id, current.ClientID) {
+		if id, ok := linkedID(links.ClientID); ok && !unchanged(id, current.ClientID) {
 			var cl models.Client
-			if database.DB.First(&cl, id).Error != nil {
+			if database.DB.Where("id = ?", id).First(&cl).Error != nil {
 				denyLink(c, http.StatusBadRequest, "Client not found")
 				return
 			}
@@ -86,9 +104,9 @@ func GuardLinkedRecords() gin.HandlerFunc {
 			}
 		}
 
-		if id, ok := linkedID(body, "ticket_id"); ok {
+		if id, ok := linkedID(links.TicketID); ok {
 			var t models.Ticket
-			if database.DB.First(&t, id).Error != nil {
+			if database.DB.Where("id = ?", id).First(&t).Error != nil {
 				denyLink(c, http.StatusBadRequest, "Ticket not found")
 				return
 			}
@@ -103,7 +121,7 @@ func GuardLinkedRecords() gin.HandlerFunc {
 		// who owns it at that moment — a colleague in their own department
 		// (transfer_assigned_work). Assigning it to yourself is always fine.
 		if c.Request.Method == http.MethodPost && strings.HasSuffix(c.FullPath(), "/tickets") {
-			if target, ok := linkedID(body, "assigned_to_id"); ok {
+			if target, ok := linkedID(links.AssignedToID); ok {
 				v := viewerFrom(c)
 				if target != v.ID && !canAssignWork(v.Role) {
 					self := v.ID
@@ -122,19 +140,13 @@ func GuardLinkedRecords() gin.HandlerFunc {
 	}
 }
 
-// linkedID reads a positive integer id from the JSON body. Missing, null, 0
-// or a non-number all mean "no link" here; the handler's own binding rejects
-// wrong types.
-func linkedID(body map[string]json.RawMessage, key string) (uint, bool) {
-	v, ok := body[key]
-	if !ok {
+// linkedID turns a decoded link into an id. Missing, null or 0 all mean
+// "no link" here.
+func linkedID(v *uint) (uint, bool) {
+	if v == nil || *v == 0 {
 		return 0, false
 	}
-	n, err := strconv.ParseUint(string(bytes.TrimSpace(v)), 10, 64)
-	if err != nil || n == 0 {
-		return 0, false
-	}
-	return uint(n), true
+	return *v, true
 }
 
 func denyLink(c *gin.Context, status int, msg string) {

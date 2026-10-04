@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"task-ticket-backend/internal/database"
+	"task-ticket-backend/internal/middleware"
 	"task-ticket-backend/internal/models"
 	"task-ticket-backend/internal/utils"
 
@@ -56,10 +57,14 @@ func applyRestore(c *gin.Context, model interface{}, resourceType string, id uin
 	return true
 }
 
-func isAdminTier(c *gin.Context) bool {
-	roleVal, _ := c.Get("user_role")
-	role, _ := roleVal.(string)
-	return role == "admin" || role == "super_admin"
+// canArchiveRecords is the "Archive & Restore Projects, Tasks & Tickets"
+// matrix permission (archive_records). Archiving and restoring projects,
+// tasks, tickets and subtasks used to be hard-coded to the admin and
+// super_admin roles, so the permission matrix had no say over it and a
+// custom role could never be allowed to. Defaults match the old rule:
+// admins yes, supervisors and staff no; super admins always.
+func canArchiveRecords(c *gin.Context) bool {
+	return middleware.HasPermission(viewerFrom(c).Role, "archive_records")
 }
 
 func notArchived(c *gin.Context) {
@@ -78,7 +83,7 @@ func RestoreProject(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
-	if !isAdminTier(c) {
+	if !canArchiveRecords(c) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions to restore project"})
 		return
 	}
@@ -111,7 +116,7 @@ func RestoreTask(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
-	if !isAdminTier(c) {
+	if !canArchiveRecords(c) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions to restore task"})
 		return
 	}
@@ -142,7 +147,7 @@ func RestoreTicket(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
-	if !isAdminTier(c) {
+	if !canArchiveRecords(c) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions to restore ticket"})
 		return
 	}

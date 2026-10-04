@@ -198,14 +198,21 @@ func visibleComments(allowed bool, comments []models.Comment) []models.Comment {
 	return out
 }
 
+// redactTask / redactTasks run on every task response. Besides hiding
+// internal notes, they cut dependencies down to reference fields, so a linked
+// task is never returned in full to someone who can't open it (see
+// task_dependencies.go).
 func redactTask(c *gin.Context, t *models.Task) {
 	t.Comments = visibleComments(canSeeInternalNotes(c), t.Comments)
+	t.Dependencies = dependencyRefs(c, t.Dependencies, nil)
 }
 
 func redactTasks(c *gin.Context, tasks []models.Task) {
 	allowed := canSeeInternalNotes(c)
+	cache := map[uint]bool{}
 	for i := range tasks {
 		tasks[i].Comments = visibleComments(allowed, tasks[i].Comments)
+		tasks[i].Dependencies = dependencyRefs(c, tasks[i].Dependencies, cache)
 	}
 }
 

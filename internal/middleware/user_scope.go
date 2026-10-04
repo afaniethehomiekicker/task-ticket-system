@@ -31,8 +31,7 @@ import (
 //     automatically when left empty);
 //   - editing a user: the department can't be changed to another one.
 //
-// Super admins, and admins with no department (company-wide admins), are not
-// restricted here. The handlers' existing rule that only a super admin may
+// Super admins are not restricted here. The handlers' existing rule that only a super admin may
 // manage super admin accounts still applies on top.
 func ScopeUserManagement() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -42,7 +41,11 @@ func ScopeUserManagement() gin.HandlerFunc {
 		dept, _ := deptVal.(string)
 		dept = strings.TrimSpace(dept)
 
-		if role == "super_admin" || (role == "admin" && dept == "") {
+		// Only a super admin manages users company-wide. An admin with no
+		// department used to be unrestricted here too (a "company-wide
+		// admin"); the spec has no such tier — every Admin is a Department
+		// Admin (slide 5).
+		if role == "super_admin" {
 			c.Next()
 			return
 		}
@@ -56,9 +59,17 @@ func ScopeUserManagement() gin.HandlerFunc {
 		// Any route with a target user.
 		if idStr := c.Param("id"); idStr != "" {
 			var target models.User
-			err := database.DB.Select("id", "department").Where("id = ?", idStr).Take(&target).Error
+			err := database.DB.Select("id", "department", "role").Where("id = ?", idStr).Take(&target).Error
 			if err == nil && !strings.EqualFold(strings.TrimSpace(target.Department), dept) {
 				forbidUserScope(c, "You can only manage users in your own department")
+				return
+			}
+			// Nor anyone whose role is more powerful than the caller's own:
+			// resetting such a user's password, and signing in as them,
+			// would hand the caller those extra permissions. Reading the
+			// record (GET) stays allowed.
+			if err == nil && c.Request.Method != http.MethodGet && len(PermissionsBeyond(role, target.Role)) > 0 {
+				forbidUserScope(c, "You can't manage this user: their role has permissions your own role doesn't")
 				return
 			}
 			// Not found: let the handler give its normal 404.

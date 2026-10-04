@@ -48,7 +48,8 @@ func GetTicketTimeline(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Ticket not found"})
 		return
 	}
-	if !userCanAccessTicket(c, &ticket) {
+	// Read access — includes the team that returned it (ticket_flow_rules.go).
+	if !userCanViewTicket(c, &ticket) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}

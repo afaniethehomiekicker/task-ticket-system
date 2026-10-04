@@ -5,7 +5,7 @@ import {
   Paperclip, Plus, ArrowRight, TrendingUp, AlertCircle, Edit, Trash2, Archive, Upload, ShieldAlert, UserPlus, UserMinus, Check
 } from 'lucide-react';
 import { PriorityBadge, ProjectStatusBadge, TaskStatusBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
-import { canCreateTask, formatBudget, formatDate, canCreateProject } from '../../utils/permissions';
+import { canCreateTask, formatBudget, formatDate, canCreateProject, canArchiveRecords } from '../../utils/permissions';
 import { TeamWorkloadModal } from './TeamWorkloadModal';
 import { ProjectActivityLog } from './ProjectActivityLog';
 import { ProjectAnalyticsCard } from './ProjectAnalyticsCard';
@@ -778,10 +778,10 @@ export const ProjectDetailModal = () => {
               </div>
 
               <div className="flex gap-2 justify-end pt-2">
-                {/* Archive: admin/super_admin only (same rule as the backend's
-                    DeleteProject). There was no way to archive a project from
-                    the UI before. Closes the project only when it succeeds. */}
-                {(currentUser?.role === 'admin' || currentUser?.role === 'super_admin') && project.status !== 'archived' && (
+                {/* Archive: the archive_records permission (same rule as the
+                    backend's DeleteProject). Closes the project only when it
+                    succeeds. */}
+                {canArchiveRecords(currentUser, permissionMatrix) && project.status !== 'archived' && (
                   <button
                     type="button"
                     disabled={isArchiving}

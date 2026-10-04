@@ -38,7 +38,7 @@ type CreateTaskInput struct {
 
 type UpdateTaskInput struct {
 	// Required when the new status requires a reason (workflow catalog).
-	StatusReason string `json:"status_reason"`
+	StatusReason string     `json:"status_reason"`
 	Title        string     `json:"title"`
 	Description  string     `json:"description"`
 	Priority     string     `json:"priority"`
@@ -159,8 +159,8 @@ func GetTasks(c *gin.Context) {
 		return
 	}
 
-	redactTasks(c, tasks)       // internal notes only for view_internal_notes
-	applySubtaskViews(c, tasks) // subtask assignees get a reference view
+	redactTasks(c, tasks)         // internal notes only for view_internal_notes
+	applySubtaskViews(c, tasks)   // subtask assignees get a reference view
 	reduceProjectsToRef(c, tasks) // project as reference only (spec slide 14)
 	c.JSON(http.StatusOK, gin.H{
 		"tasks": tasks,
@@ -262,6 +262,13 @@ func CreateTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
+	// Dependencies must be tasks the caller can access (task_dependencies.go).
+	// Checked before anything is created, so a refusal leaves nothing behind.
+	deps, depCode, depMsg := validateDependencies(c, 0, input.DependsOnIDs, nil)
+	if depCode != 0 {
+		c.JSON(depCode, gin.H{"error": depMsg})
+		return
+	}
 
 	// Generate task number
 	// Permanent ID from the atomic counter (spec slide 7) — "highest + 1"
@@ -293,11 +300,11 @@ func CreateTask(c *gin.Context) {
 			}
 			return nil
 		}(),
-		CreatorID:   &currentUserID,
-		DueDate:     input.DueDate,
-		StartDate:   input.StartDate,
-		Department:  department,
-		Status:      "todo",
+		CreatorID:  &currentUserID,
+		DueDate:    input.DueDate,
+		StartDate:  input.StartDate,
+		Department: department,
+		Status:     "todo",
 	}
 
 	if task.Priority == "" {
@@ -339,10 +346,8 @@ func CreateTask(c *gin.Context) {
 		}
 	}
 
-	// Add dependencies if provided
-	if len(input.DependsOnIDs) > 0 {
-		var deps []models.Task
-		database.DB.Where("id IN ?", input.DependsOnIDs).Find(&deps)
+	// Add dependencies if provided (validated above)
+	if len(deps) > 0 {
 		database.DB.Model(&task).Association("Dependencies").Append(&deps)
 	}
 
@@ -392,6 +397,19 @@ func UpdateTask(c *gin.Context) {
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// Dependencies are checked BEFORE any field is saved, so a refused link
+	// doesn't leave the rest of the edit half-applied (task_dependencies.go).
+	var newDeps []models.Task
+	if len(input.DependsOnIDs) > 0 {
+		var code int
+		var msg string
+		newDeps, code, msg = validateDependencies(c, task.ID, input.DependsOnIDs, existingDependencyIDs(task.ID))
+		if code != 0 {
+			c.JSON(code, gin.H{"error": msg})
+			return
+		}
 	}
 
 	updates := map[string]interface{}{}
@@ -512,11 +530,9 @@ func UpdateTask(c *gin.Context) {
 		}
 	}
 
-	// Update dependencies if provided
-	if len(input.DependsOnIDs) > 0 {
-		var deps []models.Task
-		database.DB.Where("id IN ?", input.DependsOnIDs).Find(&deps)
-		database.DB.Model(&task).Association("Dependencies").Replace(&deps)
+	// Update dependencies if provided (validated above)
+	if len(newDeps) > 0 {
+		database.DB.Model(&task).Association("Dependencies").Replace(&newDeps)
 	}
 
 	// Record exactly which fields changed, old -> new (status and assignee
@@ -544,9 +560,7 @@ func DeleteTask(c *gin.Context) {
 	id := c.Param("id")
 
 	userIDVal, _ := c.Get("user_id")
-	userRoleVal, _ := c.Get("user_role")
 	currentUserID := userIDVal.(uint)
-	currentUserRole := userRoleVal.(string)
 
 	var task models.Task
 	if err := database.DB.First(&task, id).Error; err != nil {
@@ -566,8 +580,8 @@ func DeleteTask(c *gin.Context) {
 		return
 	}
 
-	// Only super_admin and admin can archive
-	if currentUserRole != "super_admin" && currentUserRole != "admin" {
+	// The archive_records matrix permission (see restore.go).
+	if !canArchiveRecords(c) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions to archive task"})
 		return
 	}
@@ -581,10 +595,10 @@ func DeleteTask(c *gin.Context) {
 
 	now := time.Now()
 	if err := database.DB.Model(&task).Updates(map[string]interface{}{
-		"status":         "archived",
+		"status":             "archived",
 		"pre_archive_status": task.Status,
-		"archived_at":    now,
-		"archived_by_id": currentUserID,
+		"archived_at":        now,
+		"archived_by_id":     currentUserID,
 	}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to archive task"})
 		return

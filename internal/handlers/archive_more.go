@@ -128,6 +128,9 @@ func RestoreUser(c *gin.Context) {
 // department still has people or open work; closed history is fine — it keeps
 // the department's name, so restoring reconnects everything.
 func ArchiveDepartment(c *gin.Context) {
+	if !requireSuperAdminForDepartments(c, "archive") {
+		return
+	}
 	var dept models.Department
 	if err := database.DB.First(&dept, c.Param("id")).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Department not found"})
@@ -175,6 +178,9 @@ func ArchiveDepartment(c *gin.Context) {
 }
 
 func RestoreDepartment(c *gin.Context) {
+	if !requireSuperAdminForDepartments(c, "restore") {
+		return
+	}
 	var dept models.Department
 	if err := database.DB.First(&dept, c.Param("id")).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Department not found"})

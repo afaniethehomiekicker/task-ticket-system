@@ -158,9 +158,9 @@ func GetProjectTickets(c *gin.Context) {
 
 	var tickets []models.Ticket
 	applyTicketScope(database.DB.Where("project_id = ?", projectID), viewerFrom(c)).
-		Preload("AssignedTo").
+		Preload("AssignedTo", userCard).
 		Preload("AssignedBy", userBasics).
-		Preload("CreatedBy").
+		Preload("CreatedBy", userCard).
 		Preload("Client").
 		Find(&tickets)
 

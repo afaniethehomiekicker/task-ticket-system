@@ -20,7 +20,7 @@ import {
 // canManageDepartments: same unverified-import note as DepartmentsView.jsx —
 // I don't have the current permissions.js in this session, so this mirrors
 // canManageClients's established shape under that name.
-import { canViewAuditLogs, canManageMatrixPermissions, canManageDepartments } from '../../utils/permissions';
+import { canViewAuditLogs, canManageMatrixPermissions, canManageDepartments, canArchiveRecords } from '../../utils/permissions';
 import { RoleBadge } from '../common/Badge';
 
 export const Sidebar = () => {
@@ -66,7 +66,7 @@ export const Sidebar = () => {
     { id: 'audit', label: 'System Audit Logs', icon: ScrollText, restricted: !canViewAuditLogs(currentUser, permissionMatrix) },
     // Archived records (never deleted) — admins and super admins, the roles
     // that can archive. Before this, archived work had no place in the UI.
-    { id: 'archive', label: 'Archive', icon: Archive, restricted: !(currentUser.role === 'admin' || currentUser.role === 'super_admin') },
+    { id: 'archive', label: 'Archive', icon: Archive, restricted: !(currentUser.role === 'admin' || currentUser.role === 'super_admin' || canArchiveRecords(currentUser, permissionMatrix)) },
     { id: 'settings', label: 'Settings & Matrix', icon: Settings, restricted: settingsRestricted },
     { id: 'profile', label: 'My Profile', icon: UserCircle },
   ];

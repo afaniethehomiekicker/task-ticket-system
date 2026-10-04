@@ -107,9 +107,9 @@ func CreateSubTask(c *gin.Context) {
 	}
 
 	subTask := models.SubTask{
-		Title:          input.Title,
-		TaskID:         input.TaskID,
-		AssigneeID:     input.AssigneeID,
+		Title:      input.Title,
+		TaskID:     input.TaskID,
+		AssigneeID: input.AssigneeID,
 		AssignedByID: func() *uint {
 			if input.AssigneeID != nil {
 				return &currentUserID
@@ -360,9 +360,7 @@ func DeleteSubTask(c *gin.Context) {
 	id := c.Param("subtaskId")
 
 	userIDVal, _ := c.Get("user_id")
-	userRoleVal, _ := c.Get("user_role")
 	currentUserID := userIDVal.(uint)
-	currentUserRole := userRoleVal.(string)
 
 	var subTask models.SubTask
 	if err := database.DB.First(&subTask, id).Error; err != nil {
@@ -380,7 +378,8 @@ func DeleteSubTask(c *gin.Context) {
 		return
 	}
 
-	if currentUserRole != "super_admin" && currentUserRole != "admin" {
+	// The archive_records matrix permission (see restore.go).
+	if !canArchiveRecords(c) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions to archive subtask"})
 		return
 	}
@@ -428,15 +427,15 @@ func AddTaskDependency(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: task belongs to different department"})
 		return
 	}
-	if err := database.DB.First(&depTask, input.DependsOnTaskID).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Dependency task not found"})
+	// The linked task must be one the caller can access, and the link must
+	// not close a loop (task_dependencies.go). This used to load the task by
+	// id with no check, and the response then returned it in full.
+	deps, code, msg := validateDependencies(c, task.ID, []uint{input.DependsOnTaskID}, existingDependencyIDs(task.ID))
+	if code != 0 {
+		c.JSON(code, gin.H{"error": msg})
 		return
 	}
-
-	if input.DependsOnTaskID == task.ID {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "A task cannot depend on itself"})
-		return
-	}
+	depTask = deps[0]
 
 	if err := database.DB.Model(&task).Association("Dependencies").Append(&depTask); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add dependency"})

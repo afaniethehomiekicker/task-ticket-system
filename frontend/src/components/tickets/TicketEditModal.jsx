@@ -3,9 +3,9 @@ import { useApp } from '../../context/AppContext';
 import { X, Trash2 } from 'lucide-react';
 import AsyncSelect from 'react-select/async';
 
-import { isTaskAssignable } from '../../utils/permissions';
+import { isTaskAssignable, canArchiveRecords, allowedTicketStatuses } from '../../utils/permissions';
 export const TicketEditModal = () => {
-  const { tickets, selectedTicketEditId, setSelectedTicketEditId, updateTicket, deleteTicket, allUsers, apiFetch, searchAssignees, getStatuses, getStatusLabel } = useApp();
+  const { tickets, selectedTicketEditId, setSelectedTicketEditId, updateTicket, deleteTicket, allUsers, apiFetch, searchAssignees, getStatuses, getStatusLabel, getStatusCategory, currentUser, permissionMatrix } = useApp();
 
   const ticket = (tickets || []).find(t => String(t.id) === String(selectedTicketEditId));
 
@@ -189,7 +189,7 @@ export const TicketEditModal = () => {
                 <option value="low">Low</option>
                 <option value="normal">Normal</option>
                 <option value="high">High</option>
-                <option value="urgent">Urgent</option>
+                <option value="critical">Critical</option>
               </select>
             </div>
 
@@ -201,9 +201,9 @@ export const TicketEditModal = () => {
                 onChange={handleChange}
                 className="w-full px-3 py-2 bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg text-xs text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-indigo-500"
               >
-                {/* Was a hard-coded list including "open", which isn't a
-                    ticket status at all. Now the configurable catalog. */}
-                {getStatuses('ticket').map(st => (
+                {/* The configurable catalog, limited to what this person may
+                    pick for this ticket (same rules as the server). */}
+                {allowedTicketStatuses(currentUser, ticket, getStatuses('ticket'), getStatusCategory, permissionMatrix).map(st => (
                   <option key={st.key} value={st.key}>{st.label}</option>
                 ))}
                 {formData.status && !getStatuses('ticket').some(st => st.key === formData.status) && (
@@ -238,6 +238,9 @@ export const TicketEditModal = () => {
           </div>
 
           <div className="flex items-center justify-between pt-4 border-t border-slate-300 dark:border-zinc-800">
+            {/* Archive button only for the archive_records permission — it was
+                shown to everyone who could edit and failed for them. */}
+            {canArchiveRecords(currentUser, permissionMatrix) ? (
             <button
               type="button"
               onClick={async () => {
@@ -254,6 +257,7 @@ export const TicketEditModal = () => {
               <Trash2 className="w-3.5 h-3.5" />
               Archive Ticket
             </button>
+            ) : <span />}
 
             <div className="flex items-center gap-3">
               <button

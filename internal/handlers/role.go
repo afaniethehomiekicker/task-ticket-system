@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"task-ticket-backend/internal/database"
+	"task-ticket-backend/internal/middleware"
 	"task-ticket-backend/internal/models"
 	"task-ticket-backend/internal/utils"
 
@@ -29,6 +30,7 @@ var AllPermissionKeys = []string{
 	"grant_record_access",
 	"transfer_assigned_work",
 	"manage_vendors",
+	"archive_records",
 }
 
 var PermissionLabels = map[string]string{
@@ -47,6 +49,7 @@ var PermissionLabels = map[string]string{
 	"grant_record_access":       "Grant Record Access",
 	"transfer_assigned_work":    "Transfer My Work Within Department",
 	"manage_vendors":            "Manage Vendor List",
+	"archive_records":           "Archive & Restore Projects, Tasks & Tickets",
 }
 
 var roleKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -95,6 +98,7 @@ func seedDefaultPermissions() {
 		"grant_record_access":       true,
 		"transfer_assigned_work":    true,
 		"manage_vendors":            true,
+		"archive_records":           true,
 	}
 	// Supervisor defaults
 	supervisorPerms := map[string]bool{
@@ -113,6 +117,7 @@ func seedDefaultPermissions() {
 		"grant_record_access":       false,
 		"transfer_assigned_work":    true,
 		"manage_vendors":            false,
+		"archive_records":           false,
 	}
 	// Staff defaults
 	staffPerms := map[string]bool{
@@ -131,6 +136,7 @@ func seedDefaultPermissions() {
 		"grant_record_access":       false,
 		"transfer_assigned_work":    true,
 		"manage_vendors":            false,
+		"archive_records":           false,
 	}
 
 	rolePerms := map[string]map[string]bool{
@@ -219,6 +225,10 @@ func UpdateRole(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Role not found"})
 		return
 	}
+	if msg := roleEditError(c, key); msg != "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": msg})
+		return
+	}
 
 	if err := database.DB.Model(&role).Update("label", input.Label).Error; err != nil {
 		serverError(c, "Failed to update role", err)
@@ -239,6 +249,10 @@ func DeleteRole(c *gin.Context) {
 
 	if role.IsBuiltIn {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Built-in roles cannot be deleted"})
+		return
+	}
+	if msg := roleEditError(c, key); msg != "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": msg})
 		return
 	}
 
@@ -331,6 +345,17 @@ func SetPermission(c *gin.Context) {
 	// every other permission.
 	if v := viewerFrom(c); v.Role != "super_admin" && v.Role == roleKey {
 		c.JSON(http.StatusForbidden, gin.H{"error": "You can't change the permissions of your own role. Ask a super admin."})
+		return
+	}
+	// Only roles at or below the caller's own, and only permissions the
+	// caller's own role has (see role_scope.go). Otherwise a matrix editor
+	// could build a role above themselves and hand it to someone.
+	if msg := roleEditError(c, roleKey); msg != "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": msg})
+		return
+	}
+	if v := viewerFrom(c); input.Granted && !middleware.HasPermission(v.Role, permissionKey) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You can only grant permissions your own role has (" + permissionList([]string{permissionKey}) + ")"})
 		return
 	}
 

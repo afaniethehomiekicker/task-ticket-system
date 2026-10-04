@@ -231,6 +231,12 @@ func escalateIfDue(t *models.Ticket, now time.Time) {
 	default:
 		to = superAdmins()
 	}
+	// A ticket routed to another department still belongs to the department
+	// that raised it — they own the customer — so its admins hear about the
+	// breach too (they used to hear nothing once the ticket had left).
+	if step < 2 && isAwayFromOrigin(t) {
+		to = append(to, departmentAdmins(t.OriginDepartment)...)
+	}
 	kind := "escalation"
 	if step == 0 {
 		kind = "sla_breach"

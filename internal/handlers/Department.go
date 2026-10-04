@@ -48,6 +48,21 @@ func auditDepartment(c *gin.Context, action string, id uint, oldVal, newVal inte
 	utils.LogAuditWithValues(callerID, action, "department", id, oldVal, newVal, details, c.ClientIP(), c.Request.UserAgent())
 }
 
+// Department configuration is the Super Admin's job (spec slide 5: the Super
+// Admin "configures SLA, roles, departments, notifications"). manage_departments
+// is on for admins by default and used to let ANY admin add, rename or archive
+// ANY department — a CNOC admin could rename Finance (moving all of Finance's
+// people and work to the new name) or archive it. Adding, renaming, editing,
+// archiving and restoring departments now need a super admin. Everyone can
+// still READ the list (GetDepartments): every Department dropdown needs it.
+func requireSuperAdminForDepartments(c *gin.Context, action string) bool {
+	if viewerFrom(c).Role != "super_admin" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only a Super Admin can " + action + " departments"})
+		return false
+	}
+	return true
+}
+
 // GetDepartments lists every department. Open to any authenticated user —
 // same reasoning as GetClients: every role's create/edit forms need this
 // list to populate a Department dropdown, not just whoever can manage it.
@@ -75,6 +90,9 @@ type CreateDepartmentInput struct {
 
 // CreateDepartment is gated by manage_departments in routes.go.
 func CreateDepartment(c *gin.Context) {
+	if !requireSuperAdminForDepartments(c, "add") {
+		return
+	}
 	var input CreateDepartmentInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -115,6 +133,9 @@ type UpdateDepartmentInput struct {
 // manage_departments in routes.go.
 func UpdateDepartment(c *gin.Context) {
 	id := c.Param("id")
+	if !requireSuperAdminForDepartments(c, "edit") {
+		return
+	}
 
 	var input UpdateDepartmentInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -131,6 +152,14 @@ func UpdateDepartment(c *gin.Context) {
 	oldName := dept.Name
 	newName := strings.TrimSpace(input.Name)
 	renaming := newName != "" && newName != oldName
+
+	// Support tiers (L1..L4) only exist for a department whose name starts
+	// with "CNOC" (see isSupportDepartment). Renaming it to anything else
+	// would silently switch the tiers off for everyone in it.
+	if renaming && isSupportDepartment(oldName) && !isSupportDepartment(newName) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "The CNOC department's name must start with \"CNOC\" — support tiers L1-L4 depend on it"})
+		return
+	}
 
 	if renaming {
 		var existing models.Department
@@ -154,20 +183,30 @@ func UpdateDepartment(c *gin.Context) {
 			}
 		}
 		if renaming {
-			if err := tx.Model(&models.User{}).Where("department = ?", oldName).Update("department", newName).Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&models.Project{}).Where("department = ?", oldName).Update("department", newName).Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&models.Ticket{}).Where("department = ?", oldName).Update("department", newName).Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&models.Task{}).Where("department = ?", oldName).Update("department", newName).Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&models.Feasibility{}).Where("assigned_dept = ?", oldName).Update("assigned_dept", newName).Error; err != nil {
-				return err
+			// Every place a department name is stored. Matched ignoring case
+			// and surrounding spaces, the same way every visibility check
+			// compares departments — an exact match left "cnoc" or "CNOC "
+			// rows behind on the old name. The ticket's origin / returned-
+			// from department (CNOC flow) were not renamed at all, so after a
+			// rename the origin department lost sight of tickets it had
+			// routed elsewhere.
+			for _, col := range []struct {
+				model  interface{}
+				column string
+			}{
+				{&models.User{}, "department"},
+				{&models.Project{}, "department"},
+				{&models.Ticket{}, "department"},
+				{&models.Ticket{}, "origin_department"},
+				{&models.Ticket{}, "returned_from_dept"},
+				{&models.Task{}, "department"},
+				{&models.Feasibility{}, "assigned_dept"},
+			} {
+				if err := tx.Model(col.model).
+					Where("LOWER(TRIM("+col.column+")) = LOWER(?)", strings.TrimSpace(oldName)).
+					Update(col.column, newName).Error; err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -185,58 +224,4 @@ func UpdateDepartment(c *gin.Context) {
 
 	database.DB.First(&dept, id)
 	c.JSON(http.StatusOK, gin.H{"message": "Department updated successfully", "department": dept})
-}
-
-// DeleteDepartment refuses to delete a department that's still referenced
-// anywhere, rather than silently leaving users/tasks/tickets/projects/
-// feasibilities pointing at a name that no longer exists in the managed
-// list — same "don't orphan a reference" discipline as DeleteRole (which
-// blocks deleting a role still assigned to users). Gated by
-// manage_departments in routes.go.
-func DeleteDepartment(c *gin.Context) {
-	id := c.Param("id")
-
-	var dept models.Department
-	if err := database.DB.First(&dept, id).Error; err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "Department already deleted"})
-		return
-	}
-
-	var userCount, projectCount, ticketCount, taskCount, feasibilityCount int64
-	database.DB.Model(&models.User{}).Where("department = ?", dept.Name).Count(&userCount)
-	database.DB.Model(&models.Project{}).Where("department = ?", dept.Name).Count(&projectCount)
-	database.DB.Model(&models.Ticket{}).Where("department = ?", dept.Name).Count(&ticketCount)
-	database.DB.Model(&models.Task{}).Where("department = ?", dept.Name).Count(&taskCount)
-	database.DB.Model(&models.Feasibility{}).Where("assigned_dept = ?", dept.Name).Count(&feasibilityCount)
-
-	var inUse []string
-	total := userCount + projectCount + ticketCount + taskCount + feasibilityCount
-	if userCount > 0 {
-		inUse = append(inUse, fmt.Sprintf("%d users", userCount))
-	}
-	if projectCount > 0 {
-		inUse = append(inUse, fmt.Sprintf("%d projects", projectCount))
-	}
-	if ticketCount > 0 {
-		inUse = append(inUse, fmt.Sprintf("%d tickets", ticketCount))
-	}
-	if taskCount > 0 {
-		inUse = append(inUse, fmt.Sprintf("%d tasks", taskCount))
-	}
-	if feasibilityCount > 0 {
-		inUse = append(inUse, fmt.Sprintf("%d feasibilities", feasibilityCount))
-	}
-	if total > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf(
-			"Cannot delete %q — still referenced by %s. Reassign or rename first.", dept.Name, strings.Join(inUse, ", "))})
-		return
-	}
-
-	if err := database.DB.Delete(&dept).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete department"})
-		return
-	}
-
-	auditDepartment(c, "department_deleted", dept.ID, map[string]string{"name": dept.Name}, nil, "Deleted department "+dept.Name)
-	c.JSON(http.StatusOK, gin.H{"message": "Department deleted successfully"})
 }

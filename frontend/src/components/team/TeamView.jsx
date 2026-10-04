@@ -131,7 +131,6 @@ export const TeamView = () => {
     if (!currentUser) return false;
     if (currentUser.role === 'super_admin') return true;
     const myDept = (currentUser.department || '').trim().toLowerCase();
-    if (currentUser.role === 'admin' && !myDept) return true;
     return !!myDept && (u.department || '').trim().toLowerCase() === myDept;
   };
 
@@ -150,7 +149,7 @@ export const TeamView = () => {
     // Archived accounts live in Archive → Users, not on the Team page.
     if (u.status === 'archived') return false;
     // Department admins (and everyone else with a department) see their own
-    // department's people here; super admins and company-wide admins see all.
+    // department's people here; super admins see all.
     if (ownDeptOnly && (u.department || '').trim().toLowerCase() !== ownDeptOnly) return false;
     const matchDept = deptFilter === 'all' || u.department === deptFilter;
     return matchSearch && matchRole && matchDept;
@@ -175,6 +174,13 @@ export const TeamView = () => {
       }
     }
     setPasswordError('');
+
+    // Spec slide 5: every Admin is a Department Admin — the server refuses an
+    // Admin without a department, so say so before sending anything.
+    if ((formData.role || 'staff') === 'admin' && !(formData.department || '').trim()) {
+      alert('An Admin must belong to a department. Choose one, or make this person a Super Admin.');
+      return;
+    }
 
     setIsSavingUser(true);
     try {
@@ -688,7 +694,11 @@ export const TeamView = () => {
                     onChange={(e) => setFormData({ ...formData, department: e.target.value })}
                     className="w-full p-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
                   >
-                    {!ownDeptOnly && <option value="">No department</option>}
+                    {!ownDeptOnly && (
+                      formData.role === 'admin'
+                        ? <option value="" disabled>Select a department…</option>
+                        : <option value="">No department</option>
+                    )}
                     {(departments || [])
                       .filter(d => !ownDeptOnly || d.name.trim().toLowerCase() === ownDeptOnly)
                       .map(d => (

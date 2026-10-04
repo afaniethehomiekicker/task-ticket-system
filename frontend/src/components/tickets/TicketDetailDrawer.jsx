@@ -5,7 +5,7 @@ import {
   User as UserIcon, Building, Paperclip, MessageSquare, Archive, History
 } from 'lucide-react';
 import { PriorityBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
-import { canEscalateTicket, canAssignTickets, canViewInternalNotes, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName } from '../../utils/permissions';
+import { canArchiveRecords, canEscalateTicket, canAssignTickets, canViewInternalNotes, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName, canWorkTicket, allowedTicketStatuses } from '../../utils/permissions';
 
 // Rebuilt from scratch after the original file was overwritten. It reads the
 // same context state TicketsView already drives (selectedTicketId) and calls
@@ -78,20 +78,30 @@ export const TicketDetailDrawer = () => {
   // server doesn't send them to anyone else).
   const showInternal = canViewInternalNotes(currentUser, permissionMatrix);
   const activeTab = tab === 'internal' && !showInternal ? 'public' : tab;
-  const STATUS_OPTIONS = getStatuses('ticket').map(st => [st.key, st.label]);
+  // Only the statuses this person may pick (ticket_flow_rules.go): the team
+  // handling the ticket changes it; "Reopened" goes through Reopen; a ticket
+  // away from the department that raised it is finished with Return.
+  const canWork = canWorkTicket(currentUser, ticket, permissionMatrix);
+  const STATUS_OPTIONS = allowedTicketStatuses(currentUser, ticket, getStatuses('ticket'), getStatusCategory, permissionMatrix)
+    .map(st => [st.key, st.label]);
   const canEscalate = !isClosedOut && ticket.status !== 'resolved' && canEscalateTicket(currentUser, ticket, permissionMatrix);
-  const canAssign = canAssignTickets(currentUser, permissionMatrix);
+  // Reassigning: the team handling the ticket, within the ticket's department.
+  const canAssign = canAssignTickets(currentUser, permissionMatrix) && canWork;
   // The current assignee may transfer it to a colleague in their own
   // department (e.g. CNOC L1 -> L2), without the general reassign right.
   const canTransfer = !canAssign &&
     String(ticket.assignedToId) === String(currentUser?.id) &&
     canTransferOwnWork(currentUser, permissionMatrix);
-  const agentOptions = canAssign ? agents
+  const ticketDept = (ticket.department || '').trim().toLowerCase();
+  const deptAgents = currentUser?.role === 'super_admin' || !ticketDept ? agents
+    : agents.filter(u => (u.department || '').trim().toLowerCase() === ticketDept || String(u.id) === String(ticket.assignedToId));
+  const agentOptions = canAssign ? deptAgents
     : canTransfer ? sameDepartmentUsers(currentUser, users).filter(isTaskAssignable).concat(
         users.filter(u => String(u.id) === String(ticket.assignedToId) &&
           !sameDepartmentUsers(currentUser, users).some(x => x.id === u.id)))
     : agents;
-  const isAdminTier = currentUser.role === 'super_admin' || currentUser.role === 'admin';
+  // Archive button: the archive_records permission (backend DeleteTicket).
+  const isAdminTier = canArchiveRecords(currentUser, permissionMatrix);
 
   const publicComments = ticket.comments || [];
   const internalNotes = ticket.internalNotes || [];
@@ -447,7 +457,8 @@ export const TicketDetailDrawer = () => {
                 id="ticket-status-select"
                 value={ticket.status}
                 onChange={(e) => handleStatusChange(e.target.value)}
-                disabled={isBusy || ticket.status === 'archived'}
+                disabled={isBusy || ticket.status === 'archived' || !canWork}
+                title={canWork ? undefined : `This ticket is with ${ticket.department || 'another team'} — they update its status`}
                 className="px-2.5 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 font-medium focus:outline-hidden disabled:opacity-60"
               >
                 {!STATUS_OPTIONS.some(([v]) => v === ticket.status) && (

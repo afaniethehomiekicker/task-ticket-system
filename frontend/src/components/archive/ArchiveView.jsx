@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Archive, Search, RefreshCw, ShieldAlert, RotateCcw } from 'lucide-react';
-import { canCreateProject, canManageClients, canManageUsers, canManageDepartments } from '../../utils/permissions';
+import { canCreateProject, canManageClients, canManageUsers, canManageDepartments, canArchiveRecords } from '../../utils/permissions';
 
 // Archive — every archived Project / Task / Ticket / Feasibility / Client.
 //
@@ -71,7 +71,10 @@ const contextLabel = {
 export const ArchiveView = () => {
   const { currentUser, allUsers, fetchArchived, restoreArchived, permissionMatrix } = useApp();
   const [restoringId, setRestoringId] = useState(null);
-  const allowed = currentUser?.role === 'admin' || currentUser?.role === 'super_admin';
+  // Admins (for users, clients, feasibilities) and anyone with the
+  // archive_records permission (projects, tasks, tickets) — same as Sidebar.
+  const allowed = currentUser?.role === 'admin' || currentUser?.role === 'super_admin' ||
+    canArchiveRecords(currentUser, permissionMatrix);
 
   const [tab, setTab] = useState('projects');
   const [rows, setRows] = useState([]);
@@ -102,8 +105,9 @@ export const ArchiveView = () => {
     if (kind === 'feasibilities') return canCreateProject(currentUser, permissionMatrix);
     if (kind === 'clients') return canManageClients(currentUser, permissionMatrix);
     if (kind === 'users') return canManageUsers(currentUser, permissionMatrix);
+    // Departments: Super Admin only (spec slide 5; same rule as Department.go).
     if (kind === 'departments') return canManageDepartments(currentUser, permissionMatrix);
-    return true; // projects / tasks / tickets: admin tier, already required for this view
+    return canArchiveRecords(currentUser, permissionMatrix); // projects / tasks / tickets
   };
 
   const handleRestore = async (row) => {

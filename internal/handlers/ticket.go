@@ -51,21 +51,27 @@ func validTicketPriority(p string) bool {
 	return ok
 }
 
+// Ticket severities (models.Ticket.Severity). Severity used to be stored
+// as-is, so any text ended up in the column and broke filters and exports.
+var ticketSeverities = map[string]bool{"minor": true, "major": true, "critical": true}
+
+func validTicketSeverity(s string) bool { return ticketSeverities[s] }
+
 type UpdateTicketInput struct {
 	// Required when the new status requires a reason (workflow catalog).
 	StatusReason string `json:"status_reason"`
 	// Saved with the ticket; also counts as the reason when resolving.
 	ResolutionSummary string `json:"resolution_summary"`
-	Title        string `json:"title"`
-	Description  string `json:"description"`
-	Category     string `json:"category"`
-	Priority     string `json:"priority"`
-	Severity     string `json:"severity"`
-	Status       string `json:"status"`
-	Department   string `json:"department"`
-	AssignedToID *uint  `json:"assigned_to_id"`
-	ProjectID    *uint  `json:"project_id"`
-	IsPinned     *bool  `json:"is_pinned"`
+	Title             string `json:"title"`
+	Description       string `json:"description"`
+	Category          string `json:"category"`
+	Priority          string `json:"priority"`
+	Severity          string `json:"severity"`
+	Status            string `json:"status"`
+	Department        string `json:"department"`
+	AssignedToID      *uint  `json:"assigned_to_id"`
+	ProjectID         *uint  `json:"project_id"`
+	IsPinned          *bool  `json:"is_pinned"`
 }
 
 type TicketQueryParams struct {
@@ -110,10 +116,10 @@ func GetTickets(c *gin.Context) {
 	query := database.DB.
 		Preload("Client").
 		Preload("Project").
-		Preload("AssignedTo").
+		Preload("AssignedTo", userCard).
 		Preload("AssignedBy", userBasics).
-		Preload("CreatedBy").
-		Preload("Comments.User").
+		Preload("CreatedBy", userCard).
+		Preload("Comments.User", userCard).
 		Order(safeOrderClause(params.SortBy, params.SortOrder, ticketSortColumns, "tickets.created_at"))
 
 	// Visibility (see visibility.go): admins their department, supervisors their
@@ -134,8 +140,8 @@ func GetTickets(c *gin.Context) {
 	if params.Category != "" {
 		query = query.Where("category = ?", params.Category)
 	}
-	if params.Department != "" && (currentUserRole == "super_admin" || currentUserRole == "admin") {
-		query = query.Where("department = ?", params.Department)
+	if d := strings.TrimSpace(params.Department); d != "" && (currentUserRole == "super_admin" || currentUserRole == "admin") {
+		query = query.Where("LOWER(TRIM(department)) = LOWER(?)", d)
 	}
 	if params.AssignedToID != "" {
 		query = query.Where("assigned_to_id = ?", params.AssignedToID)
@@ -187,13 +193,13 @@ func GetTicket(c *gin.Context) {
 	query := database.DB.
 		Preload("Client").
 		Preload("Project").
-		Preload("AssignedTo").
+		Preload("AssignedTo", userCard).
 		Preload("AssignedBy", userBasics).
-		Preload("CreatedBy").
-		Preload("Comments.User").
+		Preload("CreatedBy", userCard).
+		Preload("Comments.User", userCard).
 		Preload("Attachments").
-		Preload("Tasks.Assignee").
-		Preload("WorkLogs.User")
+		Preload("Tasks.Assignee", userCard).
+		Preload("WorkLogs.User", userCard)
 
 	var ticket models.Ticket
 	if err := query.First(&ticket, id).Error; err != nil {
@@ -205,8 +211,10 @@ func GetTicket(c *gin.Context) {
 		return
 	}
 
-	// Privacy check (see visibility.go)
-	if !userCanAccessTicket(c, &ticket) {
+	// Privacy check (see visibility.go). Read access also covers the team
+	// that returned the ticket (ticket_flow_rules.go); changes still need
+	// userCanAccessTicket.
+	if !userCanViewTicket(c, &ticket) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
@@ -237,10 +245,25 @@ func CreateTicket(c *gin.Context) {
 		return
 	}
 
-	// Default department to user's department if not provided
-	department := input.Department
+	// Default department to user's department if not provided. A department
+	// that doesn't exist used to be accepted as typed, and the ticket then
+	// fell out of every department's view (only a super admin could see it).
+	department := strings.TrimSpace(input.Department)
 	if department == "" {
 		department = currentUserDept
+	}
+	if !departmentIsKnown(department) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown department"})
+		return
+	}
+
+	severity := strings.ToLower(strings.TrimSpace(input.Severity))
+	if severity == "" {
+		severity = "minor"
+	}
+	if !validTicketSeverity(severity) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid severity (use minor, major or critical)"})
+		return
 	}
 
 	priority := strings.ToLower(strings.TrimSpace(input.Priority))
@@ -279,6 +302,16 @@ func CreateTicket(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
+	// A pre-assigned person must be in the department the ticket is created
+	// in (ticket_flow_rules.go); the guard in link_guard.go already checked
+	// the caller may assign at all.
+	if input.AssignedToID != nil && *input.AssignedToID != 0 {
+		draft := models.Ticket{Department: department, OriginDepartment: department, CreatedByID: &currentUserID}
+		if code, msg := ticketAssignError(c, &draft, *input.AssignedToID, false); code != 0 {
+			c.JSON(code, gin.H{"error": msg})
+			return
+		}
+	}
 	// The client this ticket is for (slide 19: a customer query becomes a
 	// ticket). Must exist and not be archived.
 	if input.ClientID != nil && *input.ClientID != 0 {
@@ -301,7 +334,7 @@ func CreateTicket(c *gin.Context) {
 		Description:  input.Description,
 		Category:     input.Category,
 		Priority:     priority,
-		Severity:     input.Severity,
+		Severity:     severity,
 		Source:       input.Source,
 		Status:       "new",
 		Department:   department,
@@ -322,8 +355,8 @@ func CreateTicket(c *gin.Context) {
 			}
 			return nil
 		}(),
-		CreatedByID:  &currentUserID,
-		SLADeadline:  slaDeadline,
+		CreatedByID: &currentUserID,
+		SLADeadline: slaDeadline,
 	}
 
 	// Set defaults
@@ -361,9 +394,9 @@ func CreateTicket(c *gin.Context) {
 	database.DB.
 		Preload("Client").
 		Preload("Project").
-		Preload("AssignedTo").
+		Preload("AssignedTo", userCard).
 		Preload("AssignedBy", userBasics).
-		Preload("CreatedBy").
+		Preload("CreatedBy", userCard).
 		First(&ticket, ticket.ID)
 
 	c.JSON(http.StatusCreated, gin.H{"message": "Ticket created successfully", "ticket": ticket})
@@ -410,20 +443,29 @@ func UpdateTicket(c *gin.Context) {
 	if input.Category != "" {
 		updates["category"] = input.Category
 	}
-	if input.Priority != "" {
-		updates["priority"] = input.Priority
+	// Priority and severity are validated whenever they CHANGE — open or
+	// closed ticket alike. Priority used to be checked only on open tickets,
+	// so a closed ticket accepted any text; severity was never checked. An
+	// unchanged value is left alone (edit forms re-send the current one, and
+	// an old ticket may still hold a legacy value).
+	if p := strings.ToLower(strings.TrimSpace(input.Priority)); p != "" && p != ticket.Priority {
+		if !validTicketPriority(p) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid priority (use low, normal, high or critical)"})
+			return
+		}
+		updates["priority"] = p
 		// A priority change re-targets the SLA from the ticket's creation time
 		// (e.g. normal -> critical pulls the deadline in), unless it's finished.
-		if input.Priority != ticket.Priority && !isFinishedTicketStatus(ticket.Status) {
-			if !validTicketPriority(input.Priority) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid priority (use low, normal, high or critical)"})
-				return
-			}
-			updates["sla_deadline"] = ticket.CreatedAt.Add(time.Duration(slaMinutesForPriority(input.Priority)) * time.Minute)
+		if !isFinishedTicketStatus(ticket.Status) {
+			updates["sla_deadline"] = ticket.CreatedAt.Add(time.Duration(slaMinutesForPriority(p)) * time.Minute)
 		}
 	}
-	if input.Severity != "" {
-		updates["severity"] = input.Severity
+	if s := strings.ToLower(strings.TrimSpace(input.Severity)); s != "" && s != ticket.Severity {
+		if !validTicketSeverity(s) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid severity (use minor, major or critical)"})
+			return
+		}
+		updates["severity"] = s
 	}
 	// An unchanged status is a no-op (edit forms resend the current one).
 	if input.Status != "" && input.Status != ticket.Status {
@@ -433,6 +475,12 @@ func UpdateTicket(c *gin.Context) {
 		// such restriction, so it must not accept it either.
 		if input.Status == "archived" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Use the archive/delete action to archive a ticket"})
+			return
+		}
+		// Who may change it, and the Return / Reopen rules
+		// (ticket_flow_rules.go).
+		if code, msg := ticketStatusChangeError(c, &ticket, input.Status); code != 0 {
+			c.JSON(code, gin.H{"error": msg})
 			return
 		}
 		// This endpoint used to accept any string at all.
@@ -457,8 +505,22 @@ func UpdateTicket(c *gin.Context) {
 			statusChange(ticket.Status), statusChangeWithReason(input.Status, reason),
 			statusChangeDetails("ticket", ticket.Status, input.Status, reason), c.ClientIP(), c.Request.UserAgent())
 	}
-	if input.Department != "" && (currentUserRole == "super_admin" || currentUserRole == "admin") {
-		updates["department"] = input.Department
+	// Moving a ticket to another department goes through Route (with a note,
+	// on the timeline, by the team handling it). Editing the department
+	// directly is left to super admins — it used to be open to any admin who
+	// could see the ticket, including the raising department's, which side-
+	// stepped every Route rule. An unchanged department is left alone.
+	if d := strings.TrimSpace(input.Department); d != "" && !sameDept(d, ticket.Department) {
+		if currentUserRole != "super_admin" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Use Route to send this ticket to another department"})
+			return
+		}
+		canon, ok := canonicalDepartment(d)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown department"})
+			return
+		}
+		updates["department"] = canon
 	}
 	if input.AssignedToID != nil {
 		// Reassigning is the assign_tickets permission (POST /:id/assign is
@@ -476,6 +538,12 @@ func UpdateTicket(c *gin.Context) {
 		if changing {
 			if msg := taskAssigneeRoleError(input.AssignedToID); msg != "" {
 				c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+				return
+			}
+			// In the ticket's own department, by its handlers
+			// (ticket_flow_rules.go).
+			if code, msg := ticketAssignError(c, &ticket, *input.AssignedToID, canAssignWork(currentUserRole)); code != 0 {
+				c.JSON(code, gin.H{"error": msg})
 				return
 			}
 		}
@@ -531,9 +599,9 @@ func UpdateTicket(c *gin.Context) {
 	database.DB.
 		Preload("Client").
 		Preload("Project").
-		Preload("AssignedTo").
+		Preload("AssignedTo", userCard).
 		Preload("AssignedBy", userBasics).
-		Preload("CreatedBy").
+		Preload("CreatedBy", userCard).
 		First(&ticket, id)
 
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket updated successfully", "ticket": ticket})
@@ -545,9 +613,7 @@ func DeleteTicket(c *gin.Context) {
 	id := c.Param("id")
 
 	userIDVal, _ := c.Get("user_id")
-	userRoleVal, _ := c.Get("user_role")
 	currentUserID := userIDVal.(uint)
-	currentUserRole := userRoleVal.(string)
 
 	var ticket models.Ticket
 	if err := database.DB.First(&ticket, id).Error; err != nil {
@@ -565,8 +631,8 @@ func DeleteTicket(c *gin.Context) {
 		return
 	}
 
-	// Only super_admin and admin can archive
-	if currentUserRole != "super_admin" && currentUserRole != "admin" {
+	// The archive_records matrix permission (see restore.go).
+	if !canArchiveRecords(c) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient permissions to archive ticket"})
 		return
 	}
@@ -580,10 +646,10 @@ func DeleteTicket(c *gin.Context) {
 
 	now := time.Now()
 	if err := database.DB.Model(&ticket).Updates(map[string]interface{}{
-		"status":         "archived",
+		"status":             "archived",
 		"pre_archive_status": ticket.Status,
-		"archived_at":    now,
-		"archived_by_id": currentUserID,
+		"archived_at":        now,
+		"archived_by_id":     currentUserID,
 	}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to archive ticket"})
 		return
@@ -634,6 +700,12 @@ func UpdateTicketStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status"})
 		return
 	}
+	// Who may change it, and the Return / Reopen rules
+	// (ticket_flow_rules.go).
+	if code, msg := ticketStatusChangeError(c, &ticket, input.Status); code != 0 {
+		c.JSON(code, gin.H{"error": msg})
+		return
+	}
 	reason := input.Reason
 	if strings.TrimSpace(reason) == "" && input.Status == "resolved" {
 		reason = input.ResolutionSummary // the resolution counts as the reason
@@ -677,10 +749,8 @@ func AssignTicket(c *gin.Context) {
 
 	userIDVal, _ := c.Get("user_id")
 	userRoleVal, _ := c.Get("user_role")
-	userDeptVal, _ := c.Get("user_department")
 	currentUserID := userIDVal.(uint)
 	currentUserRole := userRoleVal.(string)
-	currentUserDept := userDeptVal.(string)
 
 	var ticket models.Ticket
 	if err := database.DB.First(&ticket, id).Error; err != nil {
@@ -730,11 +800,15 @@ func AssignTicket(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"error": msg})
 			return
 		}
-	} else if currentUserRole != "super_admin" && currentUserRole != "admin" {
-		if !strings.EqualFold(strings.TrimSpace(assignee.Department), strings.TrimSpace(currentUserDept)) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Can only assign to users in your department"})
-			return
-		}
+	}
+	// The assignee must be in the department the ticket is with, and
+	// reassigning is for the ticket's handlers (ticket_flow_rules.go). This
+	// used to compare the assignee with the ASSIGNER's department — and
+	// admins skipped even that — so the raising department could give a
+	// ticket that was with another team to its own staff.
+	if code, msg := ticketAssignError(c, &ticket, input.AssignedToID, canAssignWork(currentUserRole)); code != 0 {
+		c.JSON(code, gin.H{"error": msg})
+		return
 	}
 	previous := assigneeLabel(ticket.AssignedToID)
 
@@ -761,7 +835,7 @@ func AssignTicket(c *gin.Context) {
 		fmt.Sprintf("%s assigned you %s: %s", actorName(currentUserID), ticket.TicketNumber, ticket.Title),
 		"ticket", ticket.ID}, input.AssignedToID)
 
-	database.DB.Preload("AssignedTo").Preload("AssignedBy", userBasics).First(&ticket, id)
+	database.DB.Preload("AssignedTo", userCard).Preload("AssignedBy", userBasics).First(&ticket, id)
 	c.JSON(http.StatusOK, gin.H{"message": "Ticket assigned successfully", "ticket": ticket})
 }
 

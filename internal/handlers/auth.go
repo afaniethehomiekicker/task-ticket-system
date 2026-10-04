@@ -105,13 +105,23 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
+	// A disabled (or archived) account is refused BEFORE the password is
+	// looked at. It used to be checked after, so "Account is disabled" only
+	// ever appeared when the password was right — anyone guessing a disabled
+	// account's password was told the moment they hit it. Now the answer is
+	// the same whatever password is typed, so it reveals nothing about the
+	// password. (It does still tell someone who knows the email that the
+	// account exists and is disabled — the chosen trade-off for a clear
+	// message.) The dummy compare keeps the response time the same as a
+	// normal attempt.
+	if user.Status != "active" {
+		bcrypt.CompareHashAndPassword(dummyPasswordHash, []byte(input.Password))
+		c.JSON(http.StatusForbidden, gin.H{"error": "Account is disabled"})
 		return
 	}
 
-	if user.Status != "active" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Account is disabled"})
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.Password)); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
 		return
 	}
 
@@ -401,11 +411,28 @@ func AdminCreateUser(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only a super admin can create super admin accounts"})
 		return
 	}
+	// Only roles at or below the caller's own (see role_scope.go).
+	if msg := roleAssignError(c, input.Role); msg != "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": msg})
+		return
+	}
 	// Same avatar rule as every edit path. Creating accepted any URL, and the
 	// user could then never be edited again: AdminUpdateUser rejected the
 	// avatar the record already had.
 	if !validAvatarURL(input.Avatar) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid avatar URL"})
+		return
+	}
+	// Department scoping on the bound, trimmed value (see user_department.go).
+	// A department admin's new user always lands in their own department.
+	dept, _, code, msg := resolveUserDepartment(c, input.Department, nil)
+	if code != 0 {
+		c.JSON(code, gin.H{"error": msg})
+		return
+	}
+	input.Department = dept
+	if msg := adminNeedsDepartment(input.Role, input.Department); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
 	if !departmentIsKnown(input.Department) {
@@ -451,17 +478,16 @@ func AdminCreateUser(c *gin.Context) {
 
 	// Only the fields already proven to exist on this struct (the same set
 	// the previous version of this function used successfully) go in the
-	// literal. Avatar and SupervisorID are set just below via a map-based
-	// Updates() call instead — the same technique UpdateUserProfile
-	// (user.go) already uses for these two exact fields — so this doesn't
-	// depend on guessing this project's exact Go struct field names.
+	// literal. Avatar and the reporting links are set just below via a
+	// map-based Updates() call instead, so this doesn't depend on guessing
+	// this project's exact Go struct field names.
 	user := models.User{
-		Name:       input.Name,
-		Email:      input.Email,
-		Password:   string(hashedPassword),
-		Role:       input.Role,
-		Department: input.Department,
-		Title:      input.Title,
+		Name:        input.Name,
+		Email:       input.Email,
+		Password:    string(hashedPassword),
+		Role:        input.Role,
+		Department:  input.Department,
+		Title:       input.Title,
 		Phone:       input.Phone,
 		SupportTier: tier,
 		Status:      "active",
@@ -510,13 +536,13 @@ func AdminUpdateUser(c *gin.Context) {
 	id := c.Param("id")
 
 	var input struct {
-		Name         string  `json:"name"`
-		Email        string  `json:"email"`
-		Role         string  `json:"role"`
-		Department   string  `json:"department"`
-		Title        string  `json:"title"`
-		Phone        string  `json:"phone"`
-		Status       string  `json:"status"`
+		Name       string `json:"name"`
+		Email      string `json:"email"`
+		Role       string `json:"role"`
+		Department string `json:"department"`
+		Title      string `json:"title"`
+		Phone      string `json:"phone"`
+		Status     string `json:"status"`
 		// The user's Admin. Stored in manager_id; "admin_id" is what the
 		// frontend sends, "manager_id" is accepted too. 0 clears it.
 		AdminID      *uint   `json:"admin_id"`
@@ -553,6 +579,14 @@ func AdminUpdateUser(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only a super admin can manage super admin accounts"})
 		return
 	}
+	// A new role must be at or below the caller's own (see role_scope.go).
+	// The user's CURRENT role is checked by ScopeUserManagement.
+	if input.Role != "" && input.Role != target.Role {
+		if msg := roleAssignError(c, input.Role); msg != "" {
+			c.JSON(http.StatusForbidden, gin.H{"error": msg})
+			return
+		}
+	}
 
 	// Same guards as UpdateUserRole, so this endpoint isn't a way around them.
 	if code, msg := roleChangeError(c, target, input.Role); code != 0 {
@@ -568,13 +602,29 @@ func AdminUpdateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "You can't deactivate your own account"})
 		return
 	}
+	// Department scoping on the bound, trimmed value (see user_department.go).
+	// A blank or whitespace-only department means "unchanged" — it can no
+	// longer be stored, so nobody can be turned into a company-wide admin by
+	// sending {"department": " "}.
+	newDept, deptChanging, code, msg := resolveUserDepartment(c, input.Department, &target)
+	if code != 0 {
+		c.JSON(code, gin.H{"error": msg})
+		return
+	}
 	// Only a CHANGED department is checked against the managed list. Checking
 	// it unconditionally made every edit of a user whose existing department
 	// isn't in the list (e.g. the seeded super admin's "Management") fail,
 	// even when the department wasn't being touched.
-	if input.Department != "" && !strings.EqualFold(strings.TrimSpace(input.Department), strings.TrimSpace(target.Department)) &&
-		!departmentIsKnown(input.Department) {
+	if deptChanging && !departmentIsKnown(newDept) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown department"})
+		return
+	}
+	finalRole := target.Role
+	if input.Role != "" {
+		finalRole = input.Role
+	}
+	if msg := adminNeedsDepartment(finalRole, newDept); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
 	adminIn := input.AdminID
@@ -595,8 +645,8 @@ func AdminUpdateUser(c *gin.Context) {
 	// Tier follows the department the user will be in after this edit. Moving
 	// someone out of CNOC clears their tier.
 	finalDept := target.Department
-	if input.Department != "" {
-		finalDept = input.Department
+	if deptChanging {
+		finalDept = newDept
 	}
 	tierSet := false
 	var tierVal string
@@ -624,8 +674,8 @@ func AdminUpdateUser(c *gin.Context) {
 	if input.Role != "" {
 		updates["role"] = input.Role
 	}
-	if input.Department != "" {
-		updates["department"] = input.Department
+	if deptChanging {
+		updates["department"] = newDept
 	}
 	if input.Title != "" {
 		updates["title"] = input.Title
@@ -790,8 +840,17 @@ func UpdateUserRole(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Only a super admin can assign or change the super admin role"})
 		return
 	}
+	// Only roles at or below the caller's own (see role_scope.go).
+	if msg := roleAssignError(c, input.Role); msg != "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": msg})
+		return
+	}
 	if code, msg := roleChangeError(c, target, input.Role); code != 0 {
 		c.JSON(code, gin.H{"error": msg})
+		return
+	}
+	if msg := adminNeedsDepartment(input.Role, target.Department); msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
 	oldRole := target.Role

@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { PriorityBadge, TaskStatusBadge, RoleBadge } from '../common/Badge';
 
-import { canApproveWork, canViewInternalNotes, canAssignTickets, canGrantRecordAccess, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName } from '../../utils/permissions';
+import { canApproveWork, canArchiveRecords, canViewInternalNotes, canAssignTickets, canGrantRecordAccess, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName } from '../../utils/permissions';
 
 import { TimelinePanel } from '../common/TimelinePanel';
 import { DocumentsPanel } from '../common/DocumentsPanel';
@@ -798,7 +798,7 @@ export const TaskDetailDrawer = () => {
                   (DeleteTask). It used to be offered to supervisors too, and
                   always failed for them — silently, with the task vanishing
                   from the UI anyway. */}
-              {(currentUser?.role === 'admin' || currentUser?.role === 'super_admin') && (
+              {canArchiveRecords(currentUser, permissionMatrix) && (
                 <button
                   id="task-delete-btn"
                   onClick={async () => {
