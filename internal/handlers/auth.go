@@ -337,11 +337,13 @@ func GetUsers(c *gin.Context) {
 	} else {
 		db = db.Where("status <> ?", "archived")
 	}
-	// Department admins manage (and so list) only their own department's
-	// accounts — same rule as middleware.ScopeUserManagement. The people
-	// directory used by pickers is separate (directory.go).
+	// Department admins list their own department's accounts — including
+	// staff who are in it as an additional department (they can see those,
+	// but editing stays with the person's home department; see
+	// middleware.ScopeUserManagement). The people directory used by pickers
+	// is separate (directory.go).
 	if v := viewerFrom(c); !v.seesEverything() {
-		db = db.Where("LOWER(TRIM(department)) = LOWER(?)", v.Dept)
+		db = db.Where(usersInDeptSQL, deptArgs(v.Dept)...)
 	}
 	limit := 1000
 	if searchQuery != "" {
@@ -454,6 +456,15 @@ func AdminCreateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 		return
 	}
+	var extraIn *[]string
+	if input.ExtraDepartments != nil {
+		extraIn = &input.ExtraDepartments
+	}
+	extraDepts, _, code, msg := resolveExtraDepartments(c, extraIn, input.Role, input.Department, nil)
+	if code != 0 {
+		c.JSON(code, gin.H{"error": msg})
+		return
+	}
 
 	plainPassword := input.Password
 	generated := false
@@ -491,6 +502,8 @@ func AdminCreateUser(c *gin.Context) {
 		Phone:       input.Phone,
 		SupportTier: tier,
 		Status:      "active",
+		// Additional departments (staff only, set by a Super Admin).
+		ExtraDepartments: models.StringList(extraDepts),
 	}
 
 	if result := database.DB.Create(&user); result.Error != nil {
@@ -551,6 +564,9 @@ func AdminUpdateUser(c *gin.Context) {
 		Password     string  `json:"password"`      // admin reset; min 6 like every other password path
 		Avatar       *string `json:"avatar"`
 		SupportTier  *string `json:"support_tier"` // L1..L4, "" clears; CNOC only
+		// Additional departments (staff only). Absent = unchanged; [] clears.
+		// Only a Super Admin may change them (resolveExtraDepartments).
+		ExtraDepartments *[]string `json:"extra_departments"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -661,9 +677,21 @@ func AdminUpdateUser(c *gin.Context) {
 		tierSet, tierVal = true, ""
 	}
 
+	// Additional departments follow the role and home department the user
+	// will have after this edit: a move into one of them drops it from the
+	// list, and anyone who isn't Staff has none.
+	extraDepts, extraChanging, code, msg := resolveExtraDepartments(c, input.ExtraDepartments, finalRole, finalDept, target.ExtraDepartments)
+	if code != 0 {
+		c.JSON(code, gin.H{"error": msg})
+		return
+	}
+
 	updates := map[string]interface{}{}
 	if tierSet {
 		updates["support_tier"] = tierVal
+	}
+	if extraChanging {
+		updates["extra_departments"] = models.StringList(extraDepts)
 	}
 	if input.Name != "" {
 		updates["name"] = input.Name
@@ -855,7 +883,13 @@ func UpdateUserRole(c *gin.Context) {
 	}
 	oldRole := target.Role
 
-	if err := database.DB.Model(&models.User{}).Where("id = ?", id).Update("role", input.Role).Error; err != nil {
+	roleUpdates := map[string]interface{}{"role": input.Role}
+	// Only Staff can be in more than one department: anyone moved to
+	// another role keeps just their home department.
+	if input.Role != "staff" && len(target.ExtraDepartments) > 0 {
+		roleUpdates["extra_departments"] = models.StringList{}
+	}
+	if err := database.DB.Model(&models.User{}).Where("id = ?", id).Updates(roleUpdates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update role"})
 		return
 	}

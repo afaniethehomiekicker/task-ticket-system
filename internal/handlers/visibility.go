@@ -37,17 +37,112 @@ import (
 type viewer struct {
 	ID   uint
 	Role string
-	Dept string
+	Dept string // home department
+	// Other departments the viewer also works in (staff only; set by a
+	// Super Admin — see User.ExtraDepartments). Never includes Dept.
+	Extra []string
 }
 
 func viewerFrom(c *gin.Context) viewer {
 	idVal, _ := c.Get("user_id")
 	roleVal, _ := c.Get("user_role")
 	deptVal, _ := c.Get("user_department")
+	extraVal, _ := c.Get("user_extra_departments")
 	id, _ := idVal.(uint)
 	role, _ := roleVal.(string)
 	dept, _ := deptVal.(string)
-	return viewer{ID: id, Role: role, Dept: strings.TrimSpace(dept)}
+	extra, _ := extraVal.([]string)
+	return viewer{ID: id, Role: role, Dept: strings.TrimSpace(dept), Extra: extra}
+}
+
+// depts is every department the viewer belongs to: home first, then any
+// additional ones. Empty when they have no department at all.
+func (v viewer) depts() []string {
+	return userDepts(v.Dept, v.Extra)
+}
+
+// userDepts is a person's home department plus their additional ones,
+// trimmed, without blanks or case-insensitive duplicates.
+func userDepts(home string, extra []string) []string {
+	out := make([]string, 0, 1+len(extra))
+	add := func(d string) {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			return
+		}
+		for _, x := range out {
+			if strings.EqualFold(x, d) {
+				return
+			}
+		}
+		out = append(out, d)
+	}
+	add(home)
+	for _, d := range extra {
+		add(d)
+	}
+	return out
+}
+
+// memberOf reports whether the user belongs to dept, as their home
+// department or one of their additional ones.
+func memberOf(u models.User, dept string) bool {
+	for _, d := range userDepts(u.Department, u.ExtraDepartments) {
+		if sameDept(d, dept) {
+			return true
+		}
+	}
+	return false
+}
+
+// sharesDept reports whether the user belongs to any of the given
+// departments.
+func sharesDept(u models.User, depts []string) bool {
+	for _, d := range depts {
+		if memberOf(u, d) {
+			return true
+		}
+	}
+	return false
+}
+
+// usersInDeptSQL matches rows of the users table that belong to a
+// department — their home department, or one of their additional
+// departments (users.extra_departments, a jsonb array). It takes the
+// department name TWICE: pass deptArgs(name). Columns are qualified with
+// "users." so it works both as the main query on users and inside a
+// "SELECT id FROM users WHERE ..." subquery. The CASE guards against a
+// non-array value, which jsonb_array_elements_text would reject.
+const usersInDeptSQL = "(LOWER(TRIM(users.department)) = LOWER(?) OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(" +
+	"CASE WHEN jsonb_typeof(users.extra_departments) = 'array' THEN users.extra_departments ELSE '[]'::jsonb END" +
+	") AS xd(name) WHERE LOWER(TRIM(xd.name)) = LOWER(?)))"
+
+// deptArgs is the argument list for one usersInDeptSQL.
+func deptArgs(dept string) []interface{} {
+	d := strings.TrimSpace(dept)
+	return []interface{}{d, d}
+}
+
+// usersInAnyDeptSQL matches users who belong to at least one of depts. With
+// no departments it matches users whose home department is blank — the same
+// thing the old single-department comparison did for someone with none.
+func usersInAnyDeptSQL(depts []string) (string, []interface{}) {
+	if len(depts) == 0 {
+		return "LOWER(TRIM(users.department)) = ''", nil
+	}
+	parts := make([]string, 0, len(depts))
+	args := make([]interface{}, 0, 2*len(depts))
+	for _, d := range depts {
+		parts = append(parts, usersInDeptSQL)
+		args = append(args, deptArgs(d)...)
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args
+}
+
+// deptMemberIDsSQL is the subquery "(ids of people in a department)" for the
+// scope clauses below. Like usersInDeptSQL it takes the department TWICE.
+func deptMemberIDsSQL() string {
+	return "(SELECT users.id FROM users WHERE " + usersInDeptSQL + " AND users.deleted_at IS NULL)"
 }
 
 func (v viewer) seesEverything() bool {
@@ -89,8 +184,10 @@ func taskScopeClause(v viewer) (string, []interface{}) {
 		// department, wherever its project lives: an admin who assigns a task
 		// to their own staff must keep seeing it (it used to vanish when the
 		// task's department came from a project in another department).
-		return "(LOWER(tasks.department) = LOWER(?) OR tasks.creator_id = ? OR tasks.assignee_id IN (SELECT id FROM users WHERE LOWER(department) = LOWER(?) AND deleted_at IS NULL) OR " + subtaskOfMine + " OR " + grantedToMe + ")",
-			[]interface{}{v.Dept, v.ID, v.Dept, v.ID, v.ID}
+		// "Their department's people" includes staff who are also in it
+		// as an additional department (usersInDeptSQL).
+		return "(LOWER(tasks.department) = LOWER(?) OR tasks.creator_id = ? OR tasks.assignee_id IN " + deptMemberIDsSQL() + " OR " + subtaskOfMine + " OR " + grantedToMe + ")",
+			[]interface{}{v.Dept, v.ID, v.Dept, v.Dept, v.ID, v.ID}
 	case v.Role == "supervisor":
 		return "(tasks.assignee_id = ? OR tasks.creator_id = ? OR tasks.assignee_id IN (SELECT id FROM users WHERE supervisor_id = ? AND deleted_at IS NULL) OR " + subtaskOfMine + " OR " + grantedToMe + ")",
 			[]interface{}{v.ID, v.ID, v.ID, v.ID, v.ID}
@@ -109,8 +206,8 @@ func ticketScopeClause(v viewer) (string, []interface{}) {
 		// Plus tickets they raised and tickets assigned to their people.
 		// And tickets their department worked on and returned (read-only —
 		// see userCanViewTicket in ticket_flow_rules.go).
-		return "(LOWER(tickets.department) = LOWER(?) OR LOWER(tickets.origin_department) = LOWER(?) OR tickets.created_by_id = ? OR tickets.assigned_to_id IN (SELECT id FROM users WHERE LOWER(department) = LOWER(?) AND deleted_at IS NULL) OR LOWER(tickets.returned_from_dept) = LOWER(?) OR tickets.returned_by_id = ?)",
-			[]interface{}{v.Dept, v.Dept, v.ID, v.Dept, v.Dept, v.ID}
+		return "(LOWER(tickets.department) = LOWER(?) OR LOWER(tickets.origin_department) = LOWER(?) OR tickets.created_by_id = ? OR tickets.assigned_to_id IN " + deptMemberIDsSQL() + " OR LOWER(tickets.returned_from_dept) = LOWER(?) OR tickets.returned_by_id = ?)",
+			[]interface{}{v.Dept, v.Dept, v.ID, v.Dept, v.Dept, v.Dept, v.ID}
 	case v.Role == "supervisor":
 		return "(tickets.assigned_to_id = ? OR tickets.created_by_id = ? OR tickets.assigned_to_id IN (SELECT id FROM users WHERE supervisor_id = ? AND deleted_at IS NULL) OR tickets.returned_by_id = ?)",
 			[]interface{}{v.ID, v.ID, v.ID, v.ID}
@@ -461,13 +558,14 @@ func reduceProjectToRef(c *gin.Context, t *models.Task) {
 	}
 }
 
-// userInDept reports whether the user (if any) belongs to the department.
+// userInDept reports whether the user (if any) belongs to the department —
+// as their home department or one of their additional ones.
 func userInDept(userID *uint, dept string) bool {
 	if userID == nil || strings.TrimSpace(dept) == "" {
 		return false
 	}
 	var n int64
 	database.DB.Model(&models.User{}).
-		Where("id = ? AND LOWER(department) = LOWER(?)", *userID, dept).Count(&n)
+		Where("users.id = ? AND "+usersInDeptSQL, append([]interface{}{*userID}, deptArgs(dept)...)...).Count(&n)
 	return n > 0
 }

@@ -250,14 +250,16 @@ func canTransferOwnWork(c *gin.Context, currentAssignee *uint, target *uint) (bo
 		return false, "Pick someone to transfer it to"
 	}
 	var t models.User
-	if err := database.DB.Select("id", "department", "status").First(&t, *target).Error; err != nil {
+	if err := database.DB.Select("id", "department", "extra_departments", "status").First(&t, *target).Error; err != nil {
 		return false, "User not found"
 	}
 	if t.Status != "active" {
 		return false, "That user is deactivated and can't be assigned work"
 	}
-	myDept := strings.TrimSpace(v.Dept)
-	if myDept == "" || !strings.EqualFold(myDept, strings.TrimSpace(t.Department)) {
+	// "Your own department" is any department the caller belongs to (home
+	// or additional), and the colleague may be in it either way too.
+	myDepts := v.depts()
+	if len(myDepts) == 0 || !sharesDept(t, myDepts) {
 		return false, "You can only transfer your work to someone in your own department"
 	}
 	return true, ""

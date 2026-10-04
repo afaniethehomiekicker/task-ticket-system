@@ -190,12 +190,30 @@ export function canTransferOwnWork(user, permissionMatrix = DEFAULT_PERMISSION_M
   return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK];
 }
 
-// Active colleagues in the user's own department (transfer targets).
+// Every department a person belongs to: their home department plus any
+// additional ones a Super Admin added (staff only), trimmed and lower-cased.
+export function userDepartments(user) {
+  const out = [];
+  [user?.department, ...(user?.extraDepartments || [])].forEach(d => {
+    const v = (d || '').trim().toLowerCase();
+    if (v && !out.includes(v)) out.push(v);
+  });
+  return out;
+}
+
+// Whether a person belongs to a department — home or additional. Same rule
+// as the server (usersInDeptSQL / memberOf in visibility.go).
+export function isInDepartment(user, dept) {
+  const d = (dept || '').trim().toLowerCase();
+  return !!d && userDepartments(user).includes(d);
+}
+
+// Active colleagues in any of the user's departments (transfer targets).
 export function sameDepartmentUsers(user, users = []) {
-  const dept = (user?.department || '').trim().toLowerCase();
-  if (!dept) return [];
+  const mine = userDepartments(user);
+  if (!mine.length) return [];
   return users.filter(u => u.status === 'active' &&
-    (u.department || '').trim().toLowerCase() === dept);
+    mine.some(d => isInDepartment(u, d)));
 }
 
 // Admins and super admins assign tasks to their team; they can't be assigned
@@ -321,7 +339,8 @@ export const filterTasksForUser = (tasks = [], user, allUsers = []) => {
       if (taskDept && taskDept === userDept) return true;
       if (String(task.creatorId) === String(user.id)) return true;
       const assignee = (allUsers || []).find(u => String(u.id) === String(task.assignedToId));
-      return !!assignee && !!userDept && safeLower(assignee.department) === userDept;
+      // Their people include staff who are also in their department.
+      return !!assignee && !!userDept && isInDepartment(assignee, userDept);
     }
 
     // Assigned to me, or created by me (the creator has to be able to follow
@@ -400,7 +419,7 @@ export function filterTicketsForUser(tickets = [], user, allUsers = []) {
       if (userDept && safeLower(t.returnedFromDept) === userDept) return true;
       if (String(t.returnedById) === String(user.id)) return true;
       const assignee = (allUsers || []).find(u => String(u.id) === String(t.assignedToId));
-      return !!assignee && !!userDept && safeLower(assignee.department) === userDept;
+      return !!assignee && !!userDept && isInDepartment(assignee, userDept);
     }
 
     // Assigned to me, created by me (the spec has the creator close the

@@ -41,6 +41,8 @@ const normalizeUser = (raw) => {
     avatar: raw.avatar || '',
     role: raw.role || 'staff',
     department: raw.department || '',
+    // Other departments a Staff member also works in (Super Admin sets them).
+    extraDepartments: Array.isArray(raw.extra_departments) ? raw.extra_departments.filter(Boolean) : [],
     title: raw.title || '',
     phone: raw.phone || '',
     status: raw.status || 'active',
@@ -3813,6 +3815,8 @@ export const AppProvider = ({ children }) => {
       supervisor_id: getBackendId(userData.supervisorId) || null,
       admin_id: getBackendId(userData.adminId) || null,
       support_tier: userData.supportTier || '',
+      // Only a Super Admin may send a non-empty list (server-enforced).
+      extra_departments: userData.extraDepartments || [],
     };
 
     let created = null;
@@ -3879,6 +3883,8 @@ export const AppProvider = ({ children }) => {
     // CNOC support tier (L1..L4). This line was mistakenly put in
     // updateProject when tiers were added, so editing a user never sent it.
     if (updates.supportTier !== undefined) wirePayload.support_tier = updates.supportTier || '';
+    // Additional departments (staff only, Super Admin only). [] clears them.
+    if (updates.extraDepartments !== undefined) wirePayload.extra_departments = updates.extraDepartments || [];
 
     // PUT /api/users/:id needs manage_users, so a regular user editing their
     // OWN profile (name/title/phone/avatar/password) was rejected — and that
@@ -3892,6 +3898,7 @@ export const AppProvider = ({ children }) => {
       updates.supervisorId === undefined &&
       updates.adminId === undefined &&
       updates.supportTier === undefined &&
+      updates.extraDepartments === undefined &&
       updates.status === undefined;
 
     let savedUser = null;

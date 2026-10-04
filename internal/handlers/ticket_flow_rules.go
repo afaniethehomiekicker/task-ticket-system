@@ -132,10 +132,11 @@ func ticketAssignError(c *gin.Context, t *models.Ticket, assigneeID uint, viaRea
 		return 0, ""
 	}
 	var u models.User
-	if database.DB.Select("id", "name", "department").Where("id = ?", assigneeID).First(&u).Error != nil {
+	if database.DB.Select("id", "name", "department", "extra_departments").Where("id = ?", assigneeID).First(&u).Error != nil {
 		return http.StatusBadRequest, "Assignee not found"
 	}
-	if !sameDept(u.Department, t.Department) {
+	// Home department or an additional one.
+	if !memberOf(u, t.Department) {
 		return http.StatusBadRequest, u.Name + " isn't in " + strings.TrimSpace(t.Department) +
 			", where this ticket is. To send it to another department, use Route"
 	}

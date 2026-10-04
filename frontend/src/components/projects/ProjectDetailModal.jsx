@@ -187,12 +187,12 @@ export const ProjectDetailModal = () => {
   return (
     <div 
       id="project-detail-modal-backdrop"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto"
       onClick={() => setSelectedProjectDetailId(null)}
     >
       <div 
         id="project-detail-modal-container"
-        className="w-full max-w-4xl bg-slate-200 dark:bg-zinc-950 rounded-2xl shadow-2xl border border-slate-300 dark:border-zinc-800 overflow-hidden my-6 flex flex-col max-h-[90vh]"
+        className="my-auto w-full max-w-4xl bg-slate-200 dark:bg-zinc-950 rounded-2xl shadow-2xl border border-slate-300 dark:border-zinc-800 overflow-hidden flex flex-col max-h-[90vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Top Bar */}
@@ -661,11 +661,11 @@ export const ProjectDetailModal = () => {
       {/* Edit Project Modal */}
       {showEditModal && (
         <div
-          className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+          className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto"
           onClick={() => setShowEditModal(false)}
         >
           <div
-            className="bg-slate-200 dark:bg-zinc-950 rounded-xl p-5 border border-slate-300 dark:border-zinc-800 w-full max-w-md shadow-2xl space-y-4"
+            className="my-auto bg-slate-200 dark:bg-zinc-950 rounded-xl p-5 border border-slate-300 dark:border-zinc-800 w-full max-w-md shadow-2xl space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">

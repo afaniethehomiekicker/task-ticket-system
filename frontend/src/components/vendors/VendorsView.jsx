@@ -422,8 +422,8 @@ export const VendorsView = () => {
 
       {/* Add / edit */}
       {formOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={() => !saving && setFormOpen(false)}>
-          <div className="w-full max-w-lg rounded-xl bg-white dark:bg-zinc-950 border border-slate-300 dark:border-zinc-800 p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-[60] flex items-start justify-center bg-black/50 p-4 overflow-y-auto" onClick={() => !saving && setFormOpen(false)}>
+          <div className="my-auto w-full max-w-lg rounded-xl bg-white dark:bg-zinc-950 border border-slate-300 dark:border-zinc-800 p-5" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-base font-bold text-slate-900 dark:text-zinc-100">{editing ? `Edit ${editing.name}` : 'Add Vendor'}</h3>
               <button onClick={() => setFormOpen(false)} className="text-slate-500 hover:text-slate-700 dark:hover:text-zinc-200 cursor-pointer">

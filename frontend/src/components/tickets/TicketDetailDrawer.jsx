@@ -5,7 +5,7 @@ import {
   User as UserIcon, Building, Paperclip, MessageSquare, Archive, History
 } from 'lucide-react';
 import { PriorityBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
-import { canArchiveRecords, canEscalateTicket, canAssignTickets, canViewInternalNotes, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName, canWorkTicket, allowedTicketStatuses } from '../../utils/permissions';
+import { canArchiveRecords, canEscalateTicket, canAssignTickets, canViewInternalNotes, canTransferOwnWork, sameDepartmentUsers, isInDepartment, isTaskAssignable, assignedByName, canWorkTicket, allowedTicketStatuses } from '../../utils/permissions';
 
 // Rebuilt from scratch after the original file was overwritten. It reads the
 // same context state TicketsView already drives (selectedTicketId) and calls
@@ -94,9 +94,11 @@ export const TicketDetailDrawer = () => {
     canTransferOwnWork(currentUser, permissionMatrix);
   const ticketDept = (ticket.department || '').trim().toLowerCase();
   const deptAgents = currentUser?.role === 'super_admin' || !ticketDept ? agents
-    : agents.filter(u => (u.department || '').trim().toLowerCase() === ticketDept || String(u.id) === String(ticket.assignedToId));
+    : agents.filter(u => isInDepartment(u, ticketDept) || String(u.id) === String(ticket.assignedToId));
   const agentOptions = canAssign ? deptAgents
-    : canTransfer ? sameDepartmentUsers(currentUser, users).filter(isTaskAssignable).concat(
+    : canTransfer ? sameDepartmentUsers(currentUser, users).filter(isTaskAssignable)
+        // The server only accepts people in the ticket's department (home or additional).
+        .filter(u => !ticketDept || isInDepartment(u, ticketDept)).concat(
         users.filter(u => String(u.id) === String(ticket.assignedToId) &&
           !sameDepartmentUsers(currentUser, users).some(x => x.id === u.id)))
     : agents;

@@ -135,8 +135,8 @@ func auditScopeClause(c *gin.Context) (string, []interface{}) {
 	// Actor in scope.
 	switch {
 	case v.isDeptAdmin():
-		parts = append(parts, "audit_logs.user_id IN (SELECT id FROM users WHERE LOWER(department) = LOWER(?) AND deleted_at IS NULL)")
-		args = append(args, v.Dept)
+		parts = append(parts, "audit_logs.user_id IN "+deptMemberIDsSQL())
+		args = append(args, deptArgs(v.Dept)...)
 	case v.Role == "supervisor":
 		parts = append(parts, "(audit_logs.user_id = ? OR audit_logs.user_id IN (SELECT id FROM users WHERE supervisor_id = ? AND deleted_at IS NULL))")
 		args = append(args, v.ID, v.ID)
@@ -180,7 +180,7 @@ func auditScopeClause(c *gin.Context) (string, []interface{}) {
 	// Users in their department (department admin): account changes to
 	// their own people.
 	if v.isDeptAdmin() {
-		record("user", "SELECT users.id FROM users WHERE LOWER(users.department) = LOWER(?)", []interface{}{v.Dept})
+		record("user", "SELECT users.id FROM users WHERE "+usersInDeptSQL, deptArgs(v.Dept))
 	}
 
 	return "(" + strings.Join(parts, " OR ") + ")", args

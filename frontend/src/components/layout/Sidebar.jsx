@@ -74,7 +74,7 @@ export const Sidebar = () => {
   return (
     <aside 
       id="app-sidebar"
-      className="w-64 shrink-0 bg-slate-200/80 dark:bg-black text-slate-700 dark:text-zinc-300 border-r border-slate-300 dark:border-zinc-800 flex flex-col h-screen select-none transition-colors duration-200"
+      className="w-56 xl:w-64 shrink-0 bg-slate-200/80 dark:bg-black text-slate-700 dark:text-zinc-300 border-r border-slate-300 dark:border-zinc-800 flex flex-col h-screen select-none transition-colors duration-200"
     >
       {/* Brand Header */}
       <div className="h-16 flex items-center justify-between px-5 border-b border-slate-300 dark:border-zinc-800/80 bg-slate-300/40 dark:bg-zinc-950/40">

@@ -59,8 +59,15 @@ func ScopeUserManagement() gin.HandlerFunc {
 		// Any route with a target user.
 		if idStr := c.Param("id"); idStr != "" {
 			var target models.User
-			err := database.DB.Select("id", "department", "role").Where("id = ?", idStr).Take(&target).Error
+			err := database.DB.Select("id", "department", "role", "extra_departments").Where("id = ?", idStr).Take(&target).Error
 			if err == nil && !strings.EqualFold(strings.TrimSpace(target.Department), dept) {
+				// Staff who are in the caller's department as an additional
+				// department can be looked at (GET), but their account is
+				// managed by their home department (or a Super Admin).
+				if c.Request.Method == http.MethodGet && inExtraDepartments(target.ExtraDepartments, dept) {
+					c.Next()
+					return
+				}
 				forbidUserScope(c, "You can only manage users in your own department")
 				return
 			}
@@ -123,4 +130,19 @@ func ScopeUserManagement() gin.HandlerFunc {
 func forbidUserScope(c *gin.Context, msg string) {
 	c.JSON(http.StatusForbidden, gin.H{"error": msg})
 	c.Abort()
+}
+
+// inExtraDepartments reports whether dept is one of a user's additional
+// departments (models.User.ExtraDepartments), ignoring case and spaces.
+func inExtraDepartments(extra []string, dept string) bool {
+	dept = strings.TrimSpace(dept)
+	if dept == "" {
+		return false
+	}
+	for _, d := range extra {
+		if strings.EqualFold(strings.TrimSpace(d), dept) {
+			return true
+		}
+	}
+	return false
 }

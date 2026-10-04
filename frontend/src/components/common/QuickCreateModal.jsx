@@ -13,7 +13,7 @@ const TICKET_CATEGORIES = [
 ];
 
 import { CustomFieldInputs } from '../Clients/CustomFieldInputs';
-import { isTaskAssignable } from '../../utils/permissions';
+import { isTaskAssignable, isInDepartment } from '../../utils/permissions';
 export const QuickCreateModal = ({ isOpen, onClose }) => {
   const {
     createProject,
@@ -276,7 +276,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
       const q = (inputValue || "").toLowerCase();
       return (allUsers || [])
         .filter(u => u.status === "active")
-        .filter(u => !assigneeDepartment || (u.department || "").toLowerCase() === assigneeDepartment.toLowerCase())
+        .filter(u => !assigneeDepartment || isInDepartment(u, assigneeDepartment))
         .filter(u => !q || (u.name || "").toLowerCase().includes(q) || (u.email || "").toLowerCase().includes(q))
         .filter((u) => !(localTab === "task" || localTab === "ticket") || isTaskAssignable(u))
         .map(toAssigneeOption);
@@ -518,10 +518,10 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   }[localTab];
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+    <div className="fixed inset-0 z-[70] flex items-start justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto">
       <div
         key={openNonce}
-        className="bg-slate-200 dark:bg-zinc-950 rounded-xl shadow-xl w-full max-w-lg overflow-hidden border border-slate-300 dark:border-zinc-800"
+        className="my-auto bg-slate-200 dark:bg-zinc-950 rounded-xl shadow-xl w-full max-w-lg overflow-hidden border border-slate-300 dark:border-zinc-800"
       >
         <div className="px-5 py-3.5 border-b border-slate-300 dark:border-zinc-800 bg-slate-300/40 dark:bg-zinc-900/50">
           <h3 className="text-sm font-semibold text-slate-900 dark:text-zinc-100">

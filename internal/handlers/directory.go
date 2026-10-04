@@ -30,6 +30,12 @@ import (
 //	              and login times are that department's business.
 //	everyone else their own department, full details
 //
+// "Their department" means every department the person belongs to: a staff
+// member added to other departments by the Super Admin sees the people of
+// each of them, and people who belong to a department as an additional
+// department (users.extra_departments) are listed there just like its home
+// members — so they show up in that department's assignee pickers.
+//
 // Departments are compared ignoring case and surrounding spaces, like every
 // other visibility check. Password hashes are never returned.
 //
@@ -47,18 +53,21 @@ func GetUserDirectory(c *gin.Context) {
 	v := viewerFrom(c)
 	everyone := v.seesEverything() // super admin
 	crossDept := v.Role == "admin" // department admin: other depts as reference cards
-	sameDeptSQL := "LOWER(TRIM(department)) = LOWER(?)"
+	// The caller's own departments: home plus any additional ones.
+	myDepts := v.depts()
+	myDeptsSQL, myDeptsArgs := usersInAnyDeptSQL(myDepts)
 
 	q := database.DB.Omit("password").Order("name ASC, id ASC")
 	limit := 1000
 
 	if !everyone && !crossDept {
-		q = q.Where(sameDeptSQL, v.Dept)
+		q = q.Where(myDeptsSQL, myDeptsArgs...)
 	}
-	if everyone || crossDept {
-		if dept := strings.TrimSpace(c.Query("department")); dept != "" {
-			q = q.Where(sameDeptSQL, dept)
-		}
+	// department: one department's people, home or additional members.
+	// Admins may ask for any department; everyone else is already limited
+	// to their own departments, so for them it narrows to one of those.
+	if dept := strings.TrimSpace(c.Query("department")); dept != "" {
+		q = q.Where(usersInDeptSQL, deptArgs(dept)...)
 	}
 
 	// tier: CNOC support tier (L1..L4), e.g. to pick an L2 agent when
@@ -67,7 +76,7 @@ func GetUserDirectory(c *gin.Context) {
 	if tier := strings.ToUpper(strings.TrimSpace(c.Query("tier"))); tier != "" {
 		q = q.Where("support_tier = ?", tier)
 		if !everyone {
-			q = q.Where(sameDeptSQL, v.Dept)
+			q = q.Where(myDeptsSQL, myDeptsArgs...)
 		}
 	}
 
@@ -86,8 +95,9 @@ func GetUserDirectory(c *gin.Context) {
 			// Email only matches inside the caller's own department —
 			// otherwise searching would reveal other departments' addresses
 			// one letter at a time.
-			q = q.Where("(LOWER(name) LIKE ? OR LOWER(title) LIKE ? OR ("+sameDeptSQL+" AND LOWER(email) LIKE ?))",
-				like, like, v.Dept, like)
+			args := append([]interface{}{like, like}, myDeptsArgs...)
+			args = append(args, like)
+			q = q.Where("(LOWER(name) LIKE ? OR LOWER(title) LIKE ? OR ("+myDeptsSQL+" AND LOWER(email) LIKE ?))", args...)
 		}
 		limit = 50
 	}
@@ -100,7 +110,7 @@ func GetUserDirectory(c *gin.Context) {
 	for i := range users {
 		// Belt and braces: even if Omit is ignored, never serialise a hash.
 		users[i].Password = ""
-		if !everyone && !sameDept(users[i].Department, v.Dept) {
+		if !everyone && !sharesDept(users[i], myDepts) {
 			users[i] = directoryCard(users[i])
 		}
 	}
@@ -119,6 +129,7 @@ func directoryCard(u models.User) models.User {
 	card.Avatar = u.Avatar
 	card.Role = u.Role
 	card.Department = u.Department
+	card.ExtraDepartments = u.ExtraDepartments
 	card.Title = u.Title
 	card.Status = u.Status
 	card.ArchivedAt = u.ArchivedAt

@@ -6,7 +6,7 @@ import {
   Eye, EyeOff, KeyRound
 } from 'lucide-react';
 import { RoleBadge } from '../common/Badge';
-import { canManageUsers, getRoleDisplayName } from '../../utils/permissions';
+import { canManageUsers, getRoleDisplayName, isInDepartment, userDepartments } from '../../utils/permissions';
 
 export const TeamView = () => {
   const { 
@@ -33,7 +33,11 @@ export const TeamView = () => {
   const deptFilterOptions = Array.from(new Set([
     ...(departments || []).map(d => d.name),
     ...(allUsers || []).map(r => r.department).filter(Boolean),
+    ...(allUsers || []).flatMap(r => r.extraDepartments || []),
   ])).sort((a, b) => a.localeCompare(b));
+
+  // Only a Super Admin puts a Staff member in more than one department.
+  const isSuperAdmin = currentUser?.role === 'super_admin';
 
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
@@ -111,6 +115,8 @@ export const TeamView = () => {
     adminId: '',
     supervisorId: '',
     supportTier: '',
+    // Other departments this Staff member also works in (Super Admin only).
+    extraDepartments: [],
     // New members only: the admin sets the first password themselves (no
     // more random temporary passwords). Never sent when editing.
     password: '',
@@ -149,9 +155,11 @@ export const TeamView = () => {
     // Archived accounts live in Archive → Users, not on the Team page.
     if (u.status === 'archived') return false;
     // Department admins (and everyone else with a department) see their own
-    // department's people here; super admins see all.
-    if (ownDeptOnly && (u.department || '').trim().toLowerCase() !== ownDeptOnly) return false;
-    const matchDept = deptFilter === 'all' || u.department === deptFilter;
+    // department's people here — including staff who are also in it as an
+    // additional department; super admins see all.
+    // (A staff member who works in several departments sees all of them.)
+    if (ownDeptOnly && !userDepartments(currentUser).some(d => isInDepartment(u, d))) return false;
+    const matchDept = deptFilter === 'all' || isInDepartment(u, deptFilter);
     return matchSearch && matchRole && matchDept;
   });
 
@@ -189,18 +197,27 @@ export const TeamView = () => {
         // record back (avatar, status, ids...), so a user carrying an old
         // external avatar URL could never be saved, and the modal closed even
         // when the save failed.
-        const saved = await updateUser(editingUser.id, {
+        const extras = wantedExtraDepartments();
+        const detailUpdates = {
           name: formData.name,
           title: formData.title || '',
           department: formData.department || '',
           adminId: formData.adminId || '',
           supervisorId: formData.supervisorId || '',
           supportTier: isSupportDept(formData.department) ? (formData.supportTier || '') : '',
-        });
+        };
+        // Additional departments are only for Staff, and the server checks
+        // the role the person has right now — so when they're becoming
+        // Staff in this same save, the list is sent after the role change.
+        const roleChanging = !!formData.role && formData.role !== editingUser.role;
+        if (isSuperAdmin && !(roleChanging && extras.length)) {
+          detailUpdates.extraDepartments = extras;
+        }
+        const saved = await updateUser(editingUser.id, detailUpdates);
         if (!saved) return;
 
         // Role change: separate, audited endpoint, and confirmed first.
-        if (formData.role && formData.role !== editingUser.role) {
+        if (roleChanging) {
           const ok = window.confirm(
             `Change ${formData.name}'s role from ${getRoleDisplayName(editingUser.role)} to ${getRoleDisplayName(formData.role)}? ` +
             'This changes what they can see and do across the whole system.'
@@ -208,6 +225,10 @@ export const TeamView = () => {
           if (!ok) return;
           const changed = await changeUserRole(editingUser.id, formData.role);
           if (!changed) return;
+          if (isSuperAdmin && extras.length) {
+            const withDepts = await updateUser(editingUser.id, { extraDepartments: extras });
+            if (!withDepts) return;
+          }
         }
 
         setEditingUser(null);
@@ -225,6 +246,7 @@ export const TeamView = () => {
           adminId: formData.adminId || '',
           supervisorId: formData.supervisorId || '',
           supportTier: isSupportDept(formData.department) ? (formData.supportTier || '') : '',
+          extraDepartments: isSuperAdmin ? wantedExtraDepartments() : [],
         });
         if (result) {
           setShowAddModal(false);
@@ -251,9 +273,32 @@ export const TeamView = () => {
       adminId: u.adminId ?? '',
       supervisorId: u.supervisorId ?? '',
       supportTier: u.supportTier || '',
+      extraDepartments: [...(u.extraDepartments || [])],
     });
     setShowAddModal(true);
   };
+
+  // Additional departments as they'll be saved: only for Staff with a home
+  // department, never the home department itself.
+  const wantedExtraDepartments = () => {
+    if ((formData.role || 'staff') !== 'staff' || !(formData.department || '').trim()) return [];
+    const home = formData.department.trim().toLowerCase();
+    return (formData.extraDepartments || []).filter(d => (d || '').trim().toLowerCase() !== home);
+  };
+
+  const toggleExtraDepartment = (name) => {
+    const list = formData.extraDepartments || [];
+    const has = list.some(d => d.toLowerCase() === name.toLowerCase());
+    setFormData({
+      ...formData,
+      extraDepartments: has ? list.filter(d => d.toLowerCase() !== name.toLowerCase()) : [...list, name],
+    });
+  };
+
+  // A department admin looking at someone who is in their department only
+  // as an additional one (their home department is elsewhere).
+  const isSharedIn = (u) => currentUser?.role === 'admin' && !!ownDeptOnly &&
+    (u.department || '').trim().toLowerCase() !== ownDeptOnly;
 
   return (
     <div id="team-view" className="space-y-6 max-w-7xl mx-auto pb-12">
@@ -390,6 +435,23 @@ export const TeamView = () => {
                       )}
                     </span>
                   </div>
+                  {(user.extraDepartments || []).length > 0 && (
+                    <div className="flex items-start justify-between gap-3 text-slate-600 dark:text-zinc-400">
+                      <span className="shrink-0">Also in:</span>
+                      <span className="flex flex-wrap justify-end gap-1">
+                        {user.extraDepartments.map(d => (
+                          <span key={d} className="px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 text-[10px] font-semibold">
+                            {d}
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                  )}
+                  {isSharedIn(user) && (
+                    <p className="text-[10px] text-slate-500 dark:text-zinc-500 italic">
+                      Shared from {user.department || 'another department'} — their account is managed there.
+                    </p>
+                  )}
                   {supervisor && (
                     <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
                       <span>Supervisor:</span>
@@ -492,11 +554,11 @@ export const TeamView = () => {
 
       {selectedMember && (
         <div 
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto"
           onClick={() => setSelectedMemberDetailId(null)}
         >
           <div 
-            className="w-full max-w-2xl bg-slate-200 dark:bg-zinc-950 rounded-2xl shadow-2xl border border-slate-300 dark:border-zinc-800 overflow-hidden space-y-6 p-6 max-h-[90vh] overflow-y-auto"
+            className="my-auto w-full max-w-2xl bg-slate-200 dark:bg-zinc-950 rounded-2xl shadow-2xl border border-slate-300 dark:border-zinc-800 overflow-hidden space-y-6 p-6 max-h-[90vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-slate-300 dark:border-zinc-800 pb-4">
@@ -504,7 +566,10 @@ export const TeamView = () => {
                 <img src={selectedMember.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"} alt={selectedMember.name} className="w-12 h-12 rounded-full object-cover" />
                 <div>
                   <h3 className="text-base font-bold text-slate-900 dark:text-zinc-100">{selectedMember.name}</h3>
-                  <p className="text-xs text-slate-500 dark:text-zinc-400">{selectedMember.title} • {selectedMember.department}</p>
+                  <p className="text-xs text-slate-500 dark:text-zinc-400">
+                    {selectedMember.title} • {selectedMember.department}
+                    {(selectedMember.extraDepartments || []).length > 0 && ` (also ${selectedMember.extraDepartments.join(', ')})`}
+                  </p>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -573,8 +638,8 @@ export const TeamView = () => {
       )}
 
       {showAddModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-lg shadow-2xl space-y-4">
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto">
+          <div className="my-auto bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-lg shadow-2xl space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-bold text-slate-900 dark:text-zinc-100">
                 {editingUser ? 'Edit Member Profile' : 'Add New Team Member'}
@@ -691,7 +756,16 @@ export const TeamView = () => {
                   {/* The managed department list (Departments view), not free text. */}
                   <select
                     value={formData.department || ''}
-                    onChange={(e) => setFormData({ ...formData, department: e.target.value })}
+                    onChange={(e) => {
+                      const home = e.target.value;
+                      setFormData({
+                        ...formData,
+                        department: home,
+                        // The home department can't also be an additional one.
+                        extraDepartments: (formData.extraDepartments || [])
+                          .filter(d => d.toLowerCase() !== home.trim().toLowerCase()),
+                      });
+                    }}
                     className="w-full p-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
                   >
                     {!ownDeptOnly && (
@@ -724,6 +798,59 @@ export const TeamView = () => {
                   )}
                 </div>
               </div>
+
+              {isSuperAdmin && (formData.role || 'staff') === 'staff' && (
+                <div>
+                  <label className="font-semibold text-slate-700 dark:text-zinc-300 block mb-1">Also works in</label>
+                  {!(formData.department || '').trim() ? (
+                    <p className="text-[11px] text-slate-500 dark:text-zinc-400">
+                      Choose a home department first.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex flex-wrap gap-1.5 p-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900">
+                        {(departments || [])
+                          .filter(d => d.name.trim().toLowerCase() !== formData.department.trim().toLowerCase())
+                          .map(d => {
+                            const on = (formData.extraDepartments || []).some(x => x.toLowerCase() === d.name.toLowerCase());
+                            return (
+                              <button
+                                key={d.id}
+                                type="button"
+                                onClick={() => toggleExtraDepartment(d.name)}
+                                aria-pressed={on}
+                                className={`px-2 py-1 rounded-md text-[11px] font-medium border transition cursor-pointer ${
+                                  on
+                                    ? 'bg-indigo-600 border-indigo-600 text-white'
+                                    : 'bg-transparent border-slate-300 dark:border-zinc-700 text-slate-700 dark:text-zinc-300 hover:border-indigo-400'
+                                }`}
+                              >
+                                {on ? '✓ ' : ''}{d.name}
+                              </button>
+                            );
+                          })}
+                        {/* Keep a department that's no longer in the list visible so it can be removed. */}
+                        {(formData.extraDepartments || [])
+                          .filter(x => !(departments || []).some(d => d.name.toLowerCase() === x.toLowerCase()))
+                          .map(x => (
+                            <button
+                              key={x}
+                              type="button"
+                              onClick={() => toggleExtraDepartment(x)}
+                              className="px-2 py-1 rounded-md text-[11px] font-medium border bg-indigo-600 border-indigo-600 text-white cursor-pointer"
+                              title="Not in the department list — click to remove"
+                            >
+                              ✓ {x} (not in list)
+                            </button>
+                          ))}
+                      </div>
+                      <p className="mt-1 text-[11px] text-slate-500 dark:text-zinc-400">
+                        {formData.department} stays their home department. The admins and supervisors of each department picked here can find them in their team and assign them work.
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -786,11 +913,11 @@ export const TeamView = () => {
 
       {resetFor && (
         <div
-          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto"
           onClick={() => !isResetting && setResetFor(null)}
         >
           <div
-            className="bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-sm shadow-2xl"
+            className="my-auto bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-sm shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-1">
@@ -865,8 +992,8 @@ export const TeamView = () => {
       )}
 
       {resetDoneFor && (
-        <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4" onClick={() => setResetDoneFor(null)}>
-          <div className="bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-sm shadow-2xl space-y-3" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto" onClick={() => setResetDoneFor(null)}>
+          <div className="my-auto bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-sm shadow-2xl space-y-3" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2">
               <CheckCircle className="w-5 h-5 text-emerald-500" />
               <h3 className="text-base font-bold text-slate-900 dark:text-zinc-100">Password updated</h3>
@@ -884,8 +1011,8 @@ export const TeamView = () => {
       )}
 
       {tempPasswordBanner && (
-        <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-md shadow-2xl space-y-4">
+        <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto">
+          <div className="my-auto bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-md shadow-2xl space-y-4">
             <div className="flex items-center gap-2">
               <CheckCircle className="w-5 h-5 text-emerald-500" />
               <h3 className="text-base font-bold text-slate-900 dark:text-zinc-100">

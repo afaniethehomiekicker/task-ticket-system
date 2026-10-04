@@ -142,7 +142,8 @@ func ArchiveDepartment(c *gin.Context) {
 	}
 	name := dept.Name
 	var users, projects, tickets, tasks, feas int64
-	database.DB.Model(&models.User{}).Where("LOWER(department) = LOWER(?) AND status <> ?", name, "archived").Count(&users)
+	// People whose home department it is, or who are also in it.
+	database.DB.Model(&models.User{}).Where(usersInDeptSQL+" AND users.status <> ?", append(deptArgs(name), "archived")...).Count(&users)
 	database.DB.Model(&models.Project{}).Where("LOWER(department) = LOWER(?) AND status NOT IN ?", name,
 		[]string{"completed", "cancelled", "archived"}).Count(&projects)
 	database.DB.Model(&models.Ticket{}).Where("LOWER(department) = LOWER(?) AND status NOT IN ?", name,

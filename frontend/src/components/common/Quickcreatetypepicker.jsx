@@ -27,11 +27,11 @@ export const QuickCreateTypePicker = () => {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 backdrop-blur-xs p-4 overflow-y-auto"
       onClick={() => setQuickCreatePickerOpen(false)}
     >
       <div
-        className="bg-slate-200 dark:bg-zinc-950 rounded-2xl border border-slate-300 dark:border-zinc-800 shadow-2xl w-full max-w-sm overflow-hidden"
+        className="my-auto bg-slate-200 dark:bg-zinc-950 rounded-2xl border border-slate-300 dark:border-zinc-800 shadow-2xl w-full max-w-sm overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-300 dark:border-zinc-800">

@@ -110,7 +110,8 @@ func GetWorkloadReport(c *gin.Context) {
 	case v.seesEverything():
 		// everyone
 	case v.isDeptAdmin():
-		query = query.Where("LOWER(users.department) = LOWER(?)", v.Dept)
+		// Including staff who are in the department as an additional one.
+		query = query.Where(usersInDeptSQL, deptArgs(v.Dept)...)
 	case v.Role == "supervisor":
 		query = query.Where("(users.id = ? OR users.supervisor_id = ?)", v.ID, v.ID)
 	default:

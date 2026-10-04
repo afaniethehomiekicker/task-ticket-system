@@ -29,6 +29,9 @@ type AdminCreateUserInput struct {
 	SupervisorID *uint  `json:"supervisor_id"`
 	AdminID      *uint  `json:"admin_id"`
 	SupportTier  string `json:"support_tier"` // L1..L4; CNOC only (see normalizeSupportTier)
+	// Other departments this Staff member also works in (Super Admin only;
+	// see resolveExtraDepartments).
+	ExtraDepartments []string `json:"extra_departments"`
 }
 
 // --- Reporting-line links --------------------------------------------------

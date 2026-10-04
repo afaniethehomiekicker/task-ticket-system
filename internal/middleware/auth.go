@@ -185,6 +185,8 @@ func authenticateAndSetContext(c *gin.Context) {
 	c.Set("user_id", user.ID)
 	c.Set("user_role", user.Role)
 	c.Set("user_department", user.Department)
+	// Additional departments (staff only; see models.User.ExtraDepartments).
+	c.Set("user_extra_departments", []string(user.ExtraDepartments))
 	c.Next()
 }
 

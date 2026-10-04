@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { isTaskAssignable, canWorkTicket, handlesTicketNow, raisedTicket } from '../../utils/permissions';
+import { isTaskAssignable, isInDepartment, canWorkTicket, handlesTicketNow, raisedTicket } from '../../utils/permissions';
 import { Route, Undo2, RotateCcw, Building2 } from 'lucide-react';
 
 // CNOC / Support flow for one ticket — spec slide 19:
@@ -58,7 +58,8 @@ export const TicketFlowActions = ({ ticket }) => {
     searchAssignees({ department: dept })
       .then(list => {
         if (!cancelled) {
-          setPeople(list.filter(u => (u.department || '').toLowerCase() === dept.toLowerCase() && isTaskAssignable(u)));
+          // Home or additional department (staff can be in several).
+          setPeople(list.filter(u => isInDepartment(u, dept) && isTaskAssignable(u)));
         }
       })
       .catch(() => { if (!cancelled) setPeople([]); });

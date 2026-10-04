@@ -208,6 +208,17 @@ func UpdateDepartment(c *gin.Context) {
 					return err
 				}
 			}
+			// Staff who are in this department as an additional department
+			// (users.extra_departments, a jsonb array): rename that entry,
+			// keeping the order of the others.
+			if err := tx.Exec(`UPDATE users SET extra_departments = (
+					SELECT COALESCE(jsonb_agg(CASE WHEN LOWER(TRIM(e.name)) = LOWER(?) THEN to_jsonb(?::text) ELSE to_jsonb(e.name) END ORDER BY e.n), '[]'::jsonb)
+					FROM jsonb_array_elements_text(users.extra_departments) WITH ORDINALITY AS e(name, n))
+				WHERE jsonb_typeof(users.extra_departments) = 'array'
+				  AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(users.extra_departments) AS x(name) WHERE LOWER(TRIM(x.name)) = LOWER(?))`,
+				strings.TrimSpace(oldName), newName, strings.TrimSpace(oldName)).Error; err != nil {
+				return err
+			}
 		}
 		return nil
 	})

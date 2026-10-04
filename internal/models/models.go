@@ -101,6 +101,13 @@ type User struct {
 	Role         string     `json:"role" gorm:"default:'staff'"` // super_admin, admin, supervisor, staff
 	Department   string     `json:"department"`                  // e.g. "Technical", "Support", "Feasibility"
 	SupportTier  string     `gorm:"size:4" json:"support_tier,omitempty"` // CNOC support tier: L1..L4 (empty outside CNOC)
+	// Other departments a Staff member also works in, alongside their home
+	// Department above (e.g. home CNOC, also in Technical Operations). Only
+	// a Super Admin sets these, and only for Staff. Admins and supervisors
+	// of each listed department see this person as one of their own for
+	// assigning work and visibility; editing the account stays with the
+	// home department. Never contains the home department itself.
+	ExtraDepartments StringList `gorm:"type:jsonb;default:'[]'" json:"extra_departments"`
 	Title        string     `json:"title"`                       // job title
 	Phone        string     `json:"phone"`
 	Avatar       string     `json:"avatar"`

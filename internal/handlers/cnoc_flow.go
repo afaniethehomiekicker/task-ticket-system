@@ -130,8 +130,9 @@ func RouteTicket(c *gin.Context) {
 			return
 		}
 		var u models.User
-		database.DB.Select("id", "name", "department").First(&u, *input.AssignedToID)
-		if !strings.EqualFold(strings.TrimSpace(u.Department), dept) {
+		database.DB.Select("id", "name", "department", "extra_departments").First(&u, *input.AssignedToID)
+		// Home department or an additional one.
+		if !memberOf(u, dept) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": u.Name + " isn't in " + dept})
 			return
 		}

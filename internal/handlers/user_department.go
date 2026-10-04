@@ -85,3 +85,96 @@ func adminNeedsDepartment(role, department string) string {
 	}
 	return ""
 }
+
+// maxExtraDepartments caps how many additional departments one person can
+// be in. Generous; it only stops a runaway list.
+const maxExtraDepartments = 20
+
+// resolveExtraDepartments decides a user's additional departments (the ones
+// besides their home department) on create and edit.
+//
+//   - requested == nil: not being changed. The current list is kept, but
+//     cleaned up: emptied when the user is no longer Staff or has no home
+//     department, and the home department is dropped from it if the user
+//     was just moved into one of their additional departments.
+//   - requested != nil: replace the list. Only a Super Admin may do this
+//     (the request is refused for anyone else unless it changes nothing),
+//     only for Staff with a home department, and only with known, active
+//     departments. Names are stored as spelled in the Departments list.
+//     The home department and duplicates are dropped silently.
+//
+// role and home are the user's role and home department as they will be
+// after this save. Returns the list to store and whether it differs from
+// current; a non-zero code means refuse the request with code and msg.
+func resolveExtraDepartments(c *gin.Context, requested *[]string, role, home string, current []string) (list []string, changes bool, code int, msg string) {
+	home = strings.TrimSpace(home)
+	clean := func(in []string) []string {
+		out := []string{}
+		for _, d := range in {
+			d = strings.TrimSpace(d)
+			if d == "" || strings.EqualFold(d, home) {
+				continue
+			}
+			dup := false
+			for _, x := range out {
+				if strings.EqualFold(x, d) {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+	sameList := func(a, b []string) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i := range a {
+			if !strings.EqualFold(strings.TrimSpace(a[i]), strings.TrimSpace(b[i])) {
+				return false
+			}
+		}
+		return true
+	}
+
+	if requested == nil {
+		list = clean(current)
+		if role != "staff" || home == "" {
+			list = []string{}
+		}
+		return list, !sameList(list, current), 0, ""
+	}
+
+	wanted := clean(*requested)
+	if !viewerFrom(c).seesEverything() {
+		// Department admins can't add their people to other departments
+		// (or take them out of one). Sending the list back unchanged is
+		// fine — the edit form may echo it.
+		if sameList(wanted, clean(current)) {
+			return clean(current), false, 0, ""
+		}
+		return nil, false, http.StatusForbidden, "Only a Super Admin can add someone to other departments"
+	}
+	if len(wanted) > 0 && role != "staff" {
+		return nil, false, http.StatusBadRequest, "Only Staff can belong to more than one department"
+	}
+	if len(wanted) > 0 && home == "" {
+		return nil, false, http.StatusBadRequest, "Choose a home department before adding other departments"
+	}
+	if len(wanted) > maxExtraDepartments {
+		return nil, false, http.StatusBadRequest, "Too many departments"
+	}
+	list = make([]string, 0, len(wanted))
+	for _, d := range wanted {
+		canon, ok := canonicalDepartment(d)
+		if !ok {
+			return nil, false, http.StatusBadRequest, "Unknown department: " + d
+		}
+		list = append(list, canon)
+	}
+	list = clean(list) // canonical spellings can collapse duplicates
+	return list, !sameList(list, current), 0, ""
+}
