@@ -94,7 +94,7 @@ export const Client360View = ({ clientId, onClose }) => {
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-xs" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/60" onClick={onClose}>
       <div className="w-full max-w-4xl h-full overflow-y-auto bg-slate-100 dark:bg-zinc-950 border-l border-slate-300 dark:border-zinc-800 p-6 space-y-6"
         onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-3">

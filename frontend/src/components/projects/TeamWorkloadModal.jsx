@@ -17,7 +17,7 @@ export const TeamWorkloadModal = ({ isOpen, onClose, memberId, projectId }) => {
   const activeCount = memberTasks.length - completedCount;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 overflow-y-auto">
       <div className="my-auto bg-slate-200 dark:bg-zinc-950 rounded-xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-300 dark:border-zinc-800 p-6">
         <div className="flex justify-between items-center mb-4 border-b border-slate-300 dark:border-zinc-800 pb-3">
           <div>

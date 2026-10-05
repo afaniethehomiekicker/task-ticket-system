@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useApp, getBackendId } from '../../context/AppContext';
 import { 
   Users, Plus, Search, Shield, UserCheck, Mail, Building, 
@@ -300,6 +300,192 @@ export const TeamView = () => {
   const isSharedIn = (u) => currentUser?.role === 'admin' && !!ownDeptOnly &&
     (u.department || '').trim().toLowerCase() !== ownDeptOnly;
 
+  // The member cards don't depend on the Add/Edit Member form, so they are
+  // not re-rendered on every keystroke in it. They were: the whole grid —
+  // every card, icon and workload count — per key press, which made typing
+  // lag badly in dev mode and on slower PCs, and grew with each new member.
+  // Everything the cards read is in the list below. The handlers they use
+  // only call state setters (stable) or context functions (listed).
+  const memberGrid = useMemo(() => (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {filteredUsers.map(user => {
+            const userTasks = tasks.filter(t => t.assignedToId === user.id && t.status !== 'completed' && t.status !== 'closed');
+            const userTickets = tickets.filter(t => t.assignedToId === user.id && t.status !== 'resolved' && t.status !== 'closed');
+            const totalLoad = userTasks.length + userTickets.length;
+            const supervisor = allUsers.find(u => u.id === user.supervisorId);
+            const admin = allUsers.find(u => u.id === user.adminId);
+
+            return (
+              <div
+                key={user.id}
+                id={`user-card-${user.id}`}
+                onClick={() => setSelectedMemberDetailId(user.id)}
+                className={`rounded-xl border p-5 bg-slate-200/60 dark:bg-zinc-900 shadow-2xs flex flex-col justify-between transition cursor-pointer hover:border-indigo-400 dark:hover:border-indigo-500 ${
+                  user.status === 'active'
+                    ? 'border-slate-300 dark:border-zinc-800'
+                    : 'border-slate-300 dark:border-zinc-800 opacity-60 bg-slate-200/30 dark:bg-zinc-950/50'
+                }`}
+              >
+                <div>
+                  <div className="flex items-start justify-between gap-3 mb-4">
+                    <div className="flex items-center gap-3">
+                      <img
+                        src={user.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"}
+                        alt={user.name}
+                        className="w-12 h-12 rounded-full object-cover ring-2 ring-indigo-500/20"
+                      />
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900 dark:text-zinc-100 flex items-center gap-1.5">
+                          {user.name}
+                        </h3>
+                        <p className="text-xs text-slate-500 dark:text-zinc-400">{user.title}</p>
+                      </div>
+                    </div>
+
+                    <RoleBadge role={user.role} size="xs" />
+                  </div>
+
+                  <div className="space-y-2 text-xs py-3 border-y border-slate-300/60 dark:border-zinc-800/80">
+                    {user.userNumber && (
+                      <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
+                        <span>User ID:</span>
+                        <span className="font-mono">{user.userNumber}</span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
+                      <span className="flex items-center gap-1.5"><Mail className="w-3.5 h-3.5" /> Email:</span>
+                      <span className="font-mono">{user.email}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
+                      <span className="flex items-center gap-1.5"><Building className="w-3.5 h-3.5" /> Department:</span>
+                      <span className="font-medium">
+                        {user.department}
+                        {user.supportTier && (
+                          <span className="ml-1.5 px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 text-[10px] font-bold">
+                            {user.supportTier}
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                    {(user.extraDepartments || []).length > 0 && (
+                      <div className="flex items-start justify-between gap-3 text-slate-600 dark:text-zinc-400">
+                        <span className="shrink-0">Also in:</span>
+                        <span className="flex flex-wrap justify-end gap-1">
+                          {user.extraDepartments.map(d => (
+                            <span key={d} className="px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 text-[10px] font-semibold">
+                              {d}
+                            </span>
+                          ))}
+                        </span>
+                      </div>
+                    )}
+                    {isSharedIn(user) && (
+                      <p className="text-[10px] text-slate-500 dark:text-zinc-500 italic">
+                        Shared from {user.department || 'another department'} — their account is managed there.
+                      </p>
+                    )}
+                    {supervisor && (
+                      <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
+                        <span>Supervisor:</span>
+                        <span className="font-medium text-slate-800 dark:text-zinc-200">{supervisor.name}</span>
+                      </div>
+                    )}
+                    {admin && (
+                      <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
+                        <span>Department Admin:</span>
+                        <span className="font-medium text-slate-800 dark:text-zinc-200">{admin.name}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="py-3">
+                    <div className="flex items-center justify-between text-xs mb-1">
+                      <span className="text-slate-500 dark:text-zinc-400">Active Workload:</span>
+                      <span className="font-semibold text-slate-800 dark:text-zinc-200">
+                        {userTasks.length} tasks • {userTickets.length} tickets
+                      </span>
+                    </div>
+                    <div className="w-full h-1.5 bg-slate-300 dark:bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${
+                          totalLoad > 5 ? 'bg-rose-500' : totalLoad > 2 ? 'bg-amber-500' : 'bg-emerald-500'
+                        }`}
+                        style={{ width: `${Math.min(totalLoad * 20, 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {canManageUsers(currentUser, permissionMatrix) && canManageMember(user) && (
+                  <div 
+                    className="pt-3 border-t border-slate-300/60 dark:border-zinc-800/80 flex items-center justify-between text-xs"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      onClick={async () => {
+                        // toggleUserActiveStatus (an alias for
+                        // toggleUserStatus in AppContext.jsx) now only
+                        // updates local state when the backend call
+                        // actually succeeds — previously it was a pure
+                        // local mutation with no backend call at all, so a
+                        // toggle looked like it worked but reverted on the
+                        // next reload. That's fixed at the source now, but
+                        // this click handler still silently did nothing on
+                        // failure with no feedback at all; this gives the
+                        // person a reason when nothing visibly changes.
+                        const result = await toggleUserActiveStatus(user.id);
+                        if (!result) {
+                          alert('Failed to update account status. Please try again.');
+                        }
+                      }}
+                      className={`flex items-center gap-1 font-medium transition cursor-pointer ${
+                        user.status === 'active' ? 'text-emerald-600 dark:text-emerald-400 hover:text-emerald-700' : 'text-slate-500 hover:text-slate-700 dark:text-zinc-500 dark:hover:text-zinc-300'
+                      }`}
+                    >
+                      {user.status === 'active' ? (
+                        <>
+                          <CheckCircle className="w-3.5 h-3.5" /> Active Account
+                        </>
+                      ) : (
+                        <>
+                          <AlertCircle className="w-3.5 h-3.5" /> Inactive
+                        </>
+                      )}
+                    </button>
+
+                    <div className="flex items-center gap-1">
+                      {/* Archive instead of delete (spec slides 4/29): they
+                          can't sign in, their name stays on past work, and
+                          they can be restored from Archive → Users. */}
+                      {String(user.id) !== String(currentUser?.id) && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (!window.confirm(`Archive ${user.name}? They won't be able to sign in. Their name stays on past work, and you can restore them from Archive → Users.`)) return;
+                            await archiveUser(user.id);
+                          }}
+                          className="p-1 rounded text-slate-500 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 flex items-center gap-1 cursor-pointer"
+                          title="Archive (restorable)"
+                        >
+                          <Archive className="w-3.5 h-3.5" /> Archive
+                        </button>
+                      )}
+                      <button
+                        onClick={(e) => openEditModal(user, e)}
+                        className="p-1 rounded text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 flex items-center gap-1 cursor-pointer"
+                      >
+                        <Edit className="w-3.5 h-3.5" /> Edit
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [allUsers, search, roleFilter, deptFilter, currentUser, ownDeptOnly, tasks, tickets, permissionMatrix, toggleUserActiveStatus, archiveUser]);
+
   return (
     <div id="team-view" className="space-y-6 max-w-7xl mx-auto pb-12">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -375,186 +561,11 @@ export const TeamView = () => {
         </select>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-        {filteredUsers.map(user => {
-          const userTasks = tasks.filter(t => t.assignedToId === user.id && t.status !== 'completed' && t.status !== 'closed');
-          const userTickets = tickets.filter(t => t.assignedToId === user.id && t.status !== 'resolved' && t.status !== 'closed');
-          const totalLoad = userTasks.length + userTickets.length;
-          const supervisor = allUsers.find(u => u.id === user.supervisorId);
-          const admin = allUsers.find(u => u.id === user.adminId);
-
-          return (
-            <div
-              key={user.id}
-              id={`user-card-${user.id}`}
-              onClick={() => setSelectedMemberDetailId(user.id)}
-              className={`rounded-xl border p-5 bg-slate-200/60 dark:bg-zinc-900 shadow-2xs flex flex-col justify-between transition cursor-pointer hover:border-indigo-400 dark:hover:border-indigo-500 ${
-                user.status === 'active'
-                  ? 'border-slate-300 dark:border-zinc-800'
-                  : 'border-slate-300 dark:border-zinc-800 opacity-60 bg-slate-200/30 dark:bg-zinc-950/50'
-              }`}
-            >
-              <div>
-                <div className="flex items-start justify-between gap-3 mb-4">
-                  <div className="flex items-center gap-3">
-                    <img
-                      src={user.avatar || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='50' fill='%23cbd5e1'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%2394a3b8'/%3E%3Cellipse cx='50' cy='92' rx='34' ry='26' fill='%2394a3b8'/%3E%3C/svg%3E"}
-                      alt={user.name}
-                      className="w-12 h-12 rounded-full object-cover ring-2 ring-indigo-500/20"
-                    />
-                    <div>
-                      <h3 className="text-sm font-bold text-slate-900 dark:text-zinc-100 flex items-center gap-1.5">
-                        {user.name}
-                      </h3>
-                      <p className="text-xs text-slate-500 dark:text-zinc-400">{user.title}</p>
-                    </div>
-                  </div>
-
-                  <RoleBadge role={user.role} size="xs" />
-                </div>
-
-                <div className="space-y-2 text-xs py-3 border-y border-slate-300/60 dark:border-zinc-800/80">
-                  {user.userNumber && (
-                    <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
-                      <span>User ID:</span>
-                      <span className="font-mono">{user.userNumber}</span>
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
-                    <span className="flex items-center gap-1.5"><Mail className="w-3.5 h-3.5" /> Email:</span>
-                    <span className="font-mono">{user.email}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
-                    <span className="flex items-center gap-1.5"><Building className="w-3.5 h-3.5" /> Department:</span>
-                    <span className="font-medium">
-                      {user.department}
-                      {user.supportTier && (
-                        <span className="ml-1.5 px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 text-[10px] font-bold">
-                          {user.supportTier}
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                  {(user.extraDepartments || []).length > 0 && (
-                    <div className="flex items-start justify-between gap-3 text-slate-600 dark:text-zinc-400">
-                      <span className="shrink-0">Also in:</span>
-                      <span className="flex flex-wrap justify-end gap-1">
-                        {user.extraDepartments.map(d => (
-                          <span key={d} className="px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300 text-[10px] font-semibold">
-                            {d}
-                          </span>
-                        ))}
-                      </span>
-                    </div>
-                  )}
-                  {isSharedIn(user) && (
-                    <p className="text-[10px] text-slate-500 dark:text-zinc-500 italic">
-                      Shared from {user.department || 'another department'} — their account is managed there.
-                    </p>
-                  )}
-                  {supervisor && (
-                    <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
-                      <span>Supervisor:</span>
-                      <span className="font-medium text-slate-800 dark:text-zinc-200">{supervisor.name}</span>
-                    </div>
-                  )}
-                  {admin && (
-                    <div className="flex items-center justify-between text-slate-600 dark:text-zinc-400">
-                      <span>Department Admin:</span>
-                      <span className="font-medium text-slate-800 dark:text-zinc-200">{admin.name}</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="py-3">
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="text-slate-500 dark:text-zinc-400">Active Workload:</span>
-                    <span className="font-semibold text-slate-800 dark:text-zinc-200">
-                      {userTasks.length} tasks • {userTickets.length} tickets
-                    </span>
-                  </div>
-                  <div className="w-full h-1.5 bg-slate-300 dark:bg-zinc-800 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full ${
-                        totalLoad > 5 ? 'bg-rose-500' : totalLoad > 2 ? 'bg-amber-500' : 'bg-emerald-500'
-                      }`}
-                      style={{ width: `${Math.min(totalLoad * 20, 100)}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {canManageUsers(currentUser, permissionMatrix) && canManageMember(user) && (
-                <div 
-                  className="pt-3 border-t border-slate-300/60 dark:border-zinc-800/80 flex items-center justify-between text-xs"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    onClick={async () => {
-                      // toggleUserActiveStatus (an alias for
-                      // toggleUserStatus in AppContext.jsx) now only
-                      // updates local state when the backend call
-                      // actually succeeds — previously it was a pure
-                      // local mutation with no backend call at all, so a
-                      // toggle looked like it worked but reverted on the
-                      // next reload. That's fixed at the source now, but
-                      // this click handler still silently did nothing on
-                      // failure with no feedback at all; this gives the
-                      // person a reason when nothing visibly changes.
-                      const result = await toggleUserActiveStatus(user.id);
-                      if (!result) {
-                        alert('Failed to update account status. Please try again.');
-                      }
-                    }}
-                    className={`flex items-center gap-1 font-medium transition cursor-pointer ${
-                      user.status === 'active' ? 'text-emerald-600 dark:text-emerald-400 hover:text-emerald-700' : 'text-slate-500 hover:text-slate-700 dark:text-zinc-500 dark:hover:text-zinc-300'
-                    }`}
-                  >
-                    {user.status === 'active' ? (
-                      <>
-                        <CheckCircle className="w-3.5 h-3.5" /> Active Account
-                      </>
-                    ) : (
-                      <>
-                        <AlertCircle className="w-3.5 h-3.5" /> Inactive
-                      </>
-                    )}
-                  </button>
-
-                  <div className="flex items-center gap-1">
-                    {/* Archive instead of delete (spec slides 4/29): they
-                        can't sign in, their name stays on past work, and
-                        they can be restored from Archive → Users. */}
-                    {String(user.id) !== String(currentUser?.id) && (
-                      <button
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          if (!window.confirm(`Archive ${user.name}? They won't be able to sign in. Their name stays on past work, and you can restore them from Archive → Users.`)) return;
-                          await archiveUser(user.id);
-                        }}
-                        className="p-1 rounded text-slate-500 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 flex items-center gap-1 cursor-pointer"
-                        title="Archive (restorable)"
-                      >
-                        <Archive className="w-3.5 h-3.5" /> Archive
-                      </button>
-                    )}
-                    <button
-                      onClick={(e) => openEditModal(user, e)}
-                      className="p-1 rounded text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 flex items-center gap-1 cursor-pointer"
-                    >
-                      <Edit className="w-3.5 h-3.5" /> Edit
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      {memberGrid}
 
       {selectedMember && (
         <div 
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto"
+          className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 overflow-y-auto"
           onClick={() => setSelectedMemberDetailId(null)}
         >
           <div 
@@ -638,7 +649,7 @@ export const TeamView = () => {
       )}
 
       {showAddModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto">
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-start justify-center p-4 overflow-y-auto">
           <div className="my-auto bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-lg shadow-2xl space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-bold text-slate-900 dark:text-zinc-100">
@@ -913,7 +924,7 @@ export const TeamView = () => {
 
       {resetFor && (
         <div
-          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto"
+          className="fixed inset-0 z-[70] bg-black/60 flex items-start justify-center p-4 overflow-y-auto"
           onClick={() => !isResetting && setResetFor(null)}
         >
           <div
@@ -992,7 +1003,7 @@ export const TeamView = () => {
       )}
 
       {resetDoneFor && (
-        <div className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto" onClick={() => setResetDoneFor(null)}>
+        <div className="fixed inset-0 z-[70] bg-black/60 flex items-start justify-center p-4 overflow-y-auto" onClick={() => setResetDoneFor(null)}>
           <div className="my-auto bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-sm shadow-2xl space-y-3" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2">
               <CheckCircle className="w-5 h-5 text-emerald-500" />
@@ -1011,7 +1022,7 @@ export const TeamView = () => {
       )}
 
       {tempPasswordBanner && (
-        <div className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto">
+        <div className="fixed inset-0 z-60 bg-black/60 flex items-start justify-center p-4 overflow-y-auto">
           <div className="my-auto bg-slate-200 dark:bg-zinc-950 rounded-2xl p-6 border border-slate-300 dark:border-zinc-800 w-full max-w-md shadow-2xl space-y-4">
             <div className="flex items-center gap-2">
               <CheckCircle className="w-5 h-5 text-emerald-500" />

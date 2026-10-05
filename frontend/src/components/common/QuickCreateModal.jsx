@@ -518,7 +518,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   }[localTab];
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-start justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto">
+    <div className="fixed inset-0 z-[70] flex items-start justify-center bg-black/60 p-4 overflow-y-auto">
       <div
         key={openNonce}
         className="my-auto bg-slate-200 dark:bg-zinc-950 rounded-xl shadow-xl w-full max-w-lg overflow-hidden border border-slate-300 dark:border-zinc-800"

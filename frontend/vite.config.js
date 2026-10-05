@@ -22,6 +22,12 @@ const stripOrigin = (proxy) => {
   proxy.on("proxyReq", (proxyReq) => proxyReq.removeHeader("origin"));
 };
 
+// Shared by the dev server and `vite preview`.
+const backendProxy = {
+  "/api": { target: backendTarget, changeOrigin: true, configure: stripOrigin },
+  "/uploads": { target: backendTarget, changeOrigin: true, configure: stripOrigin },
+};
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
@@ -41,10 +47,18 @@ export default defineConfig({
     // forwarded request drops its Origin header: the backend then treats it
     // as same-site instead of a cross-site call from localhost:3000 (which
     // release mode refuses).
-    proxy: {
-      "/api": { target: backendTarget, changeOrigin: true, configure: stripOrigin },
-      "/uploads": { target: backendTarget, changeOrigin: true, configure: stripOrigin },
-    },
+    proxy: backendProxy,
+  },
+  // `npm run preview` (after `npm run build`): serves the PRODUCTION bundle
+  // on :4173 with the same /api and /uploads proxy as the dev server, so you
+  // can check real-world speed against your running backend without
+  // rebuilding the Go binary. The dev server (:3000) runs React's debug
+  // build and StrictMode and is many times slower — don't judge
+  // responsiveness there.
+  preview: {
+    port: 4173,
+    host: true,
+    proxy: backendProxy,
   },
   build: {
     chunkSizeWarningLimit: 1000,

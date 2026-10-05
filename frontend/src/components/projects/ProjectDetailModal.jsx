@@ -187,7 +187,7 @@ export const ProjectDetailModal = () => {
   return (
     <div 
       id="project-detail-modal-backdrop"
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 overflow-y-auto"
       onClick={() => setSelectedProjectDetailId(null)}
     >
       <div 
@@ -661,7 +661,7 @@ export const ProjectDetailModal = () => {
       {/* Edit Project Modal */}
       {showEditModal && (
         <div
-          className="fixed inset-0 z-60 bg-black/60 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto"
+          className="fixed inset-0 z-60 bg-black/60 flex items-start justify-center p-4 overflow-y-auto"
           onClick={() => setShowEditModal(false)}
         >
           <div

@@ -27,7 +27,7 @@ export const QuickCreateTypePicker = () => {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 backdrop-blur-xs p-4 overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 overflow-y-auto"
       onClick={() => setQuickCreatePickerOpen(false)}
     >
       <div

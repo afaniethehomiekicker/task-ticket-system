@@ -150,7 +150,7 @@ export const GlobalSearchModal = () => {
     .every(k => results[k].length === 0);
 
   return (
-    <div id="global-search-modal-backdrop" className="fixed inset-0 z-[80] flex items-start justify-center pt-20 bg-black/60 backdrop-blur-xs p-4" onClick={close}>
+    <div id="global-search-modal-backdrop" className="fixed inset-0 z-[80] flex items-start justify-center pt-20 bg-black/60 p-4" onClick={close}>
       <div className="w-full max-w-2xl bg-slate-100 dark:bg-zinc-950 rounded-xl shadow-2xl border border-slate-300 dark:border-zinc-800 overflow-hidden" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-300 dark:border-zinc-800">
           <Search className="w-4 h-4 text-slate-500" />

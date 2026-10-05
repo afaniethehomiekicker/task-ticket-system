@@ -246,7 +246,7 @@ export const TaskDetailDrawer = () => {
   return (
     <div 
       id="task-detail-drawer-backdrop"
-      className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex justify-end bg-black/60"
       onClick={() => setSelectedTaskId(null)}
     >
       <div 
