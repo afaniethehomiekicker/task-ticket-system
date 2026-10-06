@@ -96,11 +96,22 @@ func RegisterRoutes(r *gin.Engine) {
 				// Creating a client is also allowed for anyone who can raise a
 				// feasibility (spec: "+ Add Client" inline, by staff). Editing
 				// and archiving clients stay on manage_clients.
-				clients.POST("", middleware.RequireAnyPermission("manage_clients", "create_feasibilities"), handlers.CreateClient)
+				clients.POST("", middleware.RequireAnyPermission("manage_clients", "create_feasibilities", "create_clients"), handlers.CreateClient)
+				// Spreadsheet import (many clients at once): dry run to check,
+				// then one transaction to save. See handlers/import.go.
+				clients.POST("/import", middleware.RequirePermission("manage_clients"), handlers.ImportClients)
 				clients.GET("/:id", handlers.GetClient)
 				// Client 360° view (spec slide 10).
 				clients.GET("/:id/overview", handlers.GetClientOverview)
-				clients.PUT("/:id", middleware.RequirePermission("manage_clients"), handlers.UpdateClient)
+				// Management edits any client; staff with "Edit Admin-Added
+				// Clients" edit admin-added ones for 30 minutes, then on
+				// approval — checked inside (client_edit.go).
+				clients.PUT("/:id", handlers.UpdateClient)
+				// Edit requests (more time to edit an own client).
+				clients.GET("/edit-requests", handlers.GetClientEditRequests)
+				clients.POST("/edit-requests/:id/approve", handlers.ApproveClientEdit)
+				clients.POST("/edit-requests/:id/reject", handlers.RejectClientEdit)
+				clients.POST("/:id/edit-requests", handlers.RequestClientEdit)
 				clients.DELETE("/:id", middleware.RequirePermission("manage_clients"), handlers.DeleteClient)
 				clients.PATCH("/:id/restore", middleware.RequirePermission("manage_clients"), handlers.RestoreClient)
 				// Record-level access grants (spec slide 16).
@@ -242,6 +253,7 @@ func RegisterRoutes(r *gin.Engine) {
 				vendors.GET("", handlers.GetVendors)
 				vendors.GET("/:id", handlers.GetVendor)
 				vendors.POST("", middleware.RequirePermission("manage_vendors"), handlers.CreateVendor)
+				vendors.POST("/import", middleware.RequirePermission("manage_vendors"), handlers.ImportVendors)
 				vendors.PUT("/:id", middleware.RequirePermission("manage_vendors"), handlers.UpdateVendor)
 				vendors.DELETE("/:id", middleware.RequirePermission("manage_vendors"), handlers.ArchiveVendor) // archives
 				vendors.PATCH("/:id/restore", middleware.RequirePermission("manage_vendors"), handlers.RestoreVendor)

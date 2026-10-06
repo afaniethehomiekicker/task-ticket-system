@@ -161,11 +161,20 @@ type Client struct {
 	// staff member who added it inline while raising a feasibility). Empty
 	// on records created before this was recorded.
 	CreatedByID *uint `json:"created_by_id,omitempty" gorm:"index"`
+	// The spreadsheet import that created this client (see ImportBatch);
+	// empty for clients added by hand.
+	ImportBatchID *uint `json:"import_batch_id,omitempty" gorm:"index"`
 
 	// Set per response, never stored: "reference" means the caller sees this
 	// client only because of related work (a project / ticket / feasibility
 	// they can see), so they get the name and ID but no contact details.
 	AccessLevel string `gorm:"-" json:"access_level,omitempty"`
+	// Set per response, never stored: whether the caller may edit this client
+	// now, until when (for the 30-minute window or an approved request), and
+	// "pending" when the caller has asked for edit access. See client_edit.go.
+	CanEdit     bool       `gorm:"-" json:"can_edit"`
+	EditUntil   *time.Time `gorm:"-" json:"edit_until,omitempty"`
+	EditRequest string     `gorm:"-" json:"edit_request,omitempty"`
 
 	// See the matching comment on Project.ArchivedAt further down this
 	// file — same reasoning: Client is one of the six entities the spec
@@ -493,6 +502,11 @@ type Role struct {
 	Key       string `json:"key" gorm:"uniqueIndex"`
 	Label     string `json:"label"`
 	IsBuiltIn bool   `json:"is_built_in"`
+	// BaseRole "staff" makes a custom role a kind of Staff: its members work
+	// like staff everywhere (assignable work, more than one department, the
+	// staff screens), plus whatever its own permissions add. Empty for other
+	// roles. See isStaffRole.
+	BaseRole string `json:"base_role,omitempty" gorm:"size:30"`
 }
 
 // Department is a real, admin-managed record — spec: "Departments are

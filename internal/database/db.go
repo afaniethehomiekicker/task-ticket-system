@@ -124,6 +124,12 @@ func ConnectDB() {
 		// named here too. Without this, every /api/departments request
 		// fails with "relation \"departments\" does not exist."
 		&models.Department{},
+		// Spreadsheet imports of clients / vendors (who, when, which file).
+		&models.ImportBatch{},
+		// Requests for more time to edit a client (client_edit.go), and
+		// one-time setup markers.
+		&models.ClientEditRequest{},
+		&models.SeedMarker{},
 	)
 
 	if err != nil {

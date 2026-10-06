@@ -26,6 +26,9 @@ var allowedRoles = map[string]bool{
 type AuthInput struct {
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required"`
+	// "Keep me signed in": a 30-day session instead of 24 hours (see
+	// middleware.RememberMeLifetime).
+	RememberMe bool `json:"remember_me"`
 }
 
 type RegisterInput struct {
@@ -125,7 +128,7 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	token, err := middleware.GenerateToken(&user)
+	token, err := middleware.GenerateSessionToken(&user, input.RememberMe)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
@@ -310,7 +313,8 @@ func ChangePassword(c *gin.Context) {
 	}
 	utils.LogAudit(user.ID, "password_changed", "user", user.ID, "Changed own password", c.ClientIP(), c.Request.UserAgent())
 
-	token, err := middleware.GenerateToken(&user)
+	// The new token keeps the session's "Keep me signed in" choice.
+	token, err := middleware.GenerateSessionToken(&user, c.GetBool("token_remember"))
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"message": "Password changed. Please sign in again."})
 		return
@@ -886,7 +890,7 @@ func UpdateUserRole(c *gin.Context) {
 	roleUpdates := map[string]interface{}{"role": input.Role}
 	// Only Staff can be in more than one department: anyone moved to
 	// another role keeps just their home department.
-	if input.Role != "staff" && len(target.ExtraDepartments) > 0 {
+	if !isStaffRole(input.Role) && len(target.ExtraDepartments) > 0 {
 		roleUpdates["extra_departments"] = models.StringList{}
 	}
 	if err := database.DB.Model(&models.User{}).Where("id = ?", id).Updates(roleUpdates).Error; err != nil {

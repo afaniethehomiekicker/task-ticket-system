@@ -5,7 +5,7 @@ import {
   Paperclip, Plus, ArrowRight, TrendingUp, AlertCircle, Edit, Trash2, Archive, Upload, ShieldAlert, UserPlus, UserMinus, Check
 } from 'lucide-react';
 import { PriorityBadge, ProjectStatusBadge, TaskStatusBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
-import { canCreateTask, formatBudget, formatDate, canCreateProject, canArchiveRecords } from '../../utils/permissions';
+import { canCreateTask, formatBudget, formatDate, canCreateProject, canArchiveRecords, isStaffRole } from '../../utils/permissions';
 import { TeamWorkloadModal } from './TeamWorkloadModal';
 import { ProjectActivityLog } from './ProjectActivityLog';
 import { ProjectAnalyticsCard } from './ProjectAnalyticsCard';
@@ -98,7 +98,7 @@ export const ProjectDetailModal = () => {
   // Deactivated accounts can't log in, so they aren't offered as new members.
   const availableUsersToAdd = allUsers.filter(u => u.status === 'active' && !(project.memberIds || []).includes(u.id));
 
-  const canManageTeam = currentUser.role !== 'staff';
+  const canManageTeam = !isStaffRole(currentUser.role);
 
   // The server's progress (finished / all tasks, excluding cancelled and
   // archived — see fillProjectProgress). This used to count status

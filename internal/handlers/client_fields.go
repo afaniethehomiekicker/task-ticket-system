@@ -161,6 +161,13 @@ func UpdateClientField(c *gin.Context) {
 func validateClientCustomFields(input map[string]interface{}, existing models.JSONMap) (models.JSONMap, string) {
 	var defs []models.ClientField
 	database.DB.Find(&defs)
+	return validateClientCustomFieldsWith(defs, input, existing)
+}
+
+// validateClientCustomFieldsWith is validateClientCustomFields with the field
+// definitions already loaded — the spreadsheet import checks thousands of
+// rows against one set of definitions instead of reading them per row.
+func validateClientCustomFieldsWith(defs []models.ClientField, input map[string]interface{}, existing models.JSONMap) (models.JSONMap, string) {
 	byKey := map[string]models.ClientField{}
 	for _, d := range defs {
 		byKey[d.Key] = d
@@ -187,7 +194,8 @@ func validateClientCustomFields(input map[string]interface{}, existing models.JS
 		}
 		switch def.FieldType {
 		case "number":
-			f, err := strconv.ParseFloat(val, 64)
+			// Thousands separators ("1,250") are accepted.
+			f, err := strconv.ParseFloat(strings.ReplaceAll(val, ",", ""), 64)
 			if err != nil {
 				return nil, def.Label + " must be a number"
 			}
@@ -199,9 +207,12 @@ func validateClientCustomFields(input map[string]interface{}, existing models.JS
 			out[key] = val
 		case "select":
 			allowed := false
+			// Case doesn't matter ("gold" picks "Gold"); the option's own
+			// spelling is what gets stored.
 			for _, o := range splitOptions(def.Options) {
-				if o == val {
+				if strings.EqualFold(o, val) {
 					allowed = true
+					val = o
 					break
 				}
 			}

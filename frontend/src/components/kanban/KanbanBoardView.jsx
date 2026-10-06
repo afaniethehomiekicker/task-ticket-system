@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Columns3, Plus, Search, Clock, CheckSquare } from 'lucide-react';
 import { PriorityBadge } from '../common/Badge';
-import { canCreateTask } from '../../utils/permissions';
+import { canCreateTask, isStaffRole } from '../../utils/permissions';
 
 export const KanbanBoardView = () => {
   const { 
@@ -215,7 +215,7 @@ export const KanbanBoardView = () => {
         </select>
 
         {/* Assignee */}
-        {currentUser?.role !== 'staff' && (
+        {!isStaffRole(currentUser?.role) && (
           <select
             id="kanban-assignee-filter"
             value={assigneeFilter}

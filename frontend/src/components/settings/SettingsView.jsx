@@ -15,7 +15,7 @@ import {
 import { RoleBadge } from "../common/Badge";
 import { WorkflowStatusesPanel } from "./WorkflowStatusesPanel";
 import { SLAPoliciesPanel } from "./SLAPoliciesPanel";
-import { PERMISSION_KEYS, PERMISSION_LABELS } from "../../utils/permissions";
+import { PERMISSION_KEYS, PERMISSION_LABELS, getRoleDisplayName } from "../../utils/permissions";
 
 export const SettingsView = () => {
   const {
@@ -138,14 +138,14 @@ export const SettingsView = () => {
                       ) : (
                         <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-purple-100 dark:bg-purple-950/60 text-purple-800 dark:text-purple-300 border border-purple-300 dark:border-purple-800">
                           <span className="text-[10px] font-bold uppercase tracking-wider">
-                            {role.replace(/_/g, " ")}
+                            {getRoleDisplayName(role)}
                           </span>
                           {isSuperAdmin && (
                             <button
                               type="button"
                               onClick={() => handleDeleteRole(role)}
                               className="text-purple-600 dark:text-purple-400 hover:text-rose-500 cursor-pointer ml-1"
-                              title={`Delete ${role.replace(/_/g, " ")} role`}
+                              title={`Delete ${getRoleDisplayName(role)} role`}
                             >
                               <XIcon className="w-3 h-3" />
                             </button>

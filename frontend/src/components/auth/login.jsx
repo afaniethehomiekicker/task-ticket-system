@@ -1,14 +1,47 @@
 import React, { useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useApp } from '../../context/AppContext';
 import { CaptchaWidget } from './CaptchaWidget';
 import { Lock, Mail, Eye, EyeOff } from 'lucide-react';
+
+// "Keep me signed in": remembered on this computer, together with the email
+// address, so the next sign-in only needs the password. The password itself
+// is never stored by the app; saving it is left to the browser's own
+// password manager, which this form is marked up for (name/autocomplete).
+const REMEMBER_KEY = 'pm_login_remember_v1';
+const REMEMBER_EMAIL_KEY = 'pm_login_email_v1';
+
+const readRemembered = () => {
+  try {
+    if (localStorage.getItem(REMEMBER_KEY) !== '1') return { remember: false, email: '' };
+    return { remember: true, email: localStorage.getItem(REMEMBER_EMAIL_KEY) || '' };
+  } catch {
+    return { remember: false, email: '' }; // storage blocked: just don't prefill
+  }
+};
+
+const saveRemembered = (remember, email) => {
+  try {
+    if (remember) {
+      localStorage.setItem(REMEMBER_KEY, '1');
+      localStorage.setItem(REMEMBER_EMAIL_KEY, email);
+    } else {
+      localStorage.removeItem(REMEMBER_KEY);
+      localStorage.removeItem(REMEMBER_EMAIL_KEY);
+    }
+  } catch {
+    // Storage blocked: sign-in still works, nothing is remembered.
+  }
+};
 
 // The single login page for every role. The old separate Super Admin portal
 // (/admin-login) now shows this same page — see Adminlogin.jsx.
 export const Login = () => {
   const { setCurrentUserId, setAuthToken } = useApp();
 
-  const [email, setEmail] = useState('');
+  const [initial] = useState(readRemembered);
+  const [email, setEmail] = useState(initial.email);
+  const [rememberMe, setRememberMe] = useState(initial.remember);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
@@ -24,6 +57,9 @@ export const Login = () => {
   const handleLogin = async (e) => {
     e.preventDefault();
     setError('');
+    // Browsers only offer to save a password typed in a password field;
+    // if "show password" is on, turn it off before the form is read.
+    if (showPassword) flushSync(() => setShowPassword(false));
 
     const cleanEmail = email.trim().toLowerCase();
     if (!cleanEmail || !password) {
@@ -45,7 +81,7 @@ export const Login = () => {
           'Content-Type': 'application/json',
           ...(captchaToken ? { 'X-Captcha-Token': captchaToken } : {}),
         },
-        body: JSON.stringify({ email: cleanEmail, password }),
+        body: JSON.stringify({ email: cleanEmail, password, remember_me: rememberMe }),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -78,6 +114,7 @@ export const Login = () => {
       // normalizeUser's raw.id ?? raw.ID; this was the one place still
       // reading the raw response directly instead.
       loggedIn = true;
+      saveRemembered(rememberMe, cleanEmail);
       setAuthToken(data.token);
       setCurrentUserId(data.user.id ?? data.user.ID);
     } catch (err) {
@@ -109,9 +146,12 @@ export const Login = () => {
           </div>
         )}
 
-        <form onSubmit={handleLogin} className="space-y-4">
+        {/* id/name/autocomplete let the browser's password manager recognise
+            this as a sign-in form, offer to save the password after a
+            successful sign-in, and fill it in next time. */}
+        <form id="login-form" name="login" method="post" action="/api/auth/login" onSubmit={handleLogin} className="space-y-4" autoComplete="on">
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
+            <label htmlFor="login-email" className="block text-xs font-medium text-slate-300 mb-1">
               Email Address
             </label>
             <div className="relative">
@@ -119,8 +159,14 @@ export const Login = () => {
                 <Mail className="w-4 h-4" />
               </span>
               <input
+                id="login-email"
+                name="email"
                 type="email"
                 required
+                autoComplete="username"
+                autoCapitalize="none"
+                spellCheck={false}
+                autoFocus={!email}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="name@company.com"
@@ -130,15 +176,18 @@ export const Login = () => {
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">Password</label>
+            <label htmlFor="login-password" className="block text-xs font-medium text-slate-300 mb-1">Password</label>
             <div className="relative">
               <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
                 <Lock className="w-4 h-4" />
               </span>
               <input
+                id="login-password"
+                name="password"
                 type={showPassword ? 'text' : 'password'}
                 required
                 autoComplete="current-password"
+                autoFocus={!!email}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
@@ -155,6 +204,23 @@ export const Login = () => {
               </button>
             </div>
           </div>
+
+          <label htmlFor="login-remember" className="flex items-start gap-2 text-xs text-slate-300 cursor-pointer select-none">
+            <input
+              id="login-remember"
+              name="remember"
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              className="mt-0.5 w-3.5 h-3.5 accent-indigo-500 cursor-pointer"
+            />
+            <span>
+              Keep me signed in for 30 days
+              <span className="block text-[11px] text-slate-500 mt-0.5">
+                Also remembers your email on this computer. Don't use on a shared computer.
+              </span>
+            </span>
+          </label>
 
           <CaptchaWidget
             ref={captchaRef}

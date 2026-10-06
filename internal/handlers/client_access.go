@@ -19,6 +19,8 @@ import (
 //	    Client 360 view is a management screen)
 //	  - anyone given an explicit grant on the client (record_accesses)
 //	  - the user who created the client
+//	  - anyone with view_admin_clients: every client added by an admin or
+//	    the super admin (the staff client roles, client_edit.go)
 //	REFERENCE only (client ID, company name, city, status):
 //	  - anyone who can see a project, ticket or feasibility for that client
 //	    — so their own work still shows who it's for
@@ -36,8 +38,26 @@ func seesAllClients(c *gin.Context) bool {
 
 // clientFullClause: clients the viewer may see in full (beyond management).
 func clientFullClause(v viewer) (string, []interface{}) {
-	return "(clients.created_by_id = ? OR clients.id IN (SELECT record_id FROM record_accesses WHERE record_type = 'client' AND user_id = ?))",
-		[]interface{}{v.ID, v.ID}
+	clause := "(clients.created_by_id = ? OR clients.id IN (SELECT record_id FROM record_accesses WHERE record_type = 'client' AND user_id = ?)"
+	if middleware.HasPermission(v.Role, "view_admin_clients") {
+		clause += " OR " + adminCreatedClientClause
+	}
+	return clause + ")", []interface{}{v.ID, v.ID}
+}
+
+// adminCreatedClientClause matches clients added by an admin or the super
+// admin (by the creator's current role).
+const adminCreatedClientClause = "clients.created_by_id IN (SELECT users.id FROM users WHERE users.role IN ('admin', 'super_admin'))"
+
+// createdByAdmin reports whether a user id belongs to an admin or the super
+// admin.
+func createdByAdmin(userID *uint) bool {
+	if userID == nil {
+		return false
+	}
+	var n int64
+	database.DB.Unscoped().Model(&models.User{}).Where("id = ? AND role IN ('admin', 'super_admin')", *userID).Count(&n)
+	return n > 0
 }
 
 // clientScopeClause: every client the viewer may see at all (full or
@@ -92,6 +112,9 @@ func clientAccessFor(c *gin.Context, cl *models.Client) string {
 		return "full"
 	}
 	if hasRecordAccess("client", cl.ID, v.ID) {
+		return "full"
+	}
+	if middleware.HasPermission(v.Role, "view_admin_clients") && createdByAdmin(cl.CreatedByID) {
 		return "full"
 	}
 	clause, args := clientScopeClause(v)

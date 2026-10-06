@@ -8,7 +8,7 @@ import { X } from 'lucide-react';
 // (TaskDetailDrawer handles status/review; TaskEditModal handles the core
 // fields), so this follows an existing pattern rather than inventing one.
 
-import { canAssignTickets } from '../../utils/permissions';
+import { canAssignTickets, isStaffRole } from '../../utils/permissions';
 const PRODUCTS = ['DPLC', 'Dark Fiber', 'IPT', 'IPT Mix', 'Pure IPT'];
 
 export const FeasibilityEditModal = () => {
@@ -220,7 +220,7 @@ export const FeasibilityEditModal = () => {
               >
                 <option value="">Unassigned</option>
                 {(allUsers || [])
-                  .filter(u => u.role === 'staff' || u.role === 'supervisor')
+                  .filter(u => isStaffRole(u.role) || u.role === 'supervisor')
                   .filter(u => u.status === 'active' || String(u.id) === String(formData.assignedUserId))
                   .map(u => (
                   <option key={u.id} value={u.id}>{u.name} ({u.role}){u.status !== 'active' ? ' — inactive' : ''}</option>

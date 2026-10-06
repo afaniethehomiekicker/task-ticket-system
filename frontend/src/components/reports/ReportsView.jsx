@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { isStaffRole } from '../../utils/permissions';
 import { useApp } from '../../context/AppContext';
 import { 
   BarChart3, Download, TrendingUp, CheckCircle, Clock, 
@@ -196,7 +197,7 @@ export const ReportsView = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-300/50 dark:divide-zinc-800/60 text-slate-800 dark:text-zinc-300">
-              {allUsers.filter(u => u.role === 'staff' || u.role === 'supervisor').map(user => {
+              {allUsers.filter(u => isStaffRole(u.role) || u.role === 'supervisor').map(user => {
                 const userCompletedTasks = visibleTasks.filter(t => t.assignedToId === user.id && getStatusCategory('task', t.status) === 'done').length;
                 const userActiveTickets = visibleTickets.filter(t => t.assignedToId === user.id && !['done', 'cancelled', 'archived'].includes(getStatusCategory('ticket', t.status))).length;
 

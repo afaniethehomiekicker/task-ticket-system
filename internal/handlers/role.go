@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -31,6 +32,12 @@ var AllPermissionKeys = []string{
 	"transfer_assigned_work",
 	"manage_vendors",
 	"archive_records",
+	// Client permissions for staff (client_edit.go): add clients, see the
+	// clients admins added, and edit those for 30 minutes after the admin
+	// added them (longer on an admin's approval).
+	"create_clients",
+	"view_admin_clients",
+	"edit_admin_clients_30min",
 }
 
 var PermissionLabels = map[string]string{
@@ -50,6 +57,9 @@ var PermissionLabels = map[string]string{
 	"transfer_assigned_work":    "Transfer My Work Within Department",
 	"manage_vendors":            "Manage Vendor List",
 	"archive_records":           "Archive & Restore Projects, Tasks & Tickets",
+	"create_clients":            "Create Clients",
+	"view_admin_clients":        "View Clients Added by Admins",
+	"edit_admin_clients_30min":  "Edit Admin-Added Clients (30 min, then on approval)",
 }
 
 var roleKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -77,6 +87,91 @@ func EnsureBuiltInRolesExist() {
 	}
 	// Seed default permissions for built-in roles
 	seedDefaultPermissions()
+	seedClientRoles()
+}
+
+// staffClientRoles are two kinds of Staff, created once on first start:
+//
+//	Staff (Client Editor)  normal staff work, plus: add clients, see the
+//	                       clients admins added, and edit those for 30 minutes
+//	                       after the admin added them (then ask an admin)
+//	Staff (Client Entry)   normal staff work, plus: add clients and see the
+//	                       clients admins added
+//
+// Both have BaseRole "staff" and start with the Staff role's permissions as
+// they are at that moment. They are ordinary roles in the matrix: a super
+// admin can rename them, change their permissions or delete them, and they are
+// not re-created afterwards (SeedMarker).
+var staffClientRoles = []struct {
+	Key, Label string
+	Extra      []string
+	Replaces   string // key of the earlier version of this role, if any
+}{
+	{"staff_client_editor", "Staff (Client Editor)", []string{"create_clients", "view_admin_clients", "edit_admin_clients_30min"}, "client_officer"},
+	{"staff_client_entry", "Staff (Client Entry)", []string{"create_clients", "view_admin_clients"}, "client_data_entry"},
+}
+
+const (
+	clientRolesSeedKeyV1 = "roles:client_officer_and_data_entry:v1"
+	clientRolesSeedKeyV2 = "roles:staff_client_editor_and_entry:v2"
+)
+
+func seedClientRoles() {
+	var marker models.SeedMarker
+	if database.DB.Where("key = ?", clientRolesSeedKeyV2).Take(&marker).Error == nil {
+		return
+	}
+	// The first version of this feature (if it was ever started) created
+	// "Client Officer" / "Client Data Entry" as separate, non-staff roles.
+	hadV1 := database.DB.Where("key = ?", clientRolesSeedKeyV1).Take(&marker).Error == nil
+
+	var staffGranted []models.RolePermission
+	database.DB.Where("role_key = ? AND granted = ?", "staff", true).Find(&staffGranted)
+
+	for _, def := range staffClientRoles {
+		var existing models.Role
+		if database.DB.Where("key = ?", def.Key).Take(&existing).Error != nil {
+			if err := database.DB.Create(&models.Role{Key: def.Key, Label: def.Label, BaseRole: "staff"}).Error; err != nil {
+				log.Printf("seedClientRoles: creating %s failed: %v", def.Key, err)
+				return
+			}
+			granted := map[string]bool{}
+			for _, p := range staffGranted {
+				granted[p.PermissionKey] = true
+			}
+			for _, p := range def.Extra {
+				granted[p] = true
+			}
+			for _, permKey := range AllPermissionKeys {
+				database.DB.Create(&models.RolePermission{RoleKey: def.Key, PermissionKey: permKey, Granted: granted[permKey]})
+			}
+		}
+		// Move anyone on the earlier version of the role to this one, then
+		// remove the earlier role.
+		if hadV1 && def.Replaces != "" {
+			if res := database.DB.Model(&models.User{}).Where("role = ?", def.Replaces).Update("role", def.Key); res.RowsAffected > 0 {
+				log.Printf("seedClientRoles: moved %d user(s) from %s to %s", res.RowsAffected, def.Replaces, def.Key)
+			}
+			database.DB.Unscoped().Where("role_key = ?", def.Replaces).Delete(&models.RolePermission{})
+			database.DB.Unscoped().Where("key = ?", def.Replaces).Delete(&models.Role{})
+		}
+	}
+	// The earlier permission (edit your OWN clients) no longer exists.
+	database.DB.Unscoped().Where("permission_key = ?", "edit_own_clients_30min").Delete(&models.RolePermission{})
+	database.DB.Create(&models.SeedMarker{Key: clientRolesSeedKeyV2})
+}
+
+// isStaffRole: the Staff role, or a custom role built on it (BaseRole).
+func isStaffRole(key string) bool {
+	if key == "staff" {
+		return true
+	}
+	if key == "" {
+		return false
+	}
+	var n int64
+	database.DB.Model(&models.Role{}).Where("key = ? AND base_role = ?", key, "staff").Count(&n)
+	return n > 0
 }
 
 func seedDefaultPermissions() {
@@ -99,6 +194,12 @@ func seedDefaultPermissions() {
 		"transfer_assigned_work":    true,
 		"manage_vendors":            true,
 		"archive_records":           true,
+		// Admins can do all of this through manage_clients anyway; granted so
+		// they can also assign the staff client roles below (a role can only be
+		// given by someone whose role has all of its permissions).
+		"create_clients":           true,
+		"view_admin_clients":       true,
+		"edit_admin_clients_30min": true,
 	}
 	// Supervisor defaults
 	supervisorPerms := map[string]bool{
@@ -118,6 +219,9 @@ func seedDefaultPermissions() {
 		"transfer_assigned_work":    true,
 		"manage_vendors":            false,
 		"archive_records":           false,
+		"create_clients":            false,
+		"view_admin_clients":        false,
+		"edit_admin_clients_30min":  false,
 	}
 	// Staff defaults
 	staffPerms := map[string]bool{
@@ -137,6 +241,9 @@ func seedDefaultPermissions() {
 		"transfer_assigned_work":    true,
 		"manage_vendors":            false,
 		"archive_records":           false,
+		"create_clients":            false,
+		"view_admin_clients":        false,
+		"edit_admin_clients_30min":  false,
 	}
 
 	rolePerms := map[string]map[string]bool{

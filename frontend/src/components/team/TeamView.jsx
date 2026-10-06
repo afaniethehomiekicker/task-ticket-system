@@ -6,7 +6,7 @@ import {
   Eye, EyeOff, KeyRound
 } from 'lucide-react';
 import { RoleBadge } from '../common/Badge';
-import { canManageUsers, getRoleDisplayName, isInDepartment, userDepartments } from '../../utils/permissions';
+import { canManageUsers, getRoleDisplayName, isInDepartment, userDepartments, isStaffRole } from '../../utils/permissions';
 
 export const TeamView = () => {
   const { 
@@ -281,7 +281,7 @@ export const TeamView = () => {
   // Additional departments as they'll be saved: only for Staff with a home
   // department, never the home department itself.
   const wantedExtraDepartments = () => {
-    if ((formData.role || 'staff') !== 'staff' || !(formData.department || '').trim()) return [];
+    if (!isStaffRole(formData.role || 'staff') || !(formData.department || '').trim()) return [];
     const home = formData.department.trim().toLowerCase();
     return (formData.extraDepartments || []).filter(d => (d || '').trim().toLowerCase() !== home);
   };
@@ -540,10 +540,9 @@ export const TeamView = () => {
           className="px-2.5 py-1 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800/80 text-slate-800 dark:text-zinc-300 focus:outline-hidden"
         >
           <option value="all">All Roles</option>
-          <option value="super_admin">Super Admin</option>
-          <option value="admin">Admin</option>
-          <option value="supervisor">Supervisor</option>
-          <option value="staff">Staff</option>
+          {(customRoles && customRoles.length ? customRoles : ['super_admin', 'admin', 'supervisor', 'staff']).map(r => (
+            <option key={r} value={r}>{getRoleDisplayName(r)}</option>
+          ))}
         </select>
 
         <select
@@ -810,7 +809,7 @@ export const TeamView = () => {
                 </div>
               </div>
 
-              {isSuperAdmin && (formData.role || 'staff') === 'staff' && (
+              {isSuperAdmin && isStaffRole(formData.role || 'staff') && (
                 <div>
                   <label className="font-semibold text-slate-700 dark:text-zinc-300 block mb-1">Also works in</label>
                   {!(formData.department || '').trim() ? (

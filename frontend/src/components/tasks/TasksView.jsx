@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { PriorityBadge, TaskStatusBadge, RoleBadge } from '../common/Badge';
 
-import { canCreateTask, canAssignTickets, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName } from '../../utils/permissions';
+import { canCreateTask, canAssignTickets, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName, isStaffRole } from '../../utils/permissions';
 import { exportTasksToCSV } from '../../utils/exportUtils';
 
 import { FilterSelect } from '../common/FilterSelect';
@@ -139,7 +139,7 @@ export const TasksView = () => {
             Task Management
           </h2>
           <p className="text-xs text-slate-500 dark:text-zinc-400 mt-0.5">
-            {currentUser.role === 'staff' ? 'Your assigned tasks, deliverables, and checklists.' : 'Department work items, delegations, and quality sign-off queue.'}
+            {isStaffRole(currentUser.role) ? 'Your assigned tasks, deliverables, and checklists.' : 'Department work items, delegations, and quality sign-off queue.'}
           </p>
         </div>
 
@@ -237,7 +237,7 @@ export const TasksView = () => {
         </select>
 
         {/* Assignee Filter */}
-        {currentUser.role !== 'staff' && (
+        {!isStaffRole(currentUser.role) && (
           <select
             id="tasks-assignee-filter"
             value={assigneeFilter}

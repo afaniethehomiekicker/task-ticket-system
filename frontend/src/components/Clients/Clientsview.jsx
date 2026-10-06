@@ -1,18 +1,82 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useDeferredValue, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
-import { canManageClients, canGrantRecordAccess } from '../../utils/permissions';
+import { canManageClients, canGrantRecordAccess, canCreateClients, canRequestClientEdit } from '../../utils/permissions';
 import { RecordAccessPanel } from '../common/RecordAccessPanel';
 import { CustomFieldInputs } from './CustomFieldInputs';
 import { ClientFieldsManager } from './ClientFieldsManager';
 import { Client360View } from './Client360View';
+import { ImportSpreadsheetModal } from '../common/ImportSpreadsheetModal';
+import { Pager, usePaged } from '../common/Pager';
+import { buildClientImportConfig } from './clientImport';
+import { RequestEditModal, EditRequestsPanel } from './ClientEditRequests';
 import { 
   Building2, Search, Mail, Phone, Globe, MapPin, Briefcase, 
-  Pencil, Trash2, X, Check, FolderKanban, UserCheck, Lock, SlidersHorizontal, LayoutDashboard
+  Pencil, Trash2, X, Check, FolderKanban, UserCheck, Lock, SlidersHorizontal, LayoutDashboard,
+  FileSpreadsheet, KeyRound, Clock
 } from 'lucide-react';
 
+// Cards per page. Rendering every client at once (thousands after an
+// import) took seconds and froze the page.
+const CLIENTS_PER_PAGE = 50;
+
 export const ClientsView = () => {
-  const { clients, projects, updateClient, deleteClient, openQuickCreate, currentUser, permissionMatrix } = useApp();
+  const {
+    clients, projects, updateClient, deleteClient, openQuickCreate, currentUser, permissionMatrix,
+    clientFields, reloadClients, apiFetch, listPreset, setListPreset,
+  } = useApp();
   const canManage = canManageClients(currentUser, permissionMatrix);
+  const canCreate = canCreateClients(currentUser, permissionMatrix);
+  // "Staff (Client Editor)": edits clients an Admin added for 30 minutes
+  // after they were added, then asks an admin for more time.
+  const canRequestEdit = canRequestClientEdit(currentUser, permissionMatrix);
+
+  // Edit requests (client_edit.go). Staff: the client they're asking about.
+  // Admins: the requests panel and how many are waiting.
+  const [requestFor, setRequestFor] = useState(null);
+  const [showRequests, setShowRequests] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
+  // Re-render twice a minute so "editable for N min" counts down and the
+  // Edit button disappears when the 30 minutes are up.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!canRequestEdit) return undefined;
+    const t = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, [canRequestEdit]);
+
+  // Admins: number of waiting requests, for the header badge.
+  useEffect(() => {
+    if (!canManage) return;
+    let cancelled = false;
+    apiFetch('/api/clients/edit-requests?status=pending')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled && d) setPendingCount((d.requests || []).length); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canManage]);
+
+  // Opened from an "edit request" notification.
+  useEffect(() => {
+    if (!listPreset || listPreset.tab !== 'clients') return;
+    if (listPreset.editRequests && canManage) setShowRequests(true);
+    setListPreset(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listPreset]);
+
+  // Staff with a request waiting: refresh once on opening the page, so an
+  // approval given meanwhile shows up.
+  useEffect(() => {
+    if (canRequestEdit && (clients || []).some(c => c.editRequest === 'pending')) reloadClients();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Editable right now (the server decides and enforces; editUntil only
+  // hides the button once the time is up).
+  const editableNow = (client) =>
+    !!client.canEdit && (!client.editUntil || new Date(client.editUntil).getTime() > now);
+  const minutesLeft = (client) =>
+    client.editUntil ? Math.max(1, Math.ceil((new Date(client.editUntil).getTime() - now) / 60000)) : null;
 
   const [search, setSearch] = useState('');
   const [editingId, setEditingId] = useState(null);
@@ -23,26 +87,46 @@ export const ClientsView = () => {
   // Client 360° view (spec slide 10) and the extra-fields manager (slide 8).
   const [overviewId, setOverviewId] = useState(null);
   const [showFieldsManager, setShowFieldsManager] = useState(false);
+  // Spreadsheet import (many clients at once). Management only, same as the
+  // Client fields button; the server checks and saves the rows
+  // (POST /api/clients/import).
+  const [showImport, setShowImport] = useState(false);
+  const importConfig = useMemo(() => buildClientImportConfig({ clientFields }), [clientFields]);
   // Sharing a client: "Grant Record Access" plus full access to it
   // (management, or the person who created it) — same rule as the backend.
   const canShare = (client) => canGrantRecordAccess(currentUser, permissionMatrix) &&
     (canManage || String(client.createdById) === String(currentUser?.id));
 
+  // Filtering thousands of clients runs on the deferred value, so typing in
+  // the search box never waits for the list.
+  const deferredSearch = useDeferredValue(search);
   const filteredClients = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = deferredSearch.trim().toLowerCase();
     if (!q) return clients || [];
     return (clients || []).filter(c =>
       (c.companyName || '').toLowerCase().includes(q) ||
+      (c.clientNumber || '').toLowerCase().includes(q) ||
       (c.contactPerson || '').toLowerCase().includes(q) ||
       (c.email || '').toLowerCase().includes(q) ||
-      (c.industry || '').toLowerCase().includes(q)
+      (c.industry || '').toLowerCase().includes(q) ||
+      (c.city || '').toLowerCase().includes(q)
     );
-  }, [clients, search]);
+  }, [clients, deferredSearch]);
 
-  const projectCountFor = (clientId) =>
-    // Counts projects shared with other clients too (slide 9).
-    (projects || []).filter(p => String(p.clientId) === String(clientId) ||
-      (p.clientIds || []).some(id => String(id) === String(clientId))).length;
+  const { pageItems: pageClients, pager } = usePaged(filteredClients, CLIENTS_PER_PAGE, deferredSearch);
+
+  // Projects per client, counted once for the whole list (it used to scan
+  // every project for every card). Includes projects shared with other
+  // clients too (slide 9).
+  const projectCounts = useMemo(() => {
+    const counts = new Map();
+    for (const p of projects || []) {
+      const ids = new Set([p.clientId, ...(p.clientIds || [])].filter(id => id != null).map(String));
+      ids.forEach(id => counts.set(id, (counts.get(id) || 0) + 1));
+    }
+    return counts;
+  }, [projects]);
+  const projectCountFor = (clientId) => projectCounts.get(String(clientId)) || 0;
 
   const startEdit = (client) => {
     setEditingId(client.id);
@@ -79,6 +163,11 @@ export const ClientsView = () => {
     if (result) {
       setEditingId(null);
       setEditForm({});
+    } else if (!canManage) {
+      // Most likely the 30 minutes ran out while editing: refresh, so the
+      // card offers "Request edit access" instead.
+      setEditingId(null);
+      reloadClients();
     }
   };
 
@@ -114,6 +203,33 @@ export const ClientsView = () => {
         )}
         {canManage && (
           <button
+            id="clients-import-btn"
+            type="button"
+            onClick={() => setShowImport(true)}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-zinc-700 text-slate-700 dark:text-zinc-300 hover:bg-slate-300/60 dark:hover:bg-zinc-800 cursor-pointer"
+            title="Add many clients from an Excel or CSV file"
+          >
+            <FileSpreadsheet className="w-4 h-4" /> Import from Excel
+          </button>
+        )}
+        {canManage && (
+          <button
+            id="clients-edit-requests-btn"
+            type="button"
+            onClick={() => setShowRequests(true)}
+            className="relative flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-zinc-700 text-slate-700 dark:text-zinc-300 hover:bg-slate-300/60 dark:hover:bg-zinc-800 cursor-pointer"
+            title="Requests from staff to edit admin-added clients after the first 30 minutes"
+          >
+            <KeyRound className="w-4 h-4" /> Edit requests
+            {pendingCount > 0 && (
+              <span className="ml-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold inline-flex items-center justify-center">
+                {pendingCount > 99 ? '99+' : pendingCount}
+              </span>
+            )}
+          </button>
+        )}
+        {canCreate && (
+          <button
             id="clients-new-btn"
             onClick={() => openQuickCreate({ tab: 'client', restrictToTab: true })}
             className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-purple-600 hover:bg-purple-700 text-white shadow-xs transition cursor-pointer self-start sm:self-auto"
@@ -126,6 +242,19 @@ export const ClientsView = () => {
       </div>
 
       {showFieldsManager && <ClientFieldsManager onClose={() => setShowFieldsManager(false)} />}
+      {requestFor && (
+        <RequestEditModal client={requestFor} onClose={() => setRequestFor(null)} onSent={() => reloadClients()} />
+      )}
+      {showRequests && (
+        <EditRequestsPanel onClose={() => setShowRequests(false)} onCountChange={setPendingCount} />
+      )}
+      {showImport && (
+        <ImportSpreadsheetModal
+          config={importConfig}
+          onClose={() => setShowImport(false)}
+          onImported={() => reloadClients()}
+        />
+      )}
       {overviewId && <Client360View clientId={overviewId} onClose={() => setOverviewId(null)} />}
 
       {/* Search */}
@@ -134,7 +263,7 @@ export const ClientsView = () => {
         <input
           id="clients-search-input"
           type="text"
-          placeholder="Search company, contact, or industry..."
+          placeholder="Search company, CL- ID, contact, city…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="w-full pl-9 pr-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
@@ -153,8 +282,10 @@ export const ClientsView = () => {
           </p>
         </div>
       ) : (
+        <>
+        <Pager {...pager} noun="clients" />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {filteredClients.map(client => {
+          {pageClients.map(client => {
             const isEditing = editingId === client.id;
             const projectCount = projectCountFor(client.id);
 
@@ -276,7 +407,7 @@ export const ClientsView = () => {
                           </span>
                         )}
                       </div>
-                      {(canManage || canShare(client) || client.accessLevel !== 'reference') && <div className="flex items-center gap-1 shrink-0">
+                      {(canManage || canShare(client) || client.accessLevel !== 'reference' || editableNow(client)) && <div className="flex items-center gap-1 shrink-0">
                         {client.accessLevel !== 'reference' && (
                           <button
                             onClick={() => setOverviewId(client.id)}
@@ -297,14 +428,16 @@ export const ClientsView = () => {
                             <UserCheck className="w-3.5 h-3.5" />
                           </button>
                         )}
-                        {canManage && (<>
+                        {editableNow(client) && (
                         <button
                           onClick={() => startEdit(client)}
                           className="p-1.5 text-slate-500 dark:text-zinc-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
-                          title="Edit"
+                          title={client.editUntil ? `Edit (${minutesLeft(client)} min left)` : 'Edit'}
                         >
                           <Pencil className="w-3.5 h-3.5" />
                         </button>
+                        )}
+                        {canManage && (<>
                         <button
                           onClick={() => handleDelete(client)}
                           className="p-1.5 text-slate-500 dark:text-zinc-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
@@ -315,6 +448,29 @@ export const ClientsView = () => {
                         </>)}
                       </div>}
                     </div>
+
+                    {/* Staff (Client Editor): edit time left on an admin-added
+                        client, or asking for more (the server says which:
+                        editRequest 'available' / 'pending'). */}
+                    {canRequestEdit && client.status !== 'archived' && (
+                      editableNow(client) && client.editUntil ? (
+                        <p className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                          <Clock className="w-3 h-3" /> You can edit this client for {minutesLeft(client)} more min
+                        </p>
+                      ) : client.editRequest === 'pending' ? (
+                        <p className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 dark:text-zinc-400">
+                          <Clock className="w-3 h-3" /> Edit request sent — waiting for an admin
+                        </p>
+                      ) : !editableNow(client) && client.editRequest === 'available' ? (
+                        <button
+                          type="button"
+                          onClick={() => setRequestFor(client)}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 dark:text-amber-400 hover:underline cursor-pointer"
+                        >
+                          <KeyRound className="w-3 h-3" /> Request edit access
+                        </button>
+                      ) : null
+                    )}
 
                     <div className="space-y-1 text-xs text-slate-600 dark:text-zinc-400">
                       {client.contactPerson && (
@@ -379,6 +535,9 @@ export const ClientsView = () => {
             );
           })}
         </div>
+        <Pager {...pager} noun="clients"
+          onPageChange={() => document.getElementById('clients-view')?.scrollIntoView({ block: 'start' })} />
+        </>
       )}
     </div>
   );

@@ -14,7 +14,12 @@ export const PERMISSION_KEYS = {
   GRANT_RECORD_ACCESS: 'grant_record_access',
   TRANSFER_ASSIGNED_WORK: 'transfer_assigned_work',
   MANAGE_VENDORS: 'manage_vendors',
-  ARCHIVE_RECORDS: 'archive_records'
+  ARCHIVE_RECORDS: 'archive_records',
+  // Client permissions for staff (the "Staff (Client Editor)" and "Staff
+  // (Client Entry)" roles), see internal/handlers/client_edit.go.
+  CREATE_CLIENTS: 'create_clients',
+  VIEW_ADMIN_CLIENTS: 'view_admin_clients',
+  EDIT_ADMIN_CLIENTS_30MIN: 'edit_admin_clients_30min'
 };
 
 export const PERMISSION_LABELS = {
@@ -33,7 +38,10 @@ export const PERMISSION_LABELS = {
   [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: 'Grant Record Access',
   [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: 'Transfer My Work Within Department',
   [PERMISSION_KEYS.MANAGE_VENDORS]: 'Manage Vendor List',
-  [PERMISSION_KEYS.ARCHIVE_RECORDS]: 'Archive & Restore Projects, Tasks & Tickets'
+  [PERMISSION_KEYS.ARCHIVE_RECORDS]: 'Archive & Restore Projects, Tasks & Tickets',
+  [PERMISSION_KEYS.CREATE_CLIENTS]: 'Create Clients',
+  [PERMISSION_KEYS.VIEW_ADMIN_CLIENTS]: 'View Clients Added by Admins',
+  [PERMISSION_KEYS.EDIT_ADMIN_CLIENTS_30MIN]: 'Edit Admin-Added Clients (30 min, then on approval)'
 };
 
 // Default role -> permission matrix. Super Admin is deliberately excluded —
@@ -55,7 +63,10 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: true,
     [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true,
     [PERMISSION_KEYS.MANAGE_VENDORS]: true,
-    [PERMISSION_KEYS.ARCHIVE_RECORDS]: true
+    [PERMISSION_KEYS.ARCHIVE_RECORDS]: true,
+    [PERMISSION_KEYS.CREATE_CLIENTS]: true,
+    [PERMISSION_KEYS.VIEW_ADMIN_CLIENTS]: true,
+    [PERMISSION_KEYS.EDIT_ADMIN_CLIENTS_30MIN]: true
   },
   supervisor: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -73,7 +84,10 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: false,
     [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true,
     [PERMISSION_KEYS.MANAGE_VENDORS]: false,
-    [PERMISSION_KEYS.ARCHIVE_RECORDS]: false
+    [PERMISSION_KEYS.ARCHIVE_RECORDS]: false,
+    [PERMISSION_KEYS.CREATE_CLIENTS]: false,
+    [PERMISSION_KEYS.VIEW_ADMIN_CLIENTS]: false,
+    [PERMISSION_KEYS.EDIT_ADMIN_CLIENTS_30MIN]: false
   },
   staff: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -91,7 +105,10 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.GRANT_RECORD_ACCESS]: false,
     [PERMISSION_KEYS.TRANSFER_ASSIGNED_WORK]: true,
     [PERMISSION_KEYS.MANAGE_VENDORS]: false,
-    [PERMISSION_KEYS.ARCHIVE_RECORDS]: false
+    [PERMISSION_KEYS.ARCHIVE_RECORDS]: false,
+    [PERMISSION_KEYS.CREATE_CLIENTS]: false,
+    [PERMISSION_KEYS.VIEW_ADMIN_CLIENTS]: false,
+    [PERMISSION_KEYS.EDIT_ADMIN_CLIENTS_30MIN]: false
   }
 };
 
@@ -228,6 +245,49 @@ export function canManageClients(user, permissionMatrix = DEFAULT_PERMISSION_MAT
   return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.MANAGE_CLIENTS];
 }
 
+// Adding a client: management, or the "Create Clients" permission (the
+// "Staff (Client Editor)" / "Staff (Client Entry)" roles).
+export function canCreateClients(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (!user) return false;
+  if (canManageClients(user, permissionMatrix)) return true;
+  return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.CREATE_CLIENTS];
+}
+
+// Staff who may edit clients an Admin added, for 30 minutes after they were
+// added, then ask for more time ("Staff (Client Editor)"). Whether a
+// particular client can be edited right now comes from the server
+// (client.canEdit / client.editUntil / client.editRequest), which also
+// enforces it.
+export function canRequestClientEdit(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (!user || canManageClients(user, permissionMatrix)) return false;
+  return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.EDIT_ADMIN_CLIENTS_30MIN];
+}
+
+// ---- Role registry ------------------------------------------------------------
+// Labels and base roles of every role, from GET /api/roles (AppContext calls
+// registerRoles after loading them). A custom role whose base is "staff"
+// (e.g. "Staff (Client Editor)") is a kind of Staff: isStaffRole is true for
+// it, so it gets the staff screens, can be assigned work and can belong to
+// more than one department.
+const roleRegistry = { labels: {}, bases: {} };
+
+export function registerRoles(roles) {
+  const labels = {};
+  const bases = {};
+  for (const r of roles || []) {
+    const key = r?.key ?? r?.Key;
+    if (!key) continue;
+    if (r.label || r.Label) labels[key] = r.label || r.Label;
+    if (r.base_role) bases[key] = r.base_role;
+  }
+  roleRegistry.labels = labels;
+  roleRegistry.bases = bases;
+}
+
+export function isStaffRole(role) {
+  return role === 'staff' || roleRegistry.bases[role] === 'staff';
+}
+
 // Matches role.go's manage_departments defaults exactly (admin: true,
 // supervisor/staff: false) — used by DepartmentsView.jsx (gates
 // create/edit/delete) and Sidebar.jsx (gates the nav entry).
@@ -268,6 +328,7 @@ export function getRoleBadgeColor(role) {
     case 'staff':
       return { bg: 'bg-emerald-50 dark:bg-emerald-950/40', text: 'text-emerald-700 dark:text-emerald-300', border: 'border-emerald-200 dark:border-emerald-800' };
     default:
+      if (isStaffRole(role)) return getRoleBadgeColor('staff');
       return { bg: 'bg-gray-50', text: 'text-gray-700', border: 'border-gray-200' };
   }
 }
@@ -278,7 +339,9 @@ export function getRoleDisplayName(role) {
     case 'admin': return 'Admin';
     case 'supervisor': return 'Supervisor';
     case 'staff': return 'Staff';
-    default: return role || 'Guest';
+    default:
+      return roleRegistry.labels[role]
+        || (role ? String(role).split('_').filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') : 'Guest');
   }
 }
 

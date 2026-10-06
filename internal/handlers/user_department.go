@@ -142,7 +142,7 @@ func resolveExtraDepartments(c *gin.Context, requested *[]string, role, home str
 
 	if requested == nil {
 		list = clean(current)
-		if role != "staff" || home == "" {
+		if !isStaffRole(role) || home == "" {
 			list = []string{}
 		}
 		return list, !sameList(list, current), 0, ""
@@ -158,7 +158,7 @@ func resolveExtraDepartments(c *gin.Context, requested *[]string, role, home str
 		}
 		return nil, false, http.StatusForbidden, "Only a Super Admin can add someone to other departments"
 	}
-	if len(wanted) > 0 && role != "staff" {
+	if len(wanted) > 0 && !isStaffRole(role) {
 		return nil, false, http.StatusBadRequest, "Only Staff can belong to more than one department"
 	}
 	if len(wanted) > 0 && home == "" {

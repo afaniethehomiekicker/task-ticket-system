@@ -22,6 +22,12 @@ import (
 // re-obtained via login. (Previously there was no expiry at all.)
 const TokenLifetime = 24 * time.Hour
 
+// RememberMeLifetime is the session length when "Keep me signed in" is
+// ticked at login. A long session is still cut off at once by a password
+// change, a disabled account or a deleted account (checked on every
+// request in authenticateAndSetContext), and by signing out.
+const RememberMeLifetime = 30 * 24 * time.Hour
+
 // The signing key is resolved on FIRST USE, not at package initialisation.
 //
 // It used to be `var jwtSecret = []byte(getJWTSecret())`. Package-level
@@ -88,19 +94,33 @@ type Claims struct {
 	// When the password was last changed, as known when this token was
 	// issued (Unix microseconds; 0 = never). See authenticateAndSetContext.
 	PasswordAt int64 `json:"pwd_at,omitempty"`
+	// Issued with "Keep me signed in" (RememberMeLifetime). Kept so a token
+	// re-issued during the session (password change) lasts as long.
+	Remember bool `json:"rem,omitempty"`
 	jwt.RegisteredClaims
 }
 
 func GenerateToken(user *models.User) (string, error) {
+	return GenerateSessionToken(user, false)
+}
+
+// GenerateSessionToken issues a token valid for TokenLifetime, or for
+// RememberMeLifetime when remember is true ("Keep me signed in").
+func GenerateSessionToken(user *models.User, remember bool) (string, error) {
 	now := time.Now()
+	lifetime := TokenLifetime
+	if remember {
+		lifetime = RememberMeLifetime
+	}
 	claims := Claims{
 		UserID:     user.ID,
 		Role:       user.Role,
 		Department: user.Department,
 		PasswordAt: passwordStamp(user.PasswordChangedAt),
+		Remember:   remember,
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(TokenLifetime)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(lifetime)),
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -187,6 +207,8 @@ func authenticateAndSetContext(c *gin.Context) {
 	c.Set("user_department", user.Department)
 	// Additional departments (staff only; see models.User.ExtraDepartments).
 	c.Set("user_extra_departments", []string(user.ExtraDepartments))
+	// Whether this session was started with "Keep me signed in".
+	c.Set("token_remember", claims.Remember)
 	c.Next()
 }
 

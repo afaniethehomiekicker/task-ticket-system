@@ -33,6 +33,8 @@ type Vendor struct {
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
 	ArchivedByID *uint      `json:"archived_by_id,omitempty"`
 	CreatedByID  *uint      `json:"created_by_id,omitempty"`
+	// The spreadsheet import that created this vendor (see ImportBatch).
+	ImportBatchID *uint `json:"import_batch_id,omitempty" gorm:"index"`
 }
 
 func (v *Vendor) BeforeCreate(tx *gorm.DB) error {

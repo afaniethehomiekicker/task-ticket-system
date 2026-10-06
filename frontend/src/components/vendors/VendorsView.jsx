@@ -1,10 +1,17 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import {
   Truck, Plus, Search, Pencil, Archive, RotateCcw, X, Phone, Mail, MapPin, User as UserIcon, Layers,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { canManageVendors } from '../../utils/permissions';
 import { normalizeVendor, invalidateVendorList } from './vendorList';
+import { ImportSpreadsheetModal } from '../common/ImportSpreadsheetModal';
+import { buildVendorImportConfig } from './vendorImport';
+import { Pager, usePaged } from '../common/Pager';
+
+// Rows per page; thousands of vendors are shown a page at a time.
+const VENDORS_PER_PAGE = 100;
 
 // Vendor master — spec slides 30-31 ("Vendors" in the main menu; a core
 // entity with its own ID, audit trail and no hard delete). Everyone can view
@@ -65,6 +72,10 @@ export const VendorsView = () => {
   const [detail, setDetail] = useState(null); // { vendor, history }
   const [detailLoading, setDetailLoading] = useState(false);
 
+  // Spreadsheet import (many vendors at once), for "Manage Vendor List".
+  const [showImport, setShowImport] = useState(false);
+  const importConfig = useMemo(() => buildVendorImportConfig(), []);
+
   const loadVendors = useCallback(async () => {
     setLoading(true);
     setLoadError('');
@@ -87,13 +98,15 @@ export const VendorsView = () => {
 
   useEffect(() => { loadVendors(); }, [loadVendors]);
 
+  const deferredSearch = useDeferredValue(search);
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = deferredSearch.trim().toLowerCase();
     if (!q) return vendors;
     return vendors.filter(v =>
       [v.name, v.vendorNumber, v.contactPerson, v.phone, v.email, v.cities, v.services]
         .some(f => (f || '').toLowerCase().includes(q)));
-  }, [vendors, search]);
+  }, [vendors, deferredSearch]);
+  const { pageItems: pageVendors, pager } = usePaged(filtered, VENDORS_PER_PAGE, `${tab}|${deferredSearch}`);
 
   const openDetail = async (id) => {
     setDetailId(id);
@@ -213,14 +226,32 @@ export const VendorsView = () => {
           </p>
         </div>
         {canManage && tab === 'active' && (
-          <button
-            onClick={openCreate}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold cursor-pointer"
-          >
-            <Plus className="w-4 h-4" /> Add Vendor
-          </button>
+          <div className="flex gap-2 self-start sm:self-auto">
+            <button
+              type="button"
+              onClick={() => setShowImport(true)}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-zinc-700 text-slate-700 dark:text-zinc-300 hover:bg-slate-200 dark:hover:bg-zinc-800 cursor-pointer"
+              title="Add many vendors from an Excel or CSV file"
+            >
+              <FileSpreadsheet className="w-4 h-4" /> Import from Excel
+            </button>
+            <button
+              onClick={openCreate}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold cursor-pointer"
+            >
+              <Plus className="w-4 h-4" /> Add Vendor
+            </button>
+          </div>
         )}
       </div>
+
+      {showImport && (
+        <ImportSpreadsheetModal
+          config={importConfig}
+          onClose={() => setShowImport(false)}
+          onImported={() => { invalidateVendorList(); loadVendors(); }}
+        />
+      )}
 
       <div className="flex flex-col sm:flex-row gap-3 sm:items-center justify-between">
         <div className="inline-flex rounded-lg border border-slate-300 dark:border-zinc-700 overflow-hidden text-xs">
@@ -270,7 +301,7 @@ export const VendorsView = () => {
               </tr>
             </thead>
             <tbody>
-              {filtered.map(v => (
+              {pageVendors.map(v => (
                 <tr
                   key={v.id}
                   onClick={() => openDetail(v.id)}
@@ -316,6 +347,7 @@ export const VendorsView = () => {
           </table>
         )}
       </div>
+      {!loading && !loadError && <Pager {...pager} noun="vendors" />}
 
       {/* Detail */}
       {detailId && (

@@ -59,6 +59,7 @@ func GetClients(c *gin.Context) {
 		return
 	}
 	markClientAccess(c, clients) // reference-only rows lose contact details
+	markClientEdit(c, clients)   // can_edit / edit_until / edit_request
 	c.JSON(http.StatusOK, gin.H{"clients": clients})
 }
 
@@ -113,6 +114,7 @@ func GetClient(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
+	markOneClientEdit(c, &client)
 	c.JSON(http.StatusOK, gin.H{"client": client})
 }
 
@@ -132,14 +134,10 @@ func CreateClient(c *gin.Context) {
 		return
 	}
 
-	// Permanent ID from the atomic counter (spec slide 7) — "highest + 1"
-	// could hand the same number to two records created together.
-	clientNumber, idErr := models.NextID(database.DB, "CL")
-	if idErr != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to allocate a client ID"})
+	if strings.TrimSpace(input.CompanyName) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Company name is required"})
 		return
 	}
-
 	if !validCNIC(input.CNIC) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "CNIC must be 13 digits (e.g. 12345-1234567-1)"})
 		return
@@ -150,13 +148,23 @@ func CreateClient(c *gin.Context) {
 		return
 	}
 
+	// Permanent ID from the atomic counter (spec slide 7) — "highest + 1"
+	// could hand the same number to two records created together. Taken
+	// only after validation passes: a rejected request (e.g. a bad row in
+	// a spreadsheet import) used to use up a CL- number and leave a gap.
+	clientNumber, idErr := models.NextID(database.DB, "CL")
+	if idErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to allocate a client ID"})
+		return
+	}
+
 	client := models.Client{
 		ClientName:    strings.TrimSpace(input.ClientName),
 		CNIC:          strings.TrimSpace(input.CNIC),
 		Mobile:        strings.TrimSpace(input.Mobile),
 		CustomFields:  custom,
 		ClientNumber:  clientNumber,
-		CompanyName:   input.CompanyName,
+		CompanyName:   strings.TrimSpace(input.CompanyName),
 		ContactPerson: input.ContactPerson,
 		Email:         input.Email,
 		Phone:         input.Phone,
@@ -186,6 +194,7 @@ func CreateClient(c *gin.Context) {
 	auditClient(c, "created", client.ID, fmt.Sprintf("Created client %s: %s", client.ClientNumber, client.CompanyName))
 
 	client.AccessLevel = "full"
+	markOneClientEdit(c, &client) // starts the creator's 30-minute edit window
 	c.JSON(http.StatusCreated, gin.H{"message": "Client created successfully", "client": client})
 }
 
@@ -218,6 +227,13 @@ func UpdateClient(c *gin.Context) {
 	var client models.Client
 	if err := database.DB.First(&client, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Client not found"})
+		return
+	}
+	// Management may edit any client; staff with "Edit Admin-Added Clients"
+	// only a client an Admin added, within 30 minutes of it being added or
+	// while an approved edit request lasts (client_edit.go).
+	if st := clientEditStateFor(viewerFrom(c), &client, time.Now()); !st.Allowed {
+		clientEditDenied(c, st)
 		return
 	}
 
@@ -300,6 +316,8 @@ func UpdateClient(c *gin.Context) {
 	}
 
 	database.DB.First(&client, id)
+	client.AccessLevel = "full"
+	markOneClientEdit(c, &client)
 	c.JSON(http.StatusOK, gin.H{"client": client})
 }
 

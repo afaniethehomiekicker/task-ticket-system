@@ -1,5 +1,6 @@
 import React from 'react';
 import { useApp } from '../../context/AppContext';
+import { isStaffRole, getRoleDisplayName } from '../../utils/permissions';
 
 // Status badges read the configurable status catalog (Settings → Workflow
 // Statuses) for the label, so renamed and newly added statuses display
@@ -72,11 +73,11 @@ export const RoleBadge = ({ role, size = 'sm' }) => {
   // rendered as a green "Staff" badge. Show the real role name in a neutral
   // style instead; only a missing role still defaults to Staff.
   const prettify = (r) => String(r).split('_').filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-  const current = map[role] || (role ? {
+  const current = map[role] || (role && isStaffRole(role) ? { ...map.staff, label: getRoleDisplayName(role) } : null) || (role ? {
     bg: 'bg-slate-100 dark:bg-zinc-800',
     text: 'text-slate-700 dark:text-zinc-300',
     border: 'border-slate-200 dark:border-zinc-700',
-    label: prettify(role)
+    label: getRoleDisplayName(role) || prettify(role)
   } : map.staff);
 
   return (

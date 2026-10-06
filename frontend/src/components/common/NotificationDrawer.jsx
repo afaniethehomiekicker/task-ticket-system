@@ -11,7 +11,9 @@ export const NotificationDrawer = ({ open, onClose }) => {
     setSelectedTicketId,
     setSelectedProjectDetailId,
     setSelectedFeasibilityId,
-    setActiveTab
+    setActiveTab,
+    setListPreset,
+    reloadClients
   } = useApp();
 
   if (!open) return null;
@@ -31,6 +33,13 @@ export const NotificationDrawer = ({ open, onClose }) => {
       setSelectedFeasibilityId(notif.entityId);
       onClose();
     } else if (notif.entityType === 'client') {
+      // e.g. "Edit request approved": reload so the client shows as editable.
+      reloadClients?.();
+      setActiveTab('clients');
+      onClose();
+    } else if (notif.entityType === 'client_edit_request') {
+      // A staff member asked for edit access: open the requests list.
+      setListPreset({ tab: 'clients', editRequests: true });
       setActiveTab('clients');
       onClose();
     }

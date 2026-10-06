@@ -7,7 +7,7 @@ import {
 import { PriorityBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
 import { exportTicketsToCSV } from '../../utils/exportUtils';
 
-import { assignedByName, ticketSlaState } from '../../utils/permissions';
+import { assignedByName, ticketSlaState, isStaffRole } from '../../utils/permissions';
 import { FilterSelect } from '../common/FilterSelect';
 export const TicketsView = () => {
   const { 
@@ -194,7 +194,7 @@ export const TicketsView = () => {
           <option value="low">Low</option>
         </select>
 
-        {currentUser.role !== 'staff' && (
+        {!isStaffRole(currentUser.role) && (
           <select
             id="tickets-assignee-filter"
             value={assigneeFilter}

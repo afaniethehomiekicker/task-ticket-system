@@ -1,8 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import {
   filterProjectsForUser, filterTasksForUser, filterTicketsForUser,
-  DEFAULT_PERMISSION_MATRIX, getRoleDisplayName, canViewAuditLogs
-} from '../utils/permissions';
+  DEFAULT_PERMISSION_MATRIX, getRoleDisplayName, canViewAuditLogs, registerRoles } from '../utils/permissions';
 import confetti from 'canvas-confetti';
 
 // Still needed for Projects/Tasks/Tickets, which haven't been normalized
@@ -400,6 +399,13 @@ const normalizeClient = (raw) => {
     address: raw.address || '',
     createdAt: raw.created_at || raw.CreatedAt || null,
     updatedAt: raw.updated_at || raw.UpdatedAt || null,
+    // Edit access for the signed-in user, decided by the server (see
+    // internal/handlers/client_edit.go): canEdit now; editUntil = when that
+    // ends (30-minute window or an approved request); editRequest = 'pending'
+    // when they have asked an admin for edit access.
+    canEdit: !!raw.can_edit,
+    editUntil: raw.edit_until || null,
+    editRequest: raw.edit_request || '',
   };
 };
 
@@ -619,7 +625,8 @@ export const AppProvider = ({ children }) => {
       headers['Authorization'] = `Bearer ${authToken}`;
     }
     return fetch(url, { ...options, headers }).then((res) => {
-      // 401 means this session is no longer valid: it expired (24 hours),
+      // 401 means this session is no longer valid: it expired (24 hours, or
+      // 30 days with "Keep me signed in"),
       // the password was changed or reset, or the account was removed.
       // Go back to the login page instead of showing an error for every
       // action. The request is left pending: the screen that made it is
@@ -1145,6 +1152,9 @@ export const AppProvider = ({ children }) => {
           const rawRoles = Array.isArray(data.roles) ? data.roles : (Array.isArray(data) ? data : null);
           if (rawRoles) {
             const keys = rawRoles.map(r => r.key ?? r.Key).filter(Boolean);
+            // Labels and base roles ("Staff (Client Editor)" is a kind of
+            // Staff) for isStaffRole / getRoleDisplayName.
+            registerRoles(rawRoles);
             if (keys.length > 0) setCustomRoles(keys);
           }
         }
@@ -1895,6 +1905,22 @@ export const AppProvider = ({ children }) => {
       });
     }
     return true;
+  };
+
+  // Reloads the client list from the server — used after a spreadsheet
+  // import, which can add thousands of clients in one request. Returns
+  // false when the reload failed (the old list stays in place).
+  const reloadClients = async () => {
+    try {
+      const res = await apiFetch('/api/clients');
+      if (!res.ok) return false;
+      const data = await res.json();
+      setClients((data.clients || []).map(normalizeClient).filter(Boolean));
+      return true;
+    } catch (err) {
+      console.warn('Failed to reload clients:', err);
+      return false;
+    }
   };
 
   const createClient = async (data) => {
@@ -4308,6 +4334,7 @@ export const AppProvider = ({ children }) => {
         fetchSLAPolicies,
         clientFields,
         saveClientField,
+        reloadClients,
         fetchClientOverview,
         routeTicket,
         returnTicket,

@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { PriorityBadge } from '../common/Badge';
 
-import { canCreateFeasibility } from '../../utils/permissions';
+import { canCreateFeasibility, isStaffRole } from '../../utils/permissions';
 import { FeasibilityEditModal } from './FeasibilityEditModal';
 
 const PRODUCTS = ['DPLC', 'Dark Fiber', 'IPT', 'IPT Mix', 'Pure IPT'];
@@ -202,7 +202,7 @@ export const FeasibilitiesView = () => {
           className="px-3 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
         >
           <option value="all">All Assignees</option>
-          {allUsers.filter(u => u.role === 'staff' || u.role === 'supervisor').map(u => (
+          {allUsers.filter(u => isStaffRole(u.role) || u.role === 'supervisor').map(u => (
             <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
           ))}
         </select>
