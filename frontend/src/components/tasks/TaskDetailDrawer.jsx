@@ -10,6 +10,7 @@ import { canApproveWork, canArchiveRecords, canViewInternalNotes, canAssignTicke
 
 import { TimelinePanel } from '../common/TimelinePanel';
 import { DocumentsPanel } from '../common/DocumentsPanel';
+import { PrivateBadge, DeptViewBadge } from '../common/PrivateToggle';
 export const TaskDetailDrawer = () => {
   const { 
     selectedTaskId, 
@@ -62,6 +63,7 @@ export const TaskDetailDrawer = () => {
   const accessTaskId = accessTask?.id ?? null;
   const accessPanelAllowed = !!accessTask &&
     accessTask.accessLevel !== 'subtask' && accessTask.accessLevel !== 'granted' &&
+    accessTask.accessLevel !== 'department' &&
     canGrantRecordAccess(currentUser, permissionMatrix);
   useEffect(() => {
     let cancelled = false;
@@ -111,11 +113,16 @@ export const TaskDetailDrawer = () => {
   const isReference = task.accessLevel === 'subtask';
   // Explicitly shared with the current user (record-level grant).
   const isGranted = task.accessLevel === 'granted';
+  // Department view: a non-private task of the caller's department. They can
+  // read all of it but change nothing except their own sub-tasks' status —
+  // the server refuses everything else.
+  const isViewOnly = task.accessLevel === 'department';
+  const canEdit = !isReference && !isViewOnly;
   const isSupervisorOrAbove = canApproveWork(currentUser, permissionMatrix);
 
   // Sharing this task with specific people: admins (Grant Record Access) on
   // a task they can see themselves — not on one shared with them.
-  const canManageAccess = !isReference && !isGranted && canGrantRecordAccess(currentUser, permissionMatrix);
+  const canManageAccess = canEdit && !isGranted && canGrantRecordAccess(currentUser, permissionMatrix);
 
   const reloadAccess = async () => {
     setAccessLoading(true);
@@ -193,9 +200,9 @@ export const TaskDetailDrawer = () => {
   //    department (spec slide 20: "Staff A creates Subtask -> assigns to
   //    Staff B", "Transferred to L2").
   const me = String(currentUser?.id);
-  const canReassignAnySub = !isReference && canAssignTickets(currentUser, permissionMatrix);
+  const canReassignAnySub = canEdit && canAssignTickets(currentUser, permissionMatrix);
   const canTransfer = canTransferOwnWork(currentUser, permissionMatrix);
-  const ownsTask = !isReference && String(task.assignedToId) === me;
+  const ownsTask = canEdit && String(task.assignedToId) === me;
   // Admins assign work; they can't be given a sub-task.
   const colleagues = sameDepartmentUsers(currentUser, allUsers).filter(isTaskAssignable);
   const canChangeSubAssignee = (sub) =>
@@ -262,10 +269,12 @@ export const TaskDetailDrawer = () => {
             </span>
             <TaskStatusBadge status={task.status} />
             <PriorityBadge priority={task.priority} />
+            {task.isPrivate && <PrivateBadge />}
+            {isViewOnly && <DeptViewBadge />}
           </div>
 
           <div className="flex items-center gap-2">
-{!isReference && (
+{canEdit && (
             <button
               id="edit-task-btn"
               onClick={() => setSelectedTaskEditId(task.id)}
@@ -292,7 +301,13 @@ export const TaskDetailDrawer = () => {
               This task was shared with you. You can work on it; its project is shown for reference only.
             </div>
           )}
-                    {isReference && (
+          {isViewOnly && (
+            <div className="p-3 rounded-xl bg-slate-100 dark:bg-zinc-900/60 border border-slate-300 dark:border-zinc-800 text-xs text-slate-700 dark:text-zinc-300">
+              You're viewing this task as a member of its department. Only the people working on it can change it
+              {subTasks.some(st => String(st.assignedToId) === String(currentUser?.id)) ? ' — you can update the status of your own sub-tasks.' : '.'}
+            </div>
+          )}
+          {isReference && (
             <div className="p-3 rounded-xl bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-900 text-xs text-sky-800 dark:text-sky-300">
               You can see this task because a sub-task of it is assigned to you. Only your sub-tasks are shown;
               you can update their status.
@@ -314,7 +329,7 @@ export const TaskDetailDrawer = () => {
                 </div>
               </div>
 
-              {isSupervisorOrAbove && (
+              {isSupervisorOrAbove && !isViewOnly && (
                 <>
                   <textarea
                     rows={2}
@@ -417,8 +432,8 @@ export const TaskDetailDrawer = () => {
                 <div
                   key={item.id}
                   id={`checklist-item-${item.id}`}
-                  onClick={() => toggleChecklistItem(task.id, item.id)}
-                  className={`p-2.5 rounded-lg border cursor-pointer transition flex items-center gap-3 text-xs ${
+                  onClick={() => { if (canEdit) toggleChecklistItem(task.id, item.id); }}
+                  className={`p-2.5 rounded-lg border ${canEdit ? 'cursor-pointer' : 'cursor-default'} transition flex items-center gap-3 text-xs ${
                     item.completed
                       ? 'bg-slate-100 dark:bg-zinc-900/40 border-slate-300 dark:border-zinc-800 text-slate-500 dark:text-zinc-500 line-through'
                       : 'bg-slate-100 dark:bg-zinc-900 border-slate-300 dark:border-zinc-800 text-slate-900 dark:text-zinc-200 hover:border-indigo-400 dark:hover:border-indigo-500'
@@ -428,7 +443,8 @@ export const TaskDetailDrawer = () => {
                     type="checkbox"
                     checked={item.completed}
                     onChange={() => {}}
-                    className="w-4 h-4 rounded text-indigo-600 focus:ring-0 cursor-pointer"
+                    disabled={!canEdit}
+                    className="w-4 h-4 rounded text-indigo-600 focus:ring-0 cursor-pointer disabled:cursor-default"
                   />
                   <span>{item.title}</span>
                 </div>
@@ -436,6 +452,7 @@ export const TaskDetailDrawer = () => {
             </div>
 
             {/* Add Checklist Form */}
+            {canEdit && (
             <form onSubmit={handleAddChecklist} className="flex gap-2">
               <input
                 id="add-checklist-input"
@@ -452,6 +469,7 @@ export const TaskDetailDrawer = () => {
                 Add
               </button>
             </form>
+            )}
           </div>
           </>)}
 
@@ -502,7 +520,9 @@ export const TaskDetailDrawer = () => {
                   <select
                     value={sub.status}
                     onChange={(e) => updateSubTaskStatus(task.id, sub.id, e.target.value)}
-                    className="px-2 py-1 text-xs rounded border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-800 dark:text-zinc-300 focus:outline-hidden"
+                    // Department viewers: only their own sub-tasks.
+                    disabled={isViewOnly && String(sub.assignedToId) !== me}
+                    className="disabled:opacity-60 px-2 py-1 text-xs rounded border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-800 text-slate-800 dark:text-zinc-300 focus:outline-hidden"
                   >
                     <option value="todo">To Do</option>
                     <option value="in_progress">In Progress</option>
@@ -513,7 +533,7 @@ export const TaskDetailDrawer = () => {
               ))}
             </div>
 
-{!isReference && (
+{canEdit && (
             <form onSubmit={handleAddSubTask} className="space-y-2">
               <input
                 id="add-subtask-input"
@@ -635,6 +655,7 @@ export const TaskDetailDrawer = () => {
                       <span className="text-slate-800 dark:text-zinc-200 truncate">{dep.title}</span>
                       {dep.status && <TaskStatusBadge status={dep.status} />}
                     </div>
+                    {canEdit && (
                     <button
                       type="button"
                       onClick={() => removeTaskDependency(task.id, dep.id)}
@@ -643,11 +664,13 @@ export const TaskDetailDrawer = () => {
                     >
                       <XCircle className="w-3.5 h-3.5" />
                     </button>
+                    )}
                   </div>
                 ))}
               </div>
             )}
 
+            {canEdit && (
             <form onSubmit={handleAddDependency} className="flex gap-2">
               <select
                 value={selectedDependencyId}
@@ -670,6 +693,7 @@ export const TaskDetailDrawer = () => {
                 Add Dependency
               </button>
             </form>
+            )}
           </div>
           </>)}
 
@@ -714,7 +738,8 @@ export const TaskDetailDrawer = () => {
               )}
             </div>
 
-            {/* Post Comment */}
+            {/* Post Comment — not for department viewers (server refuses). */}
+            {canEdit && (<>
             {showInternal && (
               <label className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-zinc-400 cursor-pointer select-none">
                 <input
@@ -743,6 +768,7 @@ export const TaskDetailDrawer = () => {
                 <Send className="w-3.5 h-3.5" /> Post
               </button>
             </form>
+            </>)}
           </div>
           </>)}
 
@@ -751,12 +777,12 @@ export const TaskDetailDrawer = () => {
               returns only the caller's own sub-task events. */}
           {/* Documents & evidence (spec slide 27). Not in the sub-task
               reference view — files belong to the task itself. */}
-          {!isReference && <DocumentsPanel recordType="task" recordId={task.id} />}
+          {!isReference && <DocumentsPanel recordType="task" recordId={task.id} readOnly={isViewOnly} />}
 
           <TimelinePanel kind="tasks" recordId={task.id} refreshKey={`${task.updatedAt}|${task.status}|${task.assignedToId}|${(task.subTasks || []).length}`} />
         </div>
 
-        {!isReference && (<>
+        {canEdit && (<>
         {/* Footer Actions */}
         <div className="p-4 border-t border-slate-300 dark:border-zinc-800 bg-slate-300/40 dark:bg-zinc-950 space-y-3">
           <div className="flex items-center justify-between gap-3">

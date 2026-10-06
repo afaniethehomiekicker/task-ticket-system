@@ -3,7 +3,8 @@ import { useApp } from '../../context/AppContext';
 import { X, Trash2 } from 'lucide-react';
 import AsyncSelect from 'react-select/async';
 
-import { isTaskAssignable, canArchiveRecords, allowedTicketStatuses } from '../../utils/permissions';
+import { isTaskAssignable, canArchiveRecords, allowedTicketStatuses, canSetPrivacy } from '../../utils/permissions';
+import { PrivateToggle } from '../common/PrivateToggle';
 export const TicketEditModal = () => {
   const { tickets, selectedTicketEditId, setSelectedTicketEditId, updateTicket, deleteTicket, allUsers, apiFetch, searchAssignees, getStatuses, getStatusLabel, getStatusCategory, currentUser, permissionMatrix } = useApp();
 
@@ -16,7 +17,8 @@ export const TicketEditModal = () => {
     priority: 'normal',
     status: 'open',
     assignedToId: '',
-    category: ''
+    category: '',
+    isPrivate: false
   });
 
   useEffect(() => {
@@ -27,7 +29,8 @@ export const TicketEditModal = () => {
         priority: ticket.priority || 'normal',
         status: ticket.status || 'open',
         assignedToId: ticket.assignedToId || '',
-        category: ticket.category || ''
+        category: ticket.category || '',
+        isPrivate: !!ticket.isPrivate
       });
     }
   }, [ticket]);
@@ -236,6 +239,13 @@ export const TicketEditModal = () => {
               menuPosition="fixed"
             />
           </div>
+
+          <PrivateToggle
+            kind="ticket"
+            value={formData.isPrivate}
+            onChange={(v) => setFormData({ ...formData, isPrivate: v })}
+            disabled={!canSetPrivacy(currentUser, ticket.createdById)}
+          />
 
           <div className="flex items-center justify-between pt-4 border-t border-slate-300 dark:border-zinc-800">
             {/* Archive button only for the archive_records permission — it was

@@ -360,6 +360,29 @@ export function getRoleDisplayName(role) {
 //                 supervise, work they created
 //   staff/other   work assigned to them, work they created
 //   projects      department / owner (admins) or membership (everyone)
+//
+// Department-wide view (supervisors, staff, other non-admin roles): they
+// also see every NON-private task and ticket of their departments, read-only.
+// The server decides that and marks those records accessLevel 'department';
+// these filters just keep them. Private records follow only the rules above.
+
+// Records the caller sees only through their department: readable, not
+// changeable (the server refuses every write).
+export const isDepartmentView = (record) => record?.accessLevel === 'department';
+
+// Tasks the caller can't work on as a whole — a sub-task reference view or a
+// department view. Only their own sub-tasks can be changed in them.
+export const isLimitedTaskView = (task) =>
+  task?.accessLevel === 'subtask' || task?.accessLevel === 'department';
+
+// Who may mark a task or ticket private / public: its creator, supervisors,
+// admins and the Super Admin (canSetPrivacy in visibility.go). Pass the
+// record's creator id; omit it when creating (the creator is the caller).
+export function canSetPrivacy(user, creatorId) {
+  if (!user) return false;
+  if (['super_admin', 'admin', 'supervisor'].includes(user.role)) return true;
+  return creatorId === undefined || String(creatorId) === String(user.id);
+}
 
 export function filterProjectsForUser(projects = [], user, allUsers = []) {
   if (!Array.isArray(projects) || !user) return [];
@@ -389,7 +412,7 @@ export const filterTasksForUser = (tasks = [], user, allUsers = []) => {
     if (!task) return false;
     // Parent of a sub-task assigned to this user: the server already decided
     // they may see it (as a reference view).
-    if (task.accessLevel === 'subtask' || task.accessLevel === 'granted') return true;
+    if (task.accessLevel === 'subtask' || task.accessLevel === 'granted' || task.accessLevel === 'department') return true;
 
     if (user.role === 'admin') {
       // Same rule as the server (visibility.go): their department's tasks,
@@ -469,6 +492,8 @@ export function filterTicketsForUser(tickets = [], user, allUsers = []) {
 
   return tickets.filter(t => {
     if (!t) return false;
+    // A non-private ticket of their department: the server already decided.
+    if (t.accessLevel === 'department') return true;
 
     if (user.role === 'admin') {
       // Mirrors the server: their department's tickets, tickets their

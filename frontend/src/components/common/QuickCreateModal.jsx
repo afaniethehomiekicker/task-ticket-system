@@ -14,6 +14,7 @@ const TICKET_CATEGORIES = [
 
 import { CustomFieldInputs } from '../Clients/CustomFieldInputs';
 import { isTaskAssignable, isInDepartment } from '../../utils/permissions';
+import { PrivateToggle } from './PrivateToggle';
 export const QuickCreateModal = ({ isOpen, onClose }) => {
   const {
     createProject,
@@ -91,6 +92,8 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   const [taskChecklist, setTaskChecklist] = useState([]);
   const [taskChecklistInput, setTaskChecklistInput] = useState("");
   const [taskDueDate, setTaskDueDate] = useState("");
+  // Off = the whole department can view it (read-only).
+  const [taskIsPrivate, setTaskIsPrivate] = useState(false);
 
   // Form states — Ticket
   const [ticketSubject, setTicketSubject] = useState("");
@@ -103,6 +106,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   const [ticketClientName, setTicketClientName] = useState("");
   const [ticketDepartment, setTicketDepartment] = useState("");
   const [ticketAssigneeId, setTicketAssigneeId] = useState("");
+  const [ticketIsPrivate, setTicketIsPrivate] = useState(false);
 
   // Form states — standalone Client tab.
   const [clientCompanyName, setClientCompanyName] = useState("");
@@ -335,6 +339,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     setTaskPriority("normal");
     setTaskDepartment("");
     setTaskAssigneeId("");
+    setTaskIsPrivate(false);
     setTicketSubject("");
     setTicketCategory(TICKET_CATEGORIES[0]);
     setTicketPriority("normal");
@@ -343,6 +348,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     setTicketClientName("");
     setTicketDepartment("");
     setTicketAssigneeId("");
+    setTicketIsPrivate(false);
     setClientCompanyName("");
     setClientContactPerson("");
     setClientEmail("");
@@ -437,6 +443,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
         projectId: resolvedProjectId,
         department: taskDepartment || currentUser?.department || "",
         progress: 0,
+        isPrivate: taskIsPrivate,
       };
 
       if (typeof createTask !== "function") return;
@@ -457,6 +464,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
         projectId: ticketProjectId || null,
         clientId: ticketClientId || null,
         assignedToId: ticketAssigneeId || null,
+        isPrivate: ticketIsPrivate,
       };
 
       if (typeof createTicket !== "function") return;
@@ -918,6 +926,8 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                 </select>
               </div>
 
+              <PrivateToggle kind="task" value={taskIsPrivate} onChange={setTaskIsPrivate} />
+
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-300 dark:border-zinc-800">
                 <button
                   type="button"
@@ -1064,6 +1074,8 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                   styles={customStyles}
                 />
               </div>
+
+              <PrivateToggle kind="ticket" value={ticketIsPrivate} onChange={setTicketIsPrivate} />
 
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-300 dark:border-zinc-800">
                 <button

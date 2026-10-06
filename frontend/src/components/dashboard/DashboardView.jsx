@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { 
   FolderKanban, CheckSquare, LifeBuoy, ShieldCheck, 
-  TrendingUp, Clock, Plus, Flame, ChevronRight, FileSearch, Pin
+  TrendingUp, Clock, Plus, Flame, ChevronRight, FileSearch, Pin, UserCheck
 } from 'lucide-react';
 import { RoleBadge, PriorityBadge, TaskStatusBadge } from '../common/Badge';
+import { isStaffRole } from '../../utils/permissions';
 
 export const DashboardView = () => {
   const { 
@@ -47,6 +48,10 @@ export const DashboardView = () => {
   const criticalTasks = visibleTasks.filter(t => (t.priority === 'critical' || t.priority === 'urgent') && !isFinished('task', t.status));
   const pendingReviewTasks = visibleTasks.filter(t => getStatusCategory('task', t.status) === 'review');
   const openTickets = visibleTickets.filter(t => !isFinished('ticket', t.status));
+  // Staff now also see their department's tickets (read-only), so "Open
+  // Tickets" is the department's; this is just the open ones that are theirs.
+  const isStaff = isStaffRole(currentUser.role);
+  const assignedTickets = openTickets.filter(t => String(t.assignedToId) === String(currentUser.id));
   // Was `t.status === 'escalated' || t.escalationLevel !== 'none'` —
   // "escalated" isn't a real Ticket.Status value, and escalation isn't
   // an implemented feature on this backend at all (no EscalationLevel
@@ -101,12 +106,15 @@ export const DashboardView = () => {
 
       {/* KPI cards — spec slide 28. Every card opens the exact filtered list
           behind its number ("single-click drill-down"). */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+      <div className={`grid grid-cols-2 sm:grid-cols-3 gap-3 ${isStaff ? 'lg:grid-cols-4 xl:grid-cols-8' : 'lg:grid-cols-7'}`}>
         {[
           { id: 'open-tickets', label: 'Open Tickets', value: openTickets.length, icon: LifeBuoy, tone: 'text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-950',
-            go: () => { setListPreset({ tab: 'tickets', status: 'open', priority: 'all' }); setActiveTab('tickets'); } },
+            go: () => { setListPreset({ tab: 'tickets', status: 'open', priority: 'all', assignee: 'all' }); setActiveTab('tickets'); } },
+          // Staff accounts only: open tickets assigned to them.
+          ...(isStaff ? [{ id: 'assigned-tickets', label: 'Assigned Tickets', value: assignedTickets.length, icon: UserCheck, tone: 'text-teal-600 dark:text-teal-400 bg-teal-100 dark:bg-teal-950',
+            go: () => { setListPreset({ tab: 'tickets', status: 'open', priority: 'all', assignee: String(currentUser.id) }); setActiveTab('tickets'); } }] : []),
           { id: 'critical-tickets', label: 'Critical Tickets', value: criticalTickets.length, icon: Flame, tone: 'text-rose-600 dark:text-rose-400 bg-rose-100 dark:bg-rose-950',
-            go: () => { setListPreset({ tab: 'tickets', status: 'open', priority: 'critical' }); setActiveTab('tickets'); } },
+            go: () => { setListPreset({ tab: 'tickets', status: 'open', priority: 'critical', assignee: 'all' }); setActiveTab('tickets'); } },
           { id: 'overdue-tasks', label: 'Overdue Tasks', value: overdueTasks.length, icon: Clock, tone: 'text-orange-600 dark:text-orange-400 bg-orange-100 dark:bg-orange-950',
             go: () => { setListPreset({ tab: 'tasks', status: 'overdue', priority: 'all' }); setActiveTab('tasks'); } },
           { id: 'running-projects', label: 'Running Projects', value: runningProjects.length, icon: FolderKanban, tone: 'text-indigo-600 dark:text-indigo-400 bg-indigo-100 dark:bg-indigo-950',

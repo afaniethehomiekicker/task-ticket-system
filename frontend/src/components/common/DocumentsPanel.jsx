@@ -11,7 +11,9 @@ import { Paperclip, Upload, Download, History, Trash2, RefreshCw } from 'lucide-
 const fmtSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
 const ACCEPT = '.pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.log,.csv,.xlsx,.xls,.docx,.doc,.pptx,.ppt,.vsdx,.drawio,.zip,.pcap,.pcapng,.msg,.eml,.json,.xml';
 
-export const DocumentsPanel = ({ recordType, recordId, compact = false, title = 'Documents' }) => {
+// readOnly: list and download only (a department viewer of someone else's
+// task or ticket — the server refuses their uploads and removals).
+export const DocumentsPanel = ({ recordType, recordId, compact = false, title = 'Documents', readOnly = false }) => {
   const { apiFetch, currentUser } = useApp();
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -105,7 +107,7 @@ export const DocumentsPanel = ({ recordType, recordId, compact = false, title = 
     load();
   };
 
-  const canRemove = (d) => d.uploaded_by_id === currentUser?.id || ['admin', 'super_admin'].includes(currentUser?.role);
+  const canRemove = (d) => !readOnly && (d.uploaded_by_id === currentUser?.id || ['admin', 'super_admin'].includes(currentUser?.role));
 
   return (
     <div className="space-y-2">
@@ -137,8 +139,10 @@ export const DocumentsPanel = ({ recordType, recordId, compact = false, title = 
                 {latest.note && <span className="block text-[11px] text-slate-600 dark:text-zinc-300">{latest.note}</span>}
               </button>
               <button type="button" onClick={() => download(latest)} title="Download" className="p-1 rounded text-slate-500 hover:text-indigo-600 cursor-pointer"><Download className="w-3.5 h-3.5" /></button>
+              {!readOnly && (
               <button type="button" onClick={() => { setReplacing(latest.id); fileRef.current?.click(); }} disabled={busy}
                 title="Upload a new version" className="p-1 rounded text-slate-500 hover:text-indigo-600 cursor-pointer disabled:opacity-50"><Upload className="w-3.5 h-3.5" /></button>
+              )}
               {older.length > 0 && (
                 <button type="button" onClick={() => setOpenHistory(openHistory === g ? null : g)} title="Version history"
                   className="p-1 rounded text-slate-500 hover:text-indigo-600 cursor-pointer flex items-center gap-0.5">
@@ -165,6 +169,7 @@ export const DocumentsPanel = ({ recordType, recordId, compact = false, title = 
         );
       })}
 
+      {!readOnly && (<>
       <div className="flex flex-wrap items-center gap-2">
         <input type="text" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional), e.g. “ping results from site B”"
           className="flex-1 min-w-[160px] px-2 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden" />
@@ -176,6 +181,7 @@ export const DocumentsPanel = ({ recordType, recordId, compact = false, title = 
           onChange={(e) => upload(e.target.files?.[0], replacing)} />
       </div>
       <p className="text-[10px] text-slate-500 dark:text-zinc-500">PDF, images, Office files, diagrams, logs, captures · max 25 MB</p>
+      </>)}
     </div>
   );
 };

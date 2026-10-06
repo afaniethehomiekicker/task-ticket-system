@@ -2,7 +2,8 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Columns3, Plus, Search, Clock, CheckSquare } from 'lucide-react';
 import { PriorityBadge } from '../common/Badge';
-import { canCreateTask, isStaffRole } from '../../utils/permissions';
+import { canCreateTask, isStaffRole, isDepartmentView, isLimitedTaskView } from '../../utils/permissions';
+import { PrivateBadge } from '../common/PrivateToggle';
 
 export const KanbanBoardView = () => {
   const { 
@@ -286,14 +287,17 @@ export const KanbanBoardView = () => {
                         <div
                           key={task.id}
                           id={`kanban-card-${task.id}`}
-                          draggable
-                          onDragStart={(e) => handleDragStart(e, `task:${task.id}`)}
+                          // Department tasks are view-only: shown, not movable.
+                          draggable={!isDepartmentView(task)}
+                          onDragStart={(e) => { if (isDepartmentView(task)) { e.preventDefault(); return; } handleDragStart(e, `task:${task.id}`); }}
                           onClick={() => setSelectedTaskId(task.id)}
-                          className="p-3.5 rounded-xl bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-800 shadow-2xs hover:shadow-md hover:border-indigo-400 dark:hover:border-indigo-500 cursor-grab active:cursor-grabbing transition group select-none"
+                          title={isDepartmentView(task) ? "Your department's task — view only" : undefined}
+                          className={`p-3.5 rounded-xl bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-800 shadow-2xs hover:shadow-md hover:border-indigo-400 dark:hover:border-indigo-500 ${isDepartmentView(task) ? 'cursor-pointer opacity-80' : 'cursor-grab active:cursor-grabbing'} transition group select-none`}
                         >
                           <div className="flex items-center justify-between gap-1 mb-2">
-                            <span className="font-mono text-[10px] font-bold text-indigo-600 dark:text-indigo-400">
+                            <span className="font-mono text-[10px] font-bold text-indigo-600 dark:text-indigo-400 flex items-center gap-1">
                               {task.taskNumber || task.id}
+                              {task.isPrivate && <PrivateBadge />}
                             </span>
                             <PriorityBadge priority={task.priority} />
                           </div>
@@ -352,14 +356,17 @@ export const KanbanBoardView = () => {
                   )}
                   {columnSubs.map(({ sub, parent }) => {
                     const subAssignee = (allUsers || []).find(u => String(u.id) === String(sub.assignedToId));
+                    // In a limited view of the parent (sub-task reference or
+                    // department view) only your own sub-tasks can be moved.
+                    const canMoveSub = !isLimitedTaskView(parent) || String(sub.assignedToId) === String(currentUser?.id);
                     return (
                       <div
                         key={`sub-${sub.id}`}
                         id={`kanban-subtask-${sub.id}`}
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, `sub:${parent.id}:${sub.id}`)}
+                        draggable={canMoveSub}
+                        onDragStart={(e) => { if (!canMoveSub) { e.preventDefault(); return; } handleDragStart(e, `sub:${parent.id}:${sub.id}`); }}
                         onClick={() => setSelectedTaskId(parent.id)}
-                        className="p-3 rounded-xl bg-sky-50/80 dark:bg-sky-950/20 border border-sky-200 dark:border-sky-900 shadow-2xs hover:shadow-md hover:border-sky-400 dark:hover:border-sky-600 cursor-grab active:cursor-grabbing transition select-none"
+                        className={`p-3 rounded-xl bg-sky-50/80 dark:bg-sky-950/20 border border-sky-200 dark:border-sky-900 shadow-2xs hover:shadow-md hover:border-sky-400 dark:hover:border-sky-600 ${canMoveSub ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer opacity-80'} transition select-none`}
                       >
                         <div className="flex items-center justify-between gap-1 mb-1.5">
                           <span className="text-[9px] px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 font-bold uppercase">

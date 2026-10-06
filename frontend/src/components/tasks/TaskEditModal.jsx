@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { X } from 'lucide-react';
-import { canAssignTickets, canApproveWork, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable } from '../../utils/permissions';
+import { canAssignTickets, canApproveWork, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, canSetPrivacy } from '../../utils/permissions';
+import { PrivateToggle } from '../common/PrivateToggle';
 
 export const TaskEditModal = () => {
   const { 
@@ -34,7 +35,8 @@ export const TaskEditModal = () => {
     status: 'todo',
     assignedToId: '',
     dueDate: '',
-    estimatedHours: 0
+    estimatedHours: 0,
+    isPrivate: false
   });
 
   useEffect(() => {
@@ -46,7 +48,8 @@ export const TaskEditModal = () => {
         status: task.status || 'todo',
         assignedToId: task.assignedToId || '',
         dueDate: task.dueDate || '',
-        estimatedHours: task.estimatedHours || 0
+        estimatedHours: task.estimatedHours || 0,
+        isPrivate: !!task.isPrivate
       });
     }
   }, [task]);
@@ -205,6 +208,13 @@ export const TaskEditModal = () => {
               className="w-full px-3 py-2 bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg text-xs text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-indigo-500"
             />
           </div>
+
+          <PrivateToggle
+            kind="task"
+            value={formData.isPrivate}
+            onChange={(v) => setFormData({ ...formData, isPrivate: v })}
+            disabled={!canSetPrivacy(currentUser, task.creatorId)}
+          />
 
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-300 dark:border-zinc-800">
             <button

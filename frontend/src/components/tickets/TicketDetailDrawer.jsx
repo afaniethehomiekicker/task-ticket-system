@@ -34,6 +34,7 @@ import { TimelinePanel } from '../common/TimelinePanel';
 import { SLAStatus } from './SLAStatus';
 import { TicketFlowActions } from './TicketFlowActions';
 import { DocumentsPanel } from '../common/DocumentsPanel';
+import { PrivateBadge, DeptViewBadge } from '../common/PrivateToggle';
 export const TicketDetailDrawer = () => {
   const {
     tickets,
@@ -81,15 +82,19 @@ export const TicketDetailDrawer = () => {
   // Only the statuses this person may pick (ticket_flow_rules.go): the team
   // handling the ticket changes it; "Reopened" goes through Reopen; a ticket
   // away from the department that raised it is finished with Return.
-  const canWork = canWorkTicket(currentUser, ticket, permissionMatrix);
+  // Department view: a non-private ticket of the caller's department. They can
+  // read it (details, replies, files, timeline) but not act on it — the
+  // server refuses every change.
+  const isViewOnly = ticket.accessLevel === 'department';
+  const canWork = !isViewOnly && canWorkTicket(currentUser, ticket, permissionMatrix);
   const STATUS_OPTIONS = allowedTicketStatuses(currentUser, ticket, getStatuses('ticket'), getStatusCategory, permissionMatrix)
     .map(st => [st.key, st.label]);
-  const canEscalate = !isClosedOut && ticket.status !== 'resolved' && canEscalateTicket(currentUser, ticket, permissionMatrix);
+  const canEscalate = !isViewOnly && !isClosedOut && ticket.status !== 'resolved' && canEscalateTicket(currentUser, ticket, permissionMatrix);
   // Reassigning: the team handling the ticket, within the ticket's department.
   const canAssign = canAssignTickets(currentUser, permissionMatrix) && canWork;
   // The current assignee may transfer it to a colleague in their own
   // department (e.g. CNOC L1 -> L2), without the general reassign right.
-  const canTransfer = !canAssign &&
+  const canTransfer = !isViewOnly && !canAssign &&
     String(ticket.assignedToId) === String(currentUser?.id) &&
     canTransferOwnWork(currentUser, permissionMatrix);
   const ticketDept = (ticket.department || '').trim().toLowerCase();
@@ -103,7 +108,7 @@ export const TicketDetailDrawer = () => {
           !sameDepartmentUsers(currentUser, users).some(x => x.id === u.id)))
     : agents;
   // Archive button: the archive_records permission (backend DeleteTicket).
-  const isAdminTier = canArchiveRecords(currentUser, permissionMatrix);
+  const isAdminTier = !isViewOnly && canArchiveRecords(currentUser, permissionMatrix);
 
   const publicComments = ticket.comments || [];
   const internalNotes = ticket.internalNotes || [];
@@ -188,6 +193,8 @@ export const TicketDetailDrawer = () => {
               </span>
               <TicketStatusBadge status={ticket.status} />
               <PriorityBadge priority={ticket.priority} />
+              {ticket.isPrivate && <PrivateBadge />}
+              {isViewOnly && <DeptViewBadge />}
               {ticket.slaBreached && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 uppercase">
                   <AlertTriangle className="w-3 h-3" /> SLA breached
@@ -197,6 +204,7 @@ export const TicketDetailDrawer = () => {
             <h2 className="text-lg font-bold text-slate-900 dark:text-zinc-100 break-words">{ticket.title}</h2>
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            {!isViewOnly && (
             <button
               type="button"
               onClick={() => { setSelectedTicketId(null); setSelectedTicketEditId(ticket.id); }}
@@ -205,6 +213,7 @@ export const TicketDetailDrawer = () => {
             >
               <Pencil className="w-4 h-4" />
             </button>
+            )}
             <button
               type="button"
               onClick={close}
@@ -218,6 +227,11 @@ export const TicketDetailDrawer = () => {
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {isViewOnly && (
+            <div className="p-3 rounded-xl bg-slate-100 dark:bg-zinc-900/60 border border-slate-300 dark:border-zinc-800 text-xs text-slate-700 dark:text-zinc-300">
+              You're viewing this ticket as a member of {ticket.department || 'its department'}. Only the people working on it can change it.
+            </div>
+          )}
           {/* Escalation banner */}
           {isEscalated && (
             <div className="p-4 rounded-xl bg-rose-100/80 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 flex items-start gap-3">
@@ -292,10 +306,10 @@ export const TicketDetailDrawer = () => {
           <SLAStatus ticket={ticket} />
 
           {/* CNOC flow (spec slide 19): route on, return to origin, reopen. */}
-          <TicketFlowActions ticket={ticket} />
+          {!isViewOnly && <TicketFlowActions ticket={ticket} />}
 
           {/* Documents & evidence (spec slide 27): screenshots, test results… */}
-          <DocumentsPanel recordType="ticket" recordId={ticket.id} />
+          <DocumentsPanel recordType="ticket" recordId={ticket.id} readOnly={isViewOnly} />
 
           {/* Assignment */}
           <div>
@@ -427,7 +441,7 @@ export const TicketDetailDrawer = () => {
               )}
             </div>
 
-            {!isClosedOut && (
+            {!isClosedOut && !isViewOnly && (
               <form onSubmit={handlePost} className="flex items-start gap-2">
                 <textarea
                   rows={2}
@@ -450,7 +464,8 @@ export const TicketDetailDrawer = () => {
           </div>
         </div>
 
-        {/* Footer actions */}
+        {/* Footer actions — none for department viewers. */}
+        {!isViewOnly && (
         <div className="p-4 border-t border-slate-300 dark:border-zinc-800 bg-slate-300/40 dark:bg-zinc-950 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2">
@@ -572,6 +587,7 @@ export const TicketDetailDrawer = () => {
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   );

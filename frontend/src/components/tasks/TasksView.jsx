@@ -6,7 +6,8 @@ import {
 } from 'lucide-react';
 import { PriorityBadge, TaskStatusBadge, RoleBadge } from '../common/Badge';
 
-import { canCreateTask, canAssignTickets, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName, isStaffRole } from '../../utils/permissions';
+import { canCreateTask, canAssignTickets, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName, isStaffRole, isLimitedTaskView, isDepartmentView } from '../../utils/permissions';
+import { PrivateBadge, DeptViewBadge } from '../common/PrivateToggle';
 import { exportTasksToCSV } from '../../utils/exportUtils';
 
 import { FilterSelect } from '../common/FilterSelect';
@@ -32,8 +33,11 @@ export const TasksView = () => {
     departments
   } = useApp();
 
+  // A dashboard card's filter is the INITIAL filter, so the page draws once,
+  // already filtered (instead of the full list first, then the filter).
+  const preset = listPreset?.tab === 'tasks' ? listPreset : null;
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState(taskListPreset?.status || 'all');
+  const [statusFilter, setStatusFilter] = useState(preset?.status ?? taskListPreset?.status ?? 'all');
 
   // Apply a filter requested by another screen (dashboard cards), once.
   useEffect(() => {
@@ -42,7 +46,7 @@ export const TasksView = () => {
     setTaskListPreset(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskListPreset]);
-  const [priorityFilter, setPriorityFilter] = useState('all');
+  const [priorityFilter, setPriorityFilter] = useState(preset?.priority ?? 'all');
 
   // Filter requested by the dashboard (drill-down), applied once.
   useEffect(() => {
@@ -335,6 +339,8 @@ export const TasksView = () => {
                             <Pin className={`w-3.5 h-3.5 ${t.isPinned ? 'fill-current' : ''}`} />
                           </button>
                           <span>{t.taskNumber}</span>
+                          {t.isPrivate && <PrivateBadge />}
+                          {isDepartmentView(t) && <DeptViewBadge />}
                         </div>
                       </td>
                       <td className="p-3.5 max-w-xs">
@@ -388,7 +394,9 @@ export const TasksView = () => {
                       const subAssignee = allUsers.find(u => String(u.id) === String(st.assignedToId));
                       // The backend allows the sub-task's own assignee, or
                       // anyone with full access to the parent task.
-                      const canChange = t.accessLevel !== 'subtask' || String(st.assignedToId) === String(currentUser?.id);
+                      // (A sub-task reference view or a department view only
+                      // lets you change your own sub-tasks.)
+                      const canChange = !isLimitedTaskView(t) || String(st.assignedToId) === String(currentUser?.id);
                       return (
                         <tr
                           key={`sub-${st.id}`}
@@ -412,9 +420,9 @@ export const TasksView = () => {
                               // anyone's (full access), or transfer within your
                               // department if it's your sub-task or your task.
                               const me = String(currentUser?.id);
-                              const anyRight = t.accessLevel !== 'subtask' && canAssignTickets(currentUser, permissionMatrix);
+                              const anyRight = !isLimitedTaskView(t) && canAssignTickets(currentUser, permissionMatrix);
                               const transferRight = canTransferOwnWork(currentUser, permissionMatrix) &&
-                                (String(st.assignedToId) === me || (t.accessLevel !== 'subtask' && String(t.assignedToId) === me));
+                                (String(st.assignedToId) === me || (!isLimitedTaskView(t) && String(t.assignedToId) === me));
                               if (!anyRight && !transferRight) return null;
                               const pool = (anyRight ? allUsers.filter(u => u.status === 'active') : sameDepartmentUsers(currentUser, allUsers))
                                 .filter(isTaskAssignable); // admins assign, aren't assigned

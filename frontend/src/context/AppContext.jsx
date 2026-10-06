@@ -215,7 +215,12 @@ const normalizeTask = (raw) => {
     assignedByName: raw.assigned_by?.name || '',
     // 'subtask' = reference view: caller sees this task only via a sub-task
     // assigned to them (see limitToSubtaskView in visibility.go).
+    // 'department' = a non-private task of the caller's department: they can
+    // read it but not change it.
     accessLevel: raw.access_level || 'full',
+    // Private: only the people on it (and their managers) see it. Otherwise
+    // the whole department can view it.
+    isPrivate: !!raw.is_private,
     archivedAt: raw.archived_at || null,
     archivedById: raw.archived_by_id ?? null,
     preArchiveStatus: raw.pre_archive_status || '',
@@ -296,6 +301,10 @@ const normalizeTicket = (raw) => {
     requesterEmail: raw.requester_email || raw.client?.email || '',
     requesterCompany: raw.requester_company || raw.client?.company_name || '',
     clientId: raw.client_id ?? null,
+    // 'department' = a non-private ticket of the caller's department: they
+    // can read it but not change it (see applyTicketAccessLevels).
+    accessLevel: raw.access_level || 'full',
+    isPrivate: !!raw.is_private,
     // CNOC flow (spec slide 19): where it came from, and who handed it back.
     originDepartment: raw.origin_department || '',
     returnedById: raw.returned_by_id ?? null,
@@ -2517,6 +2526,7 @@ export const AppProvider = ({ children }) => {
       start_date: toRFC3339(basePayload.startDate),
       due_date: toRFC3339(basePayload.dueDate),
       estimated_hours: basePayload.estimatedHours ?? 0,
+      is_private: !!basePayload.isPrivate,
     };
 
     let savedTask = null;
@@ -2616,6 +2626,7 @@ export const AppProvider = ({ children }) => {
     if (updates.estimatedHours !== undefined) wireUpdates.estimated_hours = Number(updates.estimatedHours) || 0;
     if (updates.actualHours !== undefined) wireUpdates.actual_hours = Number(updates.actualHours) || 0;
     if (updates.isPinned !== undefined) wireUpdates.is_pinned = !!updates.isPinned;
+    if (updates.isPrivate !== undefined) wireUpdates.is_private = !!updates.isPrivate;
 
     let savedTask = null;
     if (targetId) {
@@ -3353,6 +3364,7 @@ export const AppProvider = ({ children }) => {
       project_id: getBackendId(data.projectId) || null,
       client_id: getBackendId(data.clientId) || null,
       assigned_to_id: assignee?.id ?? getBackendId(data.assignedToId) ?? null,
+      is_private: !!data.isPrivate,
     };
     if (data.severity) wirePayload.severity = data.severity;
     if (data.source) wirePayload.source = data.source;
@@ -3442,6 +3454,7 @@ export const AppProvider = ({ children }) => {
       }
     }
     if (updates.isPinned !== undefined) wire.is_pinned = !!updates.isPinned;
+    if (updates.isPrivate !== undefined) wire.is_private = !!updates.isPrivate;
     if (updates.projectId !== undefined && updates.projectId !== '') wire.project_id = getBackendId(updates.projectId);
     if (hasAssignedProp && apiAssignedId) wire.assigned_to_id = apiAssignedId;
 

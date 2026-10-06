@@ -30,7 +30,9 @@ export const ProjectsView = () => {
   ])).sort((a, b) => a.localeCompare(b));
 
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
+  // Dashboard card filter as the initial value: one render, already filtered.
+  const [statusFilter, setStatusFilter] = useState(
+    listPreset?.tab === 'projects' && listPreset.status !== undefined ? listPreset.status : 'all');
 
   // Filter requested by the dashboard (drill-down), applied once.
   useEffect(() => {
