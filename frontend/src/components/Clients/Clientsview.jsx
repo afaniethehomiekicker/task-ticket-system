@@ -1,16 +1,16 @@
-import React, { useState, useMemo, useDeferredValue, useEffect } from 'react';
-import { useApp } from '../../context/AppContext';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useAppSelector } from '../../context/AppContext';
 import { canManageClients, canGrantRecordAccess, canCreateClients, canRequestClientEdit } from '../../utils/permissions';
 import { RecordAccessPanel } from '../common/RecordAccessPanel';
 import { CustomFieldInputs } from './CustomFieldInputs';
 import { ClientFieldsManager } from './ClientFieldsManager';
 import { Client360View } from './Client360View';
 import { ImportSpreadsheetModal } from '../common/ImportSpreadsheetModal';
-import { Pager, usePaged } from '../common/Pager';
+import { Pager } from '../common/Pager';
 import { buildClientImportConfig } from './clientImport';
 import { RequestEditModal, EditRequestsPanel } from './ClientEditRequests';
 import { 
-  Building2, Search, Mail, Phone, Globe, MapPin, Briefcase, 
+  Building2, Search,
   Pencil, Trash2, X, Check, FolderKanban, UserCheck, Lock, SlidersHorizontal, LayoutDashboard,
   FileSpreadsheet, KeyRound, Clock
 } from 'lucide-react';
@@ -21,9 +21,9 @@ const CLIENTS_PER_PAGE = 50;
 
 export const ClientsView = () => {
   const {
-    clients, projects, updateClient, deleteClient, openQuickCreate, currentUser, permissionMatrix,
-    clientFields, reloadClients, apiFetch, listPreset, setListPreset,
-  } = useApp();
+    projects, updateClient, deleteClient, openQuickCreate, currentUser, permissionMatrix,
+    clientFields, reloadClients, apiFetch, listPreset, setListPreset, fetchClientsPage, clientsVersion,
+  } = useAppSelector(s => ({ fetchClientsPage: s.fetchClientsPage, clientsVersion: s.clientsVersion, projects: s.projects, updateClient: s.updateClient, deleteClient: s.deleteClient, openQuickCreate: s.openQuickCreate, currentUser: s.currentUser, permissionMatrix: s.permissionMatrix, clientFields: s.clientFields, reloadClients: s.reloadClients, apiFetch: s.apiFetch, listPreset: s.listPreset, setListPreset: s.setListPreset }));
   const canManage = canManageClients(currentUser, permissionMatrix);
   const canCreate = canCreateClients(currentUser, permissionMatrix);
   // "Staff (Client Editor)": edits clients an Admin added for 30 minutes
@@ -64,13 +64,6 @@ export const ClientsView = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listPreset]);
 
-  // Staff with a request waiting: refresh once on opening the page, so an
-  // approval given meanwhile shows up.
-  useEffect(() => {
-    if (canRequestEdit && (clients || []).some(c => c.editRequest === 'pending')) reloadClients();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // Editable right now (the server decides and enforces; editUntil only
   // hides the button once the time is up).
   const editableNow = (client) =>
@@ -97,23 +90,53 @@ export const ClientsView = () => {
   const canShare = (client) => canGrantRecordAccess(currentUser, permissionMatrix) &&
     (canManage || String(client.createdById) === String(currentUser?.id));
 
-  // Filtering thousands of clients runs on the deferred value, so typing in
-  // the search box never waits for the list.
-  const deferredSearch = useDeferredValue(search);
-  const filteredClients = useMemo(() => {
-    const q = deferredSearch.trim().toLowerCase();
-    if (!q) return clients || [];
-    return (clients || []).filter(c =>
-      (c.companyName || '').toLowerCase().includes(q) ||
-      (c.clientNumber || '').toLowerCase().includes(q) ||
-      (c.contactPerson || '').toLowerCase().includes(q) ||
-      (c.email || '').toLowerCase().includes(q) ||
-      (c.industry || '').toLowerCase().includes(q) ||
-      (c.city || '').toLowerCase().includes(q)
-    );
-  }, [clients, deferredSearch]);
+  // ---- One page at a time, from the server ----
+  // The client book can run to thousands, so it isn't kept in the browser:
+  // this asks GET /api/clients for the page shown, searching on the server.
+  // Refetches when the page or search changes, and when clients change
+  // anywhere (clientsVersion: create, edit, archive, restore, import).
+  const [page, setPage] = useState(1);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [pageClients, setPageClients] = useState([]);
+  const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
-  const { pageItems: pageClients, pager } = usePaged(filteredClients, CLIENTS_PER_PAGE, deferredSearch);
+  // Wait for a pause in typing before asking the server.
+  useEffect(() => {
+    const t = setTimeout(() => { setDebouncedSearch(search.trim()); setPage(1); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError('');
+    fetchClientsPage({ page, limit: CLIENTS_PER_PAGE, search: debouncedSearch })
+      .then(({ clients, pagination: pg }) => {
+        if (cancelled) return;
+        // Past the last page (e.g. after archiving its only client): go back.
+        if (clients.length === 0 && page > 1 && pg.pages >= 1 && page > pg.pages) {
+          setPage(pg.pages);
+          return;
+        }
+        setPageClients(clients);
+        setPagination(pg);
+      })
+      .catch(err => { if (!cancelled) setLoadError(err.message || 'Failed to load clients'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, debouncedSearch, clientsVersion]);
+
+  const pager = {
+    page: pagination.page || page,
+    pages: Math.max(1, pagination.pages || 1),
+    total: pagination.total || 0,
+    start: ((pagination.page || page) - 1) * CLIENTS_PER_PAGE,
+    count: pageClients.length,
+    setPage,
+  };
 
   // Projects per client, counted once for the whole list (it used to scan
   // every project for every card). Includes projects shared with other
@@ -271,143 +294,205 @@ export const ClientsView = () => {
       </div>
 
       {/* Client List */}
-      {filteredClients.length === 0 ? (
+      {loadError ? (
+        <div className="py-10 text-center text-xs bg-slate-200/60 dark:bg-zinc-900 rounded-xl border border-slate-300 dark:border-zinc-800">
+          <p className="text-rose-600 dark:text-rose-400">{loadError}</p>
+          <button type="button" onClick={() => reloadClients()} className="mt-2 text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer">Try again</button>
+        </div>
+      ) : pageClients.length === 0 ? (
         <div className="py-16 text-center text-slate-500 bg-slate-200/60 dark:bg-zinc-900 rounded-xl border border-slate-300 dark:border-zinc-800">
           <Building2 className="w-12 h-12 mx-auto mb-3 text-slate-400 dark:text-zinc-700" />
           <p className="text-sm font-semibold text-slate-800 dark:text-zinc-300">
-            {clients?.length ? 'No matching clients' : 'No clients yet'}
+            {loading ? 'Loading clients…' : debouncedSearch ? 'No matching clients' : 'No clients yet'}
           </p>
+          {!loading && (
           <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">
-            {clients?.length ? 'Try a different search term.' : 'Create your first client to start building projects under it.'}
+            {debouncedSearch ? 'Try a different search term.' : 'Create your first client to start building projects under it.'}
           </p>
+          )}
         </div>
       ) : (
         <>
+        <div className={`transition-opacity ${loading ? 'opacity-60' : ''}`}>
         <Pager {...pager} noun="clients" />
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        </div>
+        {/* Compact table (same layout as Vendors). Click a row for the
+            Client 360° view; address and website are there and in Edit. */}
+        <div className={`rounded-xl border border-slate-300 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-x-auto transition-opacity ${loading ? 'opacity-60' : ''}`}>
+          <table className="w-full text-xs">
+            <thead className="bg-slate-100 dark:bg-zinc-900 text-slate-600 dark:text-zinc-400">
+              <tr>
+                <th className="text-left font-semibold px-3 py-2">Client</th>
+                <th className="text-left font-semibold px-3 py-2">Contact</th>
+                <th className="text-left font-semibold px-3 py-2 hidden md:table-cell">City</th>
+                <th className="text-left font-semibold px-3 py-2 hidden lg:table-cell">Industry</th>
+                <th className="text-left font-semibold px-3 py-2 hidden sm:table-cell">Projects</th>
+                <th className="px-3 py-2" />
+              </tr>
+            </thead>
+            <tbody>
           {pageClients.map(client => {
             const isEditing = editingId === client.id;
             const projectCount = projectCountFor(client.id);
+            const canOpen = client.accessLevel !== 'reference';
+
+            if (isEditing) {
+              return (
+                <tr key={client.id} id={`client-card-${client.id}`} className="border-t border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-900/60">
+                  <td colSpan={6} className="px-3 py-3">
+                        <div className="space-y-2.5">
+                          <input
+                            type="text"
+                            placeholder="Company name"
+                            value={editForm.companyName}
+                            onChange={(e) => setEditForm({ ...editForm, companyName: e.target.value })}
+                            className="w-full px-3 py-1.5 text-sm font-semibold rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                          />
+                          <div className="grid grid-cols-2 gap-2">
+                            <input
+                              type="text"
+                              placeholder="Contact person"
+                              value={editForm.contactPerson}
+                              onChange={(e) => setEditForm({ ...editForm, contactPerson: e.target.value })}
+                              className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                            />
+                            <input
+                              type="email"
+                              placeholder="Email"
+                              value={editForm.email}
+                              onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                              className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                            />
+                            <input
+                              type="text"
+                              placeholder="Phone"
+                              value={editForm.phone}
+                              onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                              className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                            />
+                            <input
+                              type="text"
+                              placeholder="Website"
+                              value={editForm.website}
+                              onChange={(e) => setEditForm({ ...editForm, website: e.target.value })}
+                              className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                            />
+                          </div>
+                          <input
+                            type="text"
+                            placeholder="Industry"
+                            value={editForm.industry}
+                            onChange={(e) => setEditForm({ ...editForm, industry: e.target.value })}
+                            className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
+                          />
+                          <textarea
+                            rows={2}
+                            placeholder="Address"
+                            value={editForm.address}
+                            onChange={(e) => setEditForm({ ...editForm, address: e.target.value })}
+                            className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden resize-none"
+                          />
+                          {/* Spec slide 8 fields */}
+                          <div className="grid grid-cols-2 gap-2">
+                            {[['clientName', 'Client name (person)'], ['cnic', 'CNIC (optional)'], ['mobile', 'Mobile'], ['city', 'City']].map(([k, ph]) => (
+                              <input key={k} type="text" placeholder={ph} value={editForm[k] || ''}
+                                onChange={(e) => setEditForm({ ...editForm, [k]: e.target.value })}
+                                className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden" />
+                            ))}
+                          </div>
+                          <textarea rows={2} placeholder="Notes" value={editForm.notes || ''}
+                            onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                            className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden resize-none" />
+                          <CustomFieldInputs values={editForm.customFields || {}}
+                            onChange={(cf) => setEditForm({ ...editForm, customFields: cf })} />
+                          <div className="flex justify-end gap-2 pt-1">
+                            <button
+                              onClick={cancelEdit}
+                              disabled={isSaving}
+                              className="p-1.5 text-slate-500 dark:text-zinc-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer disabled:opacity-50"
+                              title="Cancel"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => saveEdit(client.id)}
+                              disabled={isSaving}
+                              className="p-1.5 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-950/40 rounded-lg cursor-pointer disabled:opacity-50"
+                              title="Save"
+                            >
+                              <Check className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                  </td>
+                </tr>
+              );
+            }
 
             return (
-              <div
-                key={client.id}
-                id={`client-card-${client.id}`}
-                className="p-4 rounded-xl border border-slate-300 dark:border-zinc-800 bg-slate-200/60 dark:bg-zinc-900 space-y-3"
-              >
-                {isEditing ? (
-                  <div className="space-y-2.5">
-                    <input
-                      type="text"
-                      placeholder="Company name"
-                      value={editForm.companyName}
-                      onChange={(e) => setEditForm({ ...editForm, companyName: e.target.value })}
-                      className="w-full px-3 py-1.5 text-sm font-semibold rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
-                    />
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="text"
-                        placeholder="Contact person"
-                        value={editForm.contactPerson}
-                        onChange={(e) => setEditForm({ ...editForm, contactPerson: e.target.value })}
-                        className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
-                      />
-                      <input
-                        type="email"
-                        placeholder="Email"
-                        value={editForm.email}
-                        onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
-                        className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Phone"
-                        value={editForm.phone}
-                        onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
-                        className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Website"
-                        value={editForm.website}
-                        onChange={(e) => setEditForm({ ...editForm, website: e.target.value })}
-                        className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
-                      />
+              <React.Fragment key={client.id}>
+                <tr
+                  id={`client-card-${client.id}`}
+                  onClick={() => { if (canOpen) setOverviewId(client.id); }}
+                  className={`border-t border-slate-200 dark:border-zinc-800 hover:bg-slate-50 dark:hover:bg-zinc-900/60 align-top ${canOpen ? 'cursor-pointer' : ''}`}
+                >
+                  <td className="px-3 py-2.5 min-w-[160px]">
+                    <div className="font-semibold text-slate-900 dark:text-zinc-100">{client.companyName}</div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {client.clientNumber && (
+                        <span className="text-[10px] font-mono text-slate-500 dark:text-zinc-500">{client.clientNumber}</span>
+                      )}
+                      {client.accessLevel === 'reference' && (
+                        <span
+                          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-300/60 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400 text-[9px] font-semibold uppercase"
+                          title="You see this client through work linked to it. Contact details are shown to management or people given access."
+                        >
+                          <Lock className="w-2.5 h-2.5" /> Reference only
+                        </span>
+                      )}
                     </div>
-                    <input
-                      type="text"
-                      placeholder="Industry"
-                      value={editForm.industry}
-                      onChange={(e) => setEditForm({ ...editForm, industry: e.target.value })}
-                      className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden"
-                    />
-                    <textarea
-                      rows={2}
-                      placeholder="Address"
-                      value={editForm.address}
-                      onChange={(e) => setEditForm({ ...editForm, address: e.target.value })}
-                      className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden resize-none"
-                    />
-                    {/* Spec slide 8 fields */}
-                    <div className="grid grid-cols-2 gap-2">
-                      {[['clientName', 'Client name (person)'], ['cnic', 'CNIC (optional)'], ['mobile', 'Mobile'], ['city', 'City']].map(([k, ph]) => (
-                        <input key={k} type="text" placeholder={ph} value={editForm[k] || ''}
-                          onChange={(e) => setEditForm({ ...editForm, [k]: e.target.value })}
-                          className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden" />
-                      ))}
+                    <div onClick={(e) => e.stopPropagation()} className="w-fit">
+                      {canRequestEdit && client.status !== 'archived' && (
+                        editableNow(client) && client.editUntil ? (
+                          <p className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                            <Clock className="w-3 h-3" /> You can edit this client for {minutesLeft(client)} more min
+                          </p>
+                        ) : client.editRequest === 'pending' ? (
+                          <p className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 dark:text-zinc-400">
+                            <Clock className="w-3 h-3" /> Edit request sent — waiting for an admin
+                          </p>
+                        ) : !editableNow(client) && client.editRequest === 'available' ? (
+                          <button
+                            type="button"
+                            onClick={() => setRequestFor(client)}
+                            className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 dark:text-amber-400 hover:underline cursor-pointer"
+                          >
+                            <KeyRound className="w-3 h-3" /> Request edit access
+                          </button>
+                        ) : null
+                      )}
                     </div>
-                    <textarea rows={2} placeholder="Notes" value={editForm.notes || ''}
-                      onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
-                      className="w-full px-3 py-1.5 text-xs rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-hidden resize-none" />
-                    <CustomFieldInputs values={editForm.customFields || {}}
-                      onChange={(cf) => setEditForm({ ...editForm, customFields: cf })} />
-                    <div className="flex justify-end gap-2 pt-1">
-                      <button
-                        onClick={cancelEdit}
-                        disabled={isSaving}
-                        className="p-1.5 text-slate-500 dark:text-zinc-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer disabled:opacity-50"
-                        title="Cancel"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => saveEdit(client.id)}
-                        disabled={isSaving}
-                        className="p-1.5 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-950/40 rounded-lg cursor-pointer disabled:opacity-50"
-                        title="Save"
-                      >
-                        <Check className="w-4 h-4" />
-                      </button>
+                  </td>
+                  <td className="px-3 py-2.5 text-slate-700 dark:text-zinc-300 min-w-[150px]">
+                    <div>{client.contactPerson || <span className="text-slate-400">—</span>}</div>
+                    <div className="text-[10px] text-slate-500 dark:text-zinc-500 break-all">
+                      {[client.phone || client.mobile, client.email].filter(Boolean).join(' · ')}
                     </div>
-                  </div>
-                ) : (
-                  <>
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <h3 className="text-sm font-bold text-slate-900 dark:text-zinc-100 truncate">
-                          {client.companyName}
-                        </h3>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          {client.clientNumber && (
-                            <span className="text-[10px] font-mono text-slate-500 dark:text-zinc-500">{client.clientNumber}</span>
-                          )}
-                          {client.accessLevel === 'reference' && (
-                            <span
-                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-300/60 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400 text-[9px] font-semibold uppercase"
-                              title="You see this client through work linked to it. Contact details are shown to management or people given access."
-                            >
-                              <Lock className="w-2.5 h-2.5" /> Reference only
-                            </span>
-                          )}
-                        </div>
-                        {client.industry && (
-                          <span className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">
-                            <Briefcase className="w-3 h-3" />
-                            {client.industry}
-                          </span>
-                        )}
-                      </div>
-                      {(canManage || canShare(client) || client.accessLevel !== 'reference' || editableNow(client)) && <div className="flex items-center gap-1 shrink-0">
+                  </td>
+                  <td className="px-3 py-2.5 text-slate-700 dark:text-zinc-300 hidden md:table-cell">
+                    {client.city || <span className="text-slate-400">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 text-slate-700 dark:text-zinc-300 hidden lg:table-cell">
+                    {client.industry || <span className="text-slate-400">—</span>}
+                  </td>
+                  <td className="px-3 py-2.5 hidden sm:table-cell">
+                    <span className="inline-flex items-center gap-1 text-slate-700 dark:text-zinc-300">
+                      <FolderKanban className="w-3.5 h-3.5 text-slate-400" />
+                      <span className="font-semibold">{projectCount}</span>
+                    </span>
+                  </td>
+                  <td className="px-3 py-2.5 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                      {(canManage || canShare(client) || client.accessLevel !== 'reference' || editableNow(client)) && <div className="flex items-center justify-end gap-0.5">
                         {client.accessLevel !== 'reference' && (
                           <button
                             onClick={() => setOverviewId(client.id)}
@@ -447,93 +532,25 @@ export const ClientsView = () => {
                         </button>
                         </>)}
                       </div>}
-                    </div>
-
-                    {/* Staff (Client Editor): edit time left on an admin-added
-                        client, or asking for more (the server says which:
-                        editRequest 'available' / 'pending'). */}
-                    {canRequestEdit && client.status !== 'archived' && (
-                      editableNow(client) && client.editUntil ? (
-                        <p className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
-                          <Clock className="w-3 h-3" /> You can edit this client for {minutesLeft(client)} more min
-                        </p>
-                      ) : client.editRequest === 'pending' ? (
-                        <p className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 dark:text-zinc-400">
-                          <Clock className="w-3 h-3" /> Edit request sent — waiting for an admin
-                        </p>
-                      ) : !editableNow(client) && client.editRequest === 'available' ? (
-                        <button
-                          type="button"
-                          onClick={() => setRequestFor(client)}
-                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 dark:text-amber-400 hover:underline cursor-pointer"
-                        >
-                          <KeyRound className="w-3 h-3" /> Request edit access
-                        </button>
-                      ) : null
-                    )}
-
-                    <div className="space-y-1 text-xs text-slate-600 dark:text-zinc-400">
-                      {client.contactPerson && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-medium text-slate-700 dark:text-zinc-300">{client.contactPerson}</span>
-                        </div>
-                      )}
-                      {client.email && (
-                        <div className="flex items-center gap-1.5">
-                          <Mail className="w-3 h-3 shrink-0" />
-                          <a href={`mailto:${client.email}`} className="hover:underline truncate" onClick={(e) => e.stopPropagation()}>
-                            {client.email}
-                          </a>
-                        </div>
-                      )}
-                      {client.phone && (
-                        <div className="flex items-center gap-1.5">
-                          <Phone className="w-3 h-3 shrink-0" />
-                          <span>{client.phone}</span>
-                        </div>
-                      )}
-                      {client.website && (
-                        <div className="flex items-center gap-1.5">
-                          <Globe className="w-3 h-3 shrink-0" />
-                          <a
-                            href={client.website.startsWith('http') ? client.website : `https://${client.website}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="hover:underline truncate"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            {client.website}
-                          </a>
-                        </div>
-                      )}
-                      {client.address && (
-                        <div className="flex items-start gap-1.5">
-                          <MapPin className="w-3 h-3 shrink-0 mt-0.5" />
-                          <span className="whitespace-pre-line">{client.address}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {accessOpenId === client.id && canShare(client) && (
-                      <div className="p-2.5 rounded-lg bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900">
-                        <RecordAccessPanel
-                          kind="clients"
-                          recordId={client.id}
-                          recordLabel={client.companyName}
-                          excludeUserIds={[client.createdById]}
-                        />
-                      </div>
-                    )}
-
-                    <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-zinc-500 pt-2 border-t border-slate-300 dark:border-zinc-800">
-                      <FolderKanban className="w-3.5 h-3.5" />
-                      {projectCount} {projectCount === 1 ? 'project' : 'projects'}
-                    </div>
-                  </>
+                  </td>
+                </tr>
+                {accessOpenId === client.id && canShare(client) && (
+                  <tr className="bg-emerald-50/60 dark:bg-emerald-950/20">
+                    <td colSpan={6} className="px-3 py-2.5 border-t border-emerald-200 dark:border-emerald-900">
+                      <RecordAccessPanel
+                        kind="clients"
+                        recordId={client.id}
+                        recordLabel={client.companyName}
+                        excludeUserIds={[client.createdById]}
+                      />
+                    </td>
+                  </tr>
                 )}
-              </div>
+              </React.Fragment>
             );
           })}
+            </tbody>
+          </table>
         </div>
         <Pager {...pager} noun="clients"
           onPageChange={() => document.getElementById('clients-view')?.scrollIntoView({ block: 'start' })} />

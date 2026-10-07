@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { 
   Search, Plus, Bell, Moon, Sun, LogOut 
 } from 'lucide-react';
@@ -16,7 +16,7 @@ export const Navbar = () => {
     setGlobalSearchOpen,
     unreadNotificationCount,
     setActiveTab
-  } = useApp();
+  } = useAppSelector(s => ({ currentUser: s.currentUser, setCurrentUserId: s.setCurrentUserId, darkMode: s.darkMode, setDarkMode: s.setDarkMode, setQuickCreatePickerOpen: s.setQuickCreatePickerOpen, setGlobalSearchOpen: s.setGlobalSearchOpen, unreadNotificationCount: s.unreadNotificationCount, setActiveTab: s.setActiveTab }));
 
   const [notifDrawerOpen, setNotifDrawerOpen] = useState(false);
 

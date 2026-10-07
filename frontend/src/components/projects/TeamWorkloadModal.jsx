@@ -1,8 +1,8 @@
 import React from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 
 export const TeamWorkloadModal = ({ isOpen, onClose, memberId, projectId }) => {
-  const { allUsers, tasks, projects, getStatusCategory } = useApp() || {};
+  const { allUsers, tasks, projects, getStatusCategory } = useAppSelector(s => ({ allUsers: s.allUsers, tasks: s.tasks, projects: s.projects, getStatusCategory: s.getStatusCategory }));
 
   if (!isOpen || !memberId) return null;
 

@@ -27,7 +27,7 @@ func GetSubTasks(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
 		return
 	}
-	full := userCanAccessTask(c, &task)
+	full := userCanViewTask(c, &task) // read: department viewers see all subtasks
 	me := viewerFrom(c).ID
 	if !full && !hasSubtaskAssignedIn(task.ID, me) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: task belongs to different department"})
@@ -483,14 +483,14 @@ func GetTaskComments(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
 		return
 	}
-	if !userCanAccessTask(c, &task) {
+	if !userCanViewTask(c, &task) { // read: department viewers too
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: task belongs to different department"})
 		return
 	}
 
 	var comments []models.Comment
 	database.DB.Where("task_id = ?", taskID).
-		Preload("User").
+		Preload("User", userCard). // name/avatar only
 		Order("created_at asc").
 		Find(&comments)
 
@@ -565,7 +565,7 @@ func GetTaskWorkLogs(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Task not found"})
 		return
 	}
-	if !userCanAccessTask(c, &task) {
+	if !userCanViewTask(c, &task) { // read: department viewers too
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: task belongs to different department"})
 		return
 	}

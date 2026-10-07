@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { History, RefreshCw } from 'lucide-react';
 
 // Per-record timeline (spec slide 20, the accountability chain): created ->
@@ -51,7 +51,7 @@ const show = (v) => {
 };
 
 export const TimelinePanel = ({ kind, recordId, refreshKey }) => {
-  const { apiFetch, getBackendId, getStatusLabel } = useApp();
+  const { apiFetch, getBackendId, getStatusLabel } = useAppSelector(s => ({ apiFetch: s.apiFetch, getBackendId: s.getBackendId, getStatusLabel: s.getStatusLabel }));
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');

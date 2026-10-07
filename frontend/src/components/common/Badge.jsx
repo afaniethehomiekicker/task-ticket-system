@@ -1,5 +1,5 @@
 import React from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { isStaffRole, getRoleDisplayName } from '../../utils/permissions';
 
 // Status badges read the configurable status catalog (Settings → Workflow
@@ -17,7 +17,8 @@ const CATEGORY_COLORS = {
 };
 
 const CatalogStatusBadge = ({ entity, status, keyColors }) => {
-  const app = useApp() || {};
+  // Only the status getters: a badge re-renders when the status catalog changes, nothing else.
+  const app = useAppSelector(s => ({ getStatusLabel: s.getStatusLabel, getStatusCategory: s.getStatusCategory }));
   const label = app.getStatusLabel ? app.getStatusLabel(entity, status) : (status || '').replace(/_/g, ' ');
   const category = app.getStatusCategory ? app.getStatusCategory(entity, status) : '';
   const bg = keyColors[status] || CATEGORY_COLORS[category] || CATEGORY_COLORS.open;

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback, useSyncExternalStore } from 'react';
 import {
   filterProjectsForUser, filterTasksForUser, filterTicketsForUser,
   DEFAULT_PERMISSION_MATRIX, getRoleDisplayName, canViewAuditLogs, registerRoles } from '../utils/permissions';
@@ -301,6 +301,7 @@ const normalizeTicket = (raw) => {
     requesterEmail: raw.requester_email || raw.client?.email || '',
     requesterCompany: raw.requester_company || raw.client?.company_name || '',
     clientId: raw.client_id ?? null,
+    clientName: raw.client?.company_name || '',
     // 'department' = a non-private ticket of the caller's department: they
     // can read it but not change it (see applyTicketAccessLevels).
     accessLevel: raw.access_level || 'full',
@@ -496,6 +497,7 @@ const normalizeFeasibility = (raw) => {
     toLocation: raw.to_location || '',
     city: raw.city || '',
     requirementDetails: raw.requirement_details || '',
+    subject: raw.subject || '',
     assignedDept: raw.assigned_dept || '',
     assignedUserId: raw.assigned_user_id ?? null,
     assignedUser: raw.assigned_user ? normalizeUser(raw.assigned_user) : null,
@@ -534,7 +536,52 @@ const normalizeDepartment = (raw) => {
   };
 };
 
+// ---- Shared state with selective subscriptions ----
+//
+// The context carries a small, stable STORE instead of the state itself. The
+// provider puts each new state object into the store and notifies
+// subscribers; each component subscribes to just the fields it uses:
+//
+//   const { tasks, updateTask } = useAppSelector(s => ({ tasks: s.tasks, updateTask: s.updateTask }));
+//
+// and re-renders only when one of THOSE changes (compared field by field).
+// Before, the whole app re-rendered on every change — opening a drawer,
+// loading notifications, saving anything.
+//
+// useApp() still works and returns everything, but re-renders on every change
+// like before; use useAppSelector in anything that renders often.
+//
+// Actions (createTask, updateTicket, setActiveTab …) keep one identity for
+// the app's lifetime and always call the latest version, so selecting them
+// never causes a re-render. Getters that read data while rendering
+// (getStatuses, getStatusLabel, getStatusCategory, isPinnedFor) get a new
+// identity exactly when their data changes, so screens using them stay correct.
 const AppContext = createContext(undefined);
+
+// Functions read while rendering, and the state each one reads.
+const LIVE_GETTERS = ['getStatuses', 'getStatusLabel', 'getStatusCategory', 'isPinnedFor'];
+
+const shallowEqual = (a, b) => {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || !a || !b) return false;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  for (const k of ka) {
+    if (!Object.prototype.hasOwnProperty.call(b, k) || !Object.is(a[k], b[k])) return false;
+  }
+  return true;
+};
+
+const createAppStore = () => {
+  const listeners = new Set();
+  const store = {
+    value: undefined,
+    subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+    getSnapshot: () => store.value,
+    notify: () => { listeners.forEach(fn => fn()); },
+  };
+  return store;
+};
 
 // The ONLY thing persisted across reloads is the session token (JWT).
 // Every collection of business data is fetched fresh from the backend on
@@ -597,8 +644,47 @@ export const AppProvider = ({ children }) => {
   const [clients, setClients] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [feasibilities, setFeasibilities] = useState([]);
-  const [tasks, setTasks] = useState([]);
-  const [tickets, setTickets] = useState([]);
+  // Tasks in the browser are the WORKING SET (unfinished, finished in the
+  // last 30 days, pinned — loaded at sign-in) plus anything fetched since
+  // (Tasks page, search, a project's task tab, opened). Full history is
+  // paged from the server. Same scheme as tickets below: setTasks bumps
+  // tasksVersion (pages refetch), upsertTasks doesn't.
+  const [tasks, setTasksRaw] = useState([]);
+  const [tasksVersion, setTasksVersion] = useState(0);
+  const setTasks = (updater) => {
+    setTasksRaw(updater);
+    setTasksVersion(v => v + 1);
+  };
+  const upsertTasks = (records) => {
+    if (!records.length) return;
+    setTasksRaw(prev => {
+      const byId = new Map(records.map(r => [String(r.id), r]));
+      const kept = prev.map(t => byId.get(String(t.id)) || t);
+      const known = new Set(prev.map(t => String(t.id)));
+      return [...kept, ...records.filter(r => !known.has(String(r.id)))];
+    });
+  };
+  // Tickets in the browser are the WORKING SET (unfinished, finished in the
+  // last 30 days, pinned — loaded at sign-in) plus anything fetched since
+  // (Tickets page, search, opened). Full history is paged from the server.
+  // Every change made through setTickets also bumps ticketsVersion so the
+  // Tickets page refetches; fetched pages go in via upsertTickets, which
+  // doesn't (that would refetch forever).
+  const [tickets, setTicketsRaw] = useState([]);
+  const [ticketsVersion, setTicketsVersion] = useState(0);
+  const setTickets = (updater) => {
+    setTicketsRaw(updater);
+    setTicketsVersion(v => v + 1);
+  };
+  const upsertTickets = (records) => {
+    if (!records.length) return;
+    setTicketsRaw(prev => {
+      const byId = new Map(records.map(r => [String(r.id), r]));
+      const kept = prev.map(t => byId.get(String(t.id)) || t);
+      const known = new Set(prev.map(t => String(t.id)));
+      return [...kept, ...records.filter(r => !known.has(String(r.id)))];
+    });
+  };
   const [auditLogs, setAuditLogs] = useState([]);
   const [notifications, setNotifications] = useState([]);
 
@@ -661,16 +747,33 @@ export const AppProvider = ({ children }) => {
   const fetchAllPages = async (path, key) => {
     const PAGE_SIZE = 200;
     const MAX_PAGES = 50;
-    const first = await apiFetch(`${path}?page=1&limit=${PAGE_SIZE}`);
+    const sep = path.includes('?') ? '&' : '?';
+    const first = await apiFetch(`${path}${sep}page=1&limit=${PAGE_SIZE}`);
     if (!first.ok) return first;
     const firstData = await first.json();
     let all = Array.isArray(firstData[key]) ? firstData[key] : [];
     const pages = firstData.pagination?.pages || 1;
-    for (let page = 2; page <= pages && page <= MAX_PAGES; page++) {
-      const res = await apiFetch(`${path}?page=${page}&limit=${PAGE_SIZE}`);
-      if (!res.ok) break;
-      const data = await res.json();
-      all = all.concat(Array.isArray(data[key]) ? data[key] : []);
+    if (pages > MAX_PAGES) {
+      console.warn(`${path}: only the first ${MAX_PAGES * PAGE_SIZE} of ${firstData.pagination?.total ?? 'many'} records were loaded`);
+    }
+    // The remaining pages a few at a time in parallel (they used to load one
+    // after another, which made sign-in slow with a few thousand records).
+    const rest = [];
+    for (let page = 2; page <= pages && page <= MAX_PAGES; page++) rest.push(page);
+    const BATCH = 4;
+    for (let i = 0; i < rest.length; i += BATCH) {
+      const results = await Promise.all(rest.slice(i, i + BATCH).map(async (page) => {
+        const res = await apiFetch(`${path}${sep}page=${page}&limit=${PAGE_SIZE}`);
+        if (!res.ok) return null;
+        const data = await res.json().catch(() => null);
+        return data && Array.isArray(data[key]) ? data[key] : null;
+      }));
+      if (results.some(r => r === null)) {
+        // Keep what loaded in page order; stop at the first failed page.
+        for (const r of results) { if (r === null) break; all = all.concat(r); }
+        break;
+      }
+      for (const r of results) all = all.concat(r);
     }
     return { ok: true, json: async () => ({ ...firstData, [key]: all }) };
   };
@@ -744,6 +847,8 @@ export const AppProvider = ({ children }) => {
     }
     if (restored) {
       setList(prev => [restored, ...(prev || []).filter(r => String(r.id) !== String(restored.id))]);
+      if (kind === 'clients') bumpClients();
+      if (kind === 'feasibilities') setFeasibilitiesVersion(v => v + 1);
     }
     logAudit();
     return restored || true;
@@ -803,8 +908,16 @@ export const AppProvider = ({ children }) => {
       return undefined;
     }
     loadNotifications();
-    const timer = setInterval(loadNotifications, 30000);
-    return () => clearInterval(timer);
+    // Not while the tab is in the background; check right away on return.
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') loadNotifications();
+    }, 30000);
+    const onVisible = () => { if (document.visibilityState === 'visible') loadNotifications(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUserId]);
 
@@ -1057,7 +1170,10 @@ export const AppProvider = ({ children }) => {
 
     const fetchInitialData = async () => {
       try {
-        const [usersRes, projectsRes, tasksRes, ticketsRes, clientsRes, feasibilitiesRes, rolesRes, permMatrixRes, departmentsRes] = await Promise.allSettled([
+        // Clients are NOT loaded here: the client book can run to thousands.
+        // The Clients page asks the server for one page at a time
+        // (fetchClientsPage), and pickers search /api/clients/lookup.
+        const [usersRes, projectsRes, tasksRes, ticketsRes, rolesRes, permMatrixRes, departmentsRes] = await Promise.allSettled([
           // The people directory, not /api/users: /api/users needs
           // manage_users, so for everyone else it failed with a 403 on every
           // page load before falling back to this. The directory returns
@@ -1065,10 +1181,10 @@ export const AppProvider = ({ children }) => {
           // include_inactive keeps names resolvable on older work.
           apiFetch('/api/directory/users?include_inactive=true'),
           fetchAllPages('/api/projects', 'projects'),
-          fetchAllPages('/api/tasks', 'tasks'),
-          fetchAllPages('/api/tickets', 'tickets'),
-          fetchAllPages('/api/clients', 'clients'),
-          fetchAllPages('/api/feasibilities', 'feasibilities'),
+          // Working set only; the Tasks page pages through history.
+          fetchAllPages('/api/tasks?working=1', 'tasks'),
+          // Working set only; the Tickets page pages through history.
+          fetchAllPages('/api/tickets?working=1', 'tickets'),
           apiFetch('/api/roles'),
           apiFetch('/api/roles/permissions'),
           apiFetch('/api/departments')
@@ -1115,15 +1231,6 @@ export const AppProvider = ({ children }) => {
           setProjects((data.projects || []).map(normalizeProject).filter(Boolean));
         }
 
-        if (clientsRes.status === 'fulfilled' && clientsRes.value.ok) {
-          const data = await clientsRes.value.json();
-          setClients((data.clients || []).map(normalizeClient).filter(Boolean));
-        }
-
-        if (feasibilitiesRes.status === 'fulfilled' && feasibilitiesRes.value.ok) {
-          const data = await feasibilitiesRes.value.json();
-          setFeasibilities((data.feasibilities || []).map(normalizeFeasibility).filter(Boolean));
-        }
 
         // Departments: option B — a real, admin-managed list (spec: "not
         // hard-coded"), fetched once at startup like every other collection,
@@ -1247,6 +1354,19 @@ export const AppProvider = ({ children }) => {
     }
   };
 
+  // Tabs that show audit entries (see logAudit).
+  const AUDIT_TABS = ['dashboard', 'audit'];
+  const activeTabRef = useRef(activeTab);
+  const auditStaleRef = useRef(false);
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+    if (auditStaleRef.current && AUDIT_TABS.includes(activeTab)) {
+      auditStaleRef.current = false;
+      fetchAuditLogs({ page: auditPageRef.current || 1, ...auditQueryRef.current });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
   const currentUserForAudit = findUserByAnyId(allUsers, currentUserId);
   const mayViewAudit = !!currentUserForAudit && canViewAuditLogs(currentUserForAudit, permissionMatrix);
 
@@ -1267,12 +1387,186 @@ export const AppProvider = ({ children }) => {
 
   const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [selectedTaskEditId, setSelectedTaskEditId] = useState(null);
+
+  // One page of tasks across all history: { tasks, pagination }. status
+  // 'open' = not finished, 'overdue' = not finished and past due; sub=true
+  // makes the person filter and search also match sub-tasks; sort
+  // due|priority|status|number (pinned first).
+  const fetchTasksPage = async ({ page = 1, limit = 50, search = '', status = '', priority = '', projectId = '',
+    assignedToId = '', clientId = '', department = '', ticketId = '', sub = false, sort = '' } = {}) => {
+    const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+    const add = (k, v) => { if (v !== undefined && v !== null && String(v).trim() !== '' && v !== 'all') params.set(k, String(v).trim()); };
+    add('search', search); add('status', status); add('priority', priority);
+    add('project_id', getBackendId(projectId) || ''); add('assigned_to_id', getBackendId(assignedToId) || '');
+    add('client_id', getBackendId(clientId) || ''); add('ticket_id', getBackendId(ticketId) || '');
+    add('department', department); add('sort', sort);
+    if (sub) params.set('sub', '1');
+    const res = await apiFetch(`/api/tasks?${params}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to load tasks');
+    const list = (data.tasks || []).map(normalizeTask).filter(Boolean);
+    upsertTasks(list);
+    return { tasks: list, pagination: data.pagination || { page, limit, total: list.length, pages: 1 } };
+  };
+
+  // Opened but not loaded (an old task from a notification or link).
+  const fetchingTaskRef = useRef(new Set());
+  useEffect(() => {
+    for (const id of [selectedTaskId, selectedTaskEditId]) {
+      const bid = getBackendId(id);
+      if (!bid || fetchingTaskRef.current.has(bid)) continue;
+      if (tasks.some(t => String(getBackendId(t.id)) === String(bid))) continue;
+      fetchingTaskRef.current.add(bid);
+      apiFetch(`/api/tasks/${bid}`)
+        .then(r => (r.ok ? r.json() : null))
+        .then(d => { if (d?.task) upsertTasks([normalizeTask(d.task)].filter(Boolean)); })
+        .catch(() => {})
+        .finally(() => fetchingTaskRef.current.delete(bid));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTaskId, selectedTaskEditId]);
   const [selectedTicketId, setSelectedTicketId] = useState(null);
   const [selectedTicketEditId, setSelectedTicketEditId] = useState(null);
+
+  // One page of tickets for the Tickets page / search, across all history:
+  // { tickets, pagination }. Filters as on the page; status 'open' = not
+  // finished, 'escalated' = any tier; sla breached|near|within|none;
+  // sort sla|priority|date (pinned first).
+  const fetchTicketsPage = async ({ page = 1, limit = 50, search = '', status = '', priority = '', category = '',
+    assignedToId = '', clientId = '', projectId = '', department = '', sla = '', sort = '' } = {}) => {
+    const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+    const add = (k, v) => { if (v !== undefined && v !== null && String(v).trim() !== '' && v !== 'all') params.set(k, String(v).trim()); };
+    add('search', search); add('status', status); add('priority', priority); add('category', category);
+    add('assigned_to_id', getBackendId(assignedToId) || ''); add('client_id', getBackendId(clientId) || '');
+    add('project_id', getBackendId(projectId) || ''); add('department', department); add('sla', sla); add('sort', sort);
+    const res = await apiFetch(`/api/tickets?${params}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to load tickets');
+    const list = (data.tickets || []).map(normalizeTicket).filter(Boolean);
+    upsertTickets(list);
+    return { tickets: list, pagination: data.pagination || { page, limit, total: list.length, pages: 1 } };
+  };
+
+  // Opened but not loaded (an old ticket from a notification or link):
+  // fetch that one ticket.
+  const fetchingTicketRef = useRef(new Set());
+  useEffect(() => {
+    for (const id of [selectedTicketId, selectedTicketEditId]) {
+      const bid = getBackendId(id);
+      if (!bid || fetchingTicketRef.current.has(bid)) continue;
+      if (tickets.some(t => String(getBackendId(t.id)) === String(bid))) continue;
+      fetchingTicketRef.current.add(bid);
+      apiFetch(`/api/tickets/${bid}`)
+        .then(r => (r.ok ? r.json() : null))
+        .then(d => { if (d?.ticket) upsertTickets([normalizeTicket(d.ticket)].filter(Boolean)); })
+        .catch(() => {})
+        .finally(() => fetchingTicketRef.current.delete(bid));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTicketId, selectedTicketEditId]);
   const [selectedProjectDetailId, setSelectedProjectDetailId] = useState(null);
   const [selectedProjectEditId, setSelectedProjectEditId] = useState(null);
   const [selectedFeasibilityId, setSelectedFeasibilityId] = useState(null);
   const [selectedFeasibilityEditId, setSelectedFeasibilityEditId] = useState(null);
+
+  // ---- Feasibilities, a page at a time ----
+  // Not all loaded at sign-in any more. `feasibilities` is now a cache of the
+  // records loaded so far (the pages viewed, search results, anything
+  // opened): the drawer and the edit form still find a record by id there,
+  // and one that isn't cached yet is fetched when it's opened.
+  //   fetchFeasibilitiesPage  one page of the list, with the page's filters
+  //   feasibilitySummary      counts, pinned, filter values (sidebar, dashboard)
+  //   feasibilitiesVersion    goes up on every change, so pages refetch
+  const [feasibilitiesVersion, setFeasibilitiesVersion] = useState(0);
+  const [feasibilitySummary, setFeasibilitySummary] = useState(
+    { total: 0, pending: 0, cities: [], vendors: [], clients: [], pinned: [], loaded: false });
+  const [feasibilityProducts, setFeasibilityProducts] = useState([]);
+
+  const upsertFeasibilities = (records) => {
+    if (!records.length) return;
+    setFeasibilities(prev => {
+      const byId = new Map(records.map(r => [String(r.id), r]));
+      const kept = prev.map(f => byId.get(String(f.id)) || f);
+      const known = new Set(prev.map(f => String(f.id)));
+      return [...kept, ...records.filter(r => !known.has(String(r.id)))];
+    });
+  };
+
+  // A change made here: update the cache and tell pages to refetch.
+  const setFeasibilitiesChanged = (updater) => {
+    setFeasibilities(updater);
+    setFeasibilitiesVersion(v => v + 1);
+  };
+
+  // { feasibilities, pagination }. Filters: search, status ('pending' = draft
+  // or in progress), product, city, assignedUserId, clientId, vendor; sort:
+  // target_date | priority | status | created.
+  const fetchFeasibilitiesPage = async ({ page = 1, limit = 50, search = '', status = '', product = '',
+    city = '', assignedUserId = '', clientId = '', vendor = '', sort = '' } = {}) => {
+    const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+    const add = (k, v) => { if (v !== undefined && v !== null && String(v).trim() !== '' && v !== 'all') params.set(k, String(v).trim()); };
+    add('search', search); add('status', status); add('product', product); add('city', city);
+    add('assigned_user_id', getBackendId(assignedUserId) || ''); add('client_id', getBackendId(clientId) || '');
+    add('vendor', vendor); add('sort', sort);
+    const res = await apiFetch(`/api/feasibilities?${params}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to load feasibilities');
+    const list = (data.feasibilities || []).map(normalizeFeasibility).filter(Boolean);
+    upsertFeasibilities(list);
+    return {
+      feasibilities: list,
+      pagination: data.pagination || { page, limit, total: list.length, pages: 1 },
+    };
+  };
+
+  const loadFeasibilitySummary = async () => {
+    try {
+      const [sumRes, prodRes] = await Promise.all([
+        apiFetch('/api/feasibilities/summary'),
+        apiFetch('/api/feasibilities/products'),
+      ]);
+      const sum = await sumRes.json().catch(() => ({}));
+      if (sumRes.ok) {
+        setFeasibilitySummary({
+          total: sum.total || 0,
+          pending: sum.pending || 0,
+          cities: sum.cities || [],
+          vendors: sum.vendors || [],
+          clients: (sum.clients || []).map(c => [String(c.id), c.company_name || `Client #${c.id}`]),
+          pinned: (sum.pinned || []).map(normalizeFeasibility).filter(Boolean),
+          loaded: true,
+        });
+      }
+      const prod = await prodRes.json().catch(() => ({}));
+      if (prodRes.ok) setFeasibilityProducts(prod.products || []);
+    } catch (err) {
+      console.warn('Failed to load feasibility summary:', err);
+    }
+  };
+
+  // On sign-in, and after every change.
+  useEffect(() => {
+    if (currentUserId && authToken) loadFeasibilitySummary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUserId, authToken, feasibilitiesVersion]);
+
+  // Opened (drawer / edit form) but not in the cache — e.g. from a
+  // notification, a dashboard pin or global search: fetch that one record.
+  const fetchingFeasRef = useRef(new Set());
+  useEffect(() => {
+    for (const id of [selectedFeasibilityId, selectedFeasibilityEditId]) {
+      const bid = getBackendId(id);
+      if (!bid || fetchingFeasRef.current.has(bid)) continue;
+      if (feasibilities.some(f => String(getBackendId(f.id)) === String(bid))) continue;
+      fetchingFeasRef.current.add(bid);
+      apiFetch(`/api/feasibilities/${bid}`)
+        .then(r => (r.ok ? r.json() : null))
+        .then(d => { if (d?.feasibility) upsertFeasibilities([normalizeFeasibility(d.feasibility)].filter(Boolean)); })
+        .catch(() => {})
+        .finally(() => fetchingFeasRef.current.delete(bid));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFeasibilityId, selectedFeasibilityEditId]);
   const [quickCreateOpen, setQuickCreateOpenState] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [quickCreatePickerOpen, setQuickCreatePickerOpen] = useState(false);
@@ -1353,6 +1647,13 @@ export const AppProvider = ({ children }) => {
   // as a fake, unsaved log line.
   const logAudit = (_entry) => {
     if (!mayViewAudit) return;
+    // Only the dashboard's Recent Activity and the Audit page show the log.
+    // Anywhere else, just note it's out of date and refresh on the way back
+    // (it used to re-download — and re-render the app — after every change).
+    if (!AUDIT_TABS.includes(activeTabRef.current)) {
+      auditStaleRef.current = true;
+      return;
+    }
     if (auditRefreshTimerRef.current) clearTimeout(auditRefreshTimerRef.current);
     auditRefreshTimerRef.current = setTimeout(() => {
       // Stay on the page being viewed; new entries appear on page 1.
@@ -1371,7 +1672,7 @@ export const AppProvider = ({ children }) => {
       const res = await apiFetch('/api/notifications?limit=50');
       if (!res.ok) return;
       const data = await res.json().catch(() => ({}));
-      setNotifications((data.notifications || []).map(n => ({
+      const next = (data.notifications || []).map(n => ({
         id: n.id,
         type: n.type,
         title: n.title,
@@ -1381,7 +1682,16 @@ export const AppProvider = ({ children }) => {
         isRead: !!n.read_at,
         createdAt: n.created_at,
         actorName: n.actor?.name || (n.actor_id ? '' : 'System'),
-      })));
+      }));
+      // Only update when something actually changed: every update re-renders
+      // the whole app, and this runs every 30 seconds.
+      setNotifications(prev => {
+        if (prev.length === next.length &&
+            prev.every((p, i) => p.id === next[i].id && p.isRead === next[i].isRead)) {
+          return prev;
+        }
+        return next;
+      });
     } catch {
       // try again on the next poll
     }
@@ -1425,6 +1735,10 @@ export const AppProvider = ({ children }) => {
       });
       return false;
     }
+    // Pinned feasibilities sort first on the server: refetch the page.
+    if (type === 'feasibility') setFeasibilitiesVersion(v => v + 1);
+    if (type === 'ticket') setTicketsVersion(v => v + 1);
+    if (type === 'task') setTasksVersion(v => v + 1);
     return true;
   };
 
@@ -1916,20 +2230,33 @@ export const AppProvider = ({ children }) => {
     return true;
   };
 
-  // Reloads the client list from the server — used after a spreadsheet
-  // import, which can add thousands of clients in one request. Returns
-  // false when the reload failed (the old list stays in place).
+  // ---- Clients, a page at a time ----
+  // The client book isn't kept in memory (it can run to thousands). The
+  // Clients page fetches the page it shows; clientsVersion goes up whenever
+  // clients change (create, edit, archive, restore, import) so it refetches.
+  const [clientsVersion, setClientsVersion] = useState(0);
+  const bumpClients = () => setClientsVersion(v => v + 1);
+
+  // One page of clients: { clients, pagination: { page, limit, total, pages } }.
+  const fetchClientsPage = async ({ page = 1, limit = 50, search = '', status = '' } = {}) => {
+    const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+    if (search.trim()) params.set('search', search.trim());
+    if (status) params.set('status', status);
+    const res = await apiFetch(`/api/clients?${params}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to load clients');
+    return {
+      clients: (data.clients || []).map(normalizeClient).filter(Boolean),
+      pagination: data.pagination || { page, limit, total: (data.clients || []).length, pages: 1 },
+    };
+  };
+
+  // Used after a spreadsheet import (and when edit requests change): tells
+  // the Clients page to refetch. Kept as an async function returning true
+  // for the existing callers.
   const reloadClients = async () => {
-    try {
-      const res = await apiFetch('/api/clients');
-      if (!res.ok) return false;
-      const data = await res.json();
-      setClients((data.clients || []).map(normalizeClient).filter(Boolean));
-      return true;
-    } catch (err) {
-      console.warn('Failed to reload clients:', err);
-      return false;
-    }
+    bumpClients();
+    return true;
   };
 
   const createClient = async (data) => {
@@ -1971,6 +2298,7 @@ export const AppProvider = ({ children }) => {
     }
 
     setClients(prev => [savedClient, ...prev]);
+    bumpClients();
 
     logAudit({
       actorId: currentUser?.id,
@@ -2036,6 +2364,7 @@ export const AppProvider = ({ children }) => {
     if (!succeeded) return null;
 
     setClients(prev => prev.map(c => String(c.id) === String(id) ? (savedClient || { ...c, ...updates }) : c));
+    bumpClients();
 
     logAudit({
       actorId: currentUser?.id,
@@ -2078,6 +2407,7 @@ export const AppProvider = ({ children }) => {
 
     const client = clients.find(c => String(c.id) === String(id));
     setClients(prev => prev.filter(c => String(c.id) !== String(id)));
+    bumpClients();
     if (client) {
       logAudit({
         actorId: currentUser?.id,
@@ -2105,6 +2435,7 @@ export const AppProvider = ({ children }) => {
       to_location: data.toLocation || '',
       city: data.city || '',
       requirement_details: data.requirementDetails || '',
+      subject: (data.subject || '').trim(),
       assigned_dept: data.assignedDept || '',
       assigned_user_id: data.assignedUserId || null,
       priority: data.priority || 'normal',
@@ -2150,7 +2481,7 @@ export const AppProvider = ({ children }) => {
 
     if (!succeeded) return null;
 
-    setFeasibilities(prev => [savedFeasibility, ...prev]);
+    setFeasibilitiesChanged(prev => [savedFeasibility, ...prev]);
 
     logAudit({
       actorId: currentUser?.id,
@@ -2185,6 +2516,7 @@ export const AppProvider = ({ children }) => {
     if (updates.city !== undefined) wirePayload.city = updates.city;
     if (updates.clientId !== undefined) wirePayload.client_id = getBackendId(updates.clientId);
     if (updates.requirementDetails !== undefined) wirePayload.requirement_details = updates.requirementDetails;
+    if (updates.subject !== undefined) wirePayload.subject = (updates.subject || '').trim();
     if (updates.assignedDept !== undefined) wirePayload.assigned_dept = updates.assignedDept;
     // 0 = unassign (null reads as "not sent" on the backend).
     if (updates.assignedUserId !== undefined) wirePayload.assigned_user_id = getBackendId(updates.assignedUserId) ?? 0;
@@ -2218,7 +2550,7 @@ export const AppProvider = ({ children }) => {
 
     if (!succeeded) return null;
 
-    setFeasibilities(prev => prev.map(f => {
+    setFeasibilitiesChanged(prev => prev.map(f => {
       if (String(f.id) !== String(id)) return f;
       return savedFeasibility || { ...f, ...updates, updatedAt: new Date().toISOString() };
     }));
@@ -2270,7 +2602,7 @@ export const AppProvider = ({ children }) => {
         ? resData.feasibility.vendors.map(normalizeFeasibilityVendor).filter(Boolean)
         : null;
       const newVendor = normalizeFeasibilityVendor(resData.vendor);
-      setFeasibilities(prev => prev.map(f => {
+      setFeasibilitiesChanged(prev => prev.map(f => {
         if (String(f.id) !== String(feasibilityId)) return f;
         const vendors = serverVendors
           || (newVendor ? [...(f.vendors || []), newVendor] : (f.vendors || []));
@@ -2310,7 +2642,7 @@ export const AppProvider = ({ children }) => {
       return false;
     }
 
-    setFeasibilities(prev => prev.map(f => {
+    setFeasibilitiesChanged(prev => prev.map(f => {
       if (String(f.id) === String(feasibilityId)) {
         return {
           ...f,
@@ -2341,7 +2673,7 @@ export const AppProvider = ({ children }) => {
       return false;
     }
 
-    setFeasibilities(prev => prev.map(f => {
+    setFeasibilitiesChanged(prev => prev.map(f => {
       if (String(f.id) === String(feasibilityId)) {
         return {
           ...f,
@@ -2377,7 +2709,7 @@ export const AppProvider = ({ children }) => {
     }
 
     const feas = feasibilities.find(f => String(f.id) === String(id));
-    setFeasibilities(prev => prev.filter(f => String(f.id) !== String(id)));
+    setFeasibilitiesChanged(prev => prev.filter(f => String(f.id) !== String(id)));
     if (feas) {
       logAudit({
         actorId: currentUser?.id,
@@ -2405,7 +2737,7 @@ export const AppProvider = ({ children }) => {
       });
       if (res.ok) {
         const resData = await res.json();
-        setFeasibilities(prev => prev.map(f => {
+        setFeasibilitiesChanged(prev => prev.map(f => {
           if (String(f.id) === String(feasibilityId)) {
             return { 
               ...f, 
@@ -3149,7 +3481,7 @@ export const AppProvider = ({ children }) => {
       alert('Failed to reinstate vendor. Please check your connection and try again.');
       return false;
     }
-    setFeasibilities(prev => prev.map(f => String(f.id) !== String(feasibilityId) ? f : {
+    setFeasibilitiesChanged(prev => prev.map(f => String(f.id) !== String(feasibilityId) ? f : {
       ...f,
       vendors: (f.vendors || []).map(v => String(v.id) === String(vendorId) ? { ...v, withdrawn: false, withdrawnAt: null } : v),
     }));
@@ -3217,6 +3549,48 @@ export const AppProvider = ({ children }) => {
     return true;
   };
 
+  // ---- Comments, loaded when a drawer opens ----
+  // The task and ticket lists no longer include comments (they made the
+  // sign-in download grow with every comment ever written). A drawer calls
+  // loadRecordComments when it opens; comments live here, separately from the
+  // records, so refreshing a task or ticket can't wipe them.
+  //   recordComments['task:12'] = { status: 'loading'|'loaded'|'error', comments }
+  const [recordComments, setRecordComments] = useState({});
+  const commentKey = (type, id) => `${type}:${getBackendId(id)}`;
+
+  const loadRecordComments = async (type, id) => {
+    const bid = getBackendId(id);
+    if (!bid || (type !== 'task' && type !== 'ticket')) return;
+    const key = commentKey(type, id);
+    setRecordComments(prev => ({
+      ...prev,
+      // Keep showing what we had while refreshing.
+      [key]: { status: prev[key]?.status === 'loaded' ? 'loaded' : 'loading', comments: prev[key]?.comments || [] },
+    }));
+    try {
+      const res = await apiFetch(`/api/${type}s/${bid}/comments`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to load comments');
+      const comments = (data.comments || []).map(normalizeComment).filter(Boolean);
+      setRecordComments(prev => ({ ...prev, [key]: { status: 'loaded', comments } }));
+    } catch (err) {
+      console.warn(`Failed to load ${type} comments:`, err);
+      setRecordComments(prev => ({ ...prev, [key]: { status: 'error', comments: prev[key]?.comments || [] } }));
+    }
+  };
+
+  // A posted comment goes straight into the store (no reload needed).
+  const appendRecordComment = (type, id, comment) => {
+    if (!comment) return;
+    const key = commentKey(type, id);
+    setRecordComments(prev => {
+      const cur = prev[key];
+      if (!cur) return prev; // not opened yet: it'll be fetched on open
+      if (cur.comments.some(c => String(c.id) === String(comment.id))) return prev;
+      return { ...prev, [key]: { ...cur, comments: [...cur.comments, comment] } };
+    });
+  };
+
   const addTaskComment = async (taskId, content, isInternal = false) => {
     const targetTaskId = getBackendId(taskId);
     let savedComment = null;
@@ -3246,6 +3620,7 @@ export const AppProvider = ({ children }) => {
       return null;
     }
 
+    appendRecordComment('task', taskId, savedComment);
     setTasks(prev => prev.map(t => {
       if (String(t.id) === String(taskId)) {
         return {
@@ -3674,6 +4049,7 @@ export const AppProvider = ({ children }) => {
       return null;
     }
 
+    appendRecordComment('ticket', ticketId, savedComment);
     setTickets(prev => prev.map(t => {
       if (String(t.id) === String(ticketId)) {
         return {
@@ -4318,9 +4694,7 @@ export const AppProvider = ({ children }) => {
     apiFetch('/api/notifications/read-all', { method: 'POST' }).catch(() => {});
   };
 
-  return (
-    <AppContext.Provider
-      value={{
+  const rawValue = {
         currentUser,
         allUsers,
         users: allUsers,
@@ -4348,6 +4722,8 @@ export const AppProvider = ({ children }) => {
         clientFields,
         saveClientField,
         reloadClients,
+        clientsVersion,
+        fetchClientsPage,
         fetchClientOverview,
         routeTicket,
         returnTicket,
@@ -4374,6 +4750,14 @@ export const AppProvider = ({ children }) => {
         visibleTasks,
         visibleTickets,
         visibleFeasibilities,
+        fetchFeasibilitiesPage,
+        fetchTicketsPage,
+        fetchTasksPage,
+        tasksVersion,
+        ticketsVersion,
+        feasibilitySummary,
+        feasibilitiesVersion,
+        feasibilityProducts,
         togglePin,
         isPinnedFor,
         userNotifications,
@@ -4422,6 +4806,8 @@ export const AppProvider = ({ children }) => {
         grantRecordAccess,
         revokeRecordAccess,
         addTaskComment,
+        recordComments,
+        loadRecordComments,
         deleteTask,
         addTaskDependency,
         removeTaskDependency,
@@ -4471,17 +4857,78 @@ export const AppProvider = ({ children }) => {
         openQuickCreate,
         globalSearchOpen,
         setGlobalSearchOpen
-      }}
-    >
+  };
+
+  // ---- Publish to the store (see the top of this file) ----
+  // Actions: one stable wrapper per name that calls the latest version.
+  const latestRef = useRef(rawValue);
+  latestRef.current = rawValue;
+  const stableFnsRef = useRef({});
+  // Live getters: a new identity only when the state they read changes.
+  const statusGetters = useMemo(() => ({
+    getStatuses: (...args) => latestRef.current.getStatuses(...args),
+    getStatusLabel: (...args) => latestRef.current.getStatusLabel(...args),
+    getStatusCategory: (...args) => latestRef.current.getStatusCategory(...args),
+  }), [workflowStatuses]);
+  const pinGetter = useMemo(() => ({
+    isPinnedFor: (...args) => latestRef.current.isPinnedFor(...args),
+  }), [pinKeys]);
+
+  const value = {};
+  for (const key of Object.keys(rawValue)) {
+    const v = rawValue[key];
+    if (typeof v !== 'function') {
+      value[key] = v;
+    } else if (LIVE_GETTERS.includes(key)) {
+      value[key] = statusGetters[key] || pinGetter[key];
+    } else {
+      if (!stableFnsRef.current[key]) {
+        stableFnsRef.current[key] = (...args) => latestRef.current[key](...args);
+      }
+      value[key] = stableFnsRef.current[key];
+    }
+  }
+
+  const storeRef = useRef(null);
+  if (!storeRef.current) storeRef.current = createAppStore();
+  const store = storeRef.current;
+  // The value for this render; subscribers are told once it's committed.
+  store.value = value;
+  useLayoutEffect(() => { store.notify(); });
+
+  return (
+    <AppContext.Provider value={store}>
       {children}
     </AppContext.Provider>
   );
 };
 
+// Everything; re-renders on every change. Prefer useAppSelector.
 export const useApp = () => {
-  const context = useContext(AppContext);
-  if (!context) {
+  const store = useContext(AppContext);
+  if (!store) {
     throw new Error('useApp must be used within an AppProvider');
   }
-  return context;
+  return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+};
+
+// Just the fields the selector picks; re-renders only when one of them
+// changes. The selector should return an object of fields, e.g.
+//   useAppSelector(s => ({ tasks: s.tasks, setSelectedTaskId: s.setSelectedTaskId }))
+export const useAppSelector = (selector) => {
+  const store = useContext(AppContext);
+  if (!store) {
+    throw new Error('useAppSelector must be used within an AppProvider');
+  }
+  const selectorRef = useRef(selector);
+  selectorRef.current = selector;
+  const cacheRef = useRef({ has: false, value: undefined });
+  const getSelection = useCallback(() => {
+    const next = selectorRef.current(store.getSnapshot());
+    const cache = cacheRef.current;
+    if (cache.has && shallowEqual(cache.value, next)) return cache.value;
+    cacheRef.current = { has: true, value: next };
+    return next;
+  }, [store]);
+  return useSyncExternalStore(store.subscribe, getSelection, getSelection);
 };

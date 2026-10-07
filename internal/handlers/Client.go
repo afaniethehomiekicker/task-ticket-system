@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"task-ticket-backend/internal/utils"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // Client handlers
@@ -46,7 +48,8 @@ func GetClients(c *gin.Context) {
 	db := applyClientScope(c, database.DB.Model(&models.Client{}))
 	if searchQuery != "" {
 		likeQuery := "%" + strings.ToLower(searchQuery) + "%"
-		db = db.Where("(LOWER(client_number) LIKE ? OR LOWER(company_name) LIKE ? OR LOWER(contact_person) LIKE ? OR LOWER(email) LIKE ?)", likeQuery, likeQuery, likeQuery, likeQuery)
+		db = db.Where("(LOWER(client_number) LIKE ? OR LOWER(company_name) LIKE ? OR LOWER(contact_person) LIKE ? OR LOWER(email) LIKE ? OR LOWER(city) LIKE ? OR LOWER(phone) LIKE ? OR LOWER(mobile) LIKE ? OR LOWER(client_name) LIKE ? OR LOWER(industry) LIKE ?)",
+			likeQuery, likeQuery, likeQuery, likeQuery, likeQuery, likeQuery, likeQuery, likeQuery, likeQuery)
 	}
 	if statusFilter != "" {
 		db = db.Where("status = ?", statusFilter)
@@ -54,13 +57,40 @@ func GetClients(c *gin.Context) {
 		db = db.Where("status != ?", "archived")
 	}
 
-	if result := db.Order("company_name ASC").Find(&clients); result.Error != nil {
+	// Paged when ?page= is given (the Clients page asks for one page at a
+	// time; the client book can run to thousands). Without it, everything,
+	// as before — for any caller that still expects the full list.
+	_, paged := c.GetQuery("page")
+	var total int64
+	var page, limit int
+	if paged {
+		page, _ = strconv.Atoi(c.Query("page"))
+		limit, _ = strconv.Atoi(c.DefaultQuery("limit", "50"))
+		page, limit = clampPagination(page, limit)
+		db.Session(&gorm.Session{}).Count(&total)
+		db = db.Offset((page - 1) * limit).Limit(limit)
+	}
+
+	// Secondary key keeps the order stable across pages for equal names.
+	if result := db.Order("company_name ASC").Order("id ASC").Find(&clients); result.Error != nil {
 		serverError(c, "Failed to fetch clients", result.Error)
 		return
 	}
 	markClientAccess(c, clients) // reference-only rows lose contact details
 	markClientEdit(c, clients)   // can_edit / edit_until / edit_request
-	c.JSON(http.StatusOK, gin.H{"clients": clients})
+	if !paged {
+		c.JSON(http.StatusOK, gin.H{"clients": clients})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"clients": clients,
+		"pagination": gin.H{
+			"page":  page,
+			"limit": limit,
+			"total": total,
+			"pages": (total + int64(limit) - 1) / int64(limit),
+		},
+	})
 }
 
 // LookupClients — GET /api/clients/lookup?search=...

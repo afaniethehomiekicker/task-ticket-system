@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { X, Building2, FolderKanban, Ticket, FileSearch, ListChecks, Activity } from 'lucide-react';
 import { TicketStatusBadge, TaskStatusBadge } from '../common/Badge';
 
@@ -16,7 +16,7 @@ export const Client360View = ({ clientId, onClose }) => {
   const {
     fetchClientOverview, clientFields, allUsers, getStatusCategory,
     setSelectedProjectDetailId, setSelectedTicketId, setSelectedFeasibilityId, setSelectedTaskId,
-  } = useApp();
+  } = useAppSelector(s => ({ fetchClientOverview: s.fetchClientOverview, clientFields: s.clientFields, allUsers: s.allUsers, getStatusCategory: s.getStatusCategory, setSelectedProjectDetailId: s.setSelectedProjectDetailId, setSelectedTicketId: s.setSelectedTicketId, setSelectedFeasibilityId: s.setSelectedFeasibilityId, setSelectedTaskId: s.setSelectedTaskId }));
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [projFilter, setProjFilter] = useState('all');

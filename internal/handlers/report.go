@@ -134,3 +134,60 @@ func GetSLABreaches(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"sla_breaches": breaches})
 }
+
+// GetReportsSummary — GET /api/reports/summary
+//
+// History totals for the Reports page. Tickets and tasks aren't all loaded
+// in the browser any more (only open and recently finished ones), so totals
+// over all time come from here. Same visibility rules as the lists; archived
+// records are left out, as on the lists.
+func GetReportsSummary(c *gin.Context) {
+	v := viewerFrom(c)
+	tickets := func() *gorm.DB {
+		return applyTicketScope(database.DB.Model(&models.Ticket{}), v).Where("tickets.status != ?", "archived")
+	}
+	var totalTickets, resolvedTickets int64
+	tickets().Count(&totalTickets)
+	tickets().Where("tickets.status IN ?", statusKeysIn("ticket", "done")).Count(&resolvedTickets)
+
+	// Tasks: totals, per department, and completed per person.
+	tasks := func() *gorm.DB {
+		return applyTaskScope(database.DB.Model(&models.Task{}), v).Where("tasks.status != ?", "archived")
+	}
+	done := statusKeysIn("task", "done")
+	var totalTasks, completedTasks int64
+	tasks().Count(&totalTasks)
+	tasks().Where("tasks.status IN ?", done).Count(&completedTasks)
+
+	type deptRow struct {
+		Department string `json:"department"`
+		Total      int64  `json:"total"`
+		Completed  int64  `json:"completed"`
+	}
+	var byDept []deptRow
+	tasks().Select("tasks.department AS department, COUNT(*) AS total, "+
+		"SUM(CASE WHEN tasks.status IN ? THEN 1 ELSE 0 END) AS completed", done).
+		Group("tasks.department").Scan(&byDept)
+
+	type userRow struct {
+		UserID    uint  `json:"user_id"`
+		Completed int64 `json:"completed"`
+	}
+	var completedByUser []userRow
+	tasks().Where("tasks.status IN ? AND tasks.assignee_id IS NOT NULL", done).
+		Select("tasks.assignee_id AS user_id, COUNT(*) AS completed").
+		Group("tasks.assignee_id").Scan(&completedByUser)
+
+	c.JSON(http.StatusOK, gin.H{
+		"tickets": gin.H{
+			"total":    totalTickets,
+			"resolved": resolvedTickets,
+		},
+		"tasks": gin.H{
+			"total":             totalTasks,
+			"completed":         completedTasks,
+			"by_department":     byDept,
+			"completed_by_user": completedByUser,
+		},
+	})
+}

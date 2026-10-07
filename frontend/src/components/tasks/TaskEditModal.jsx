@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { X } from 'lucide-react';
 import { canAssignTickets, canApproveWork, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, canSetPrivacy } from '../../utils/permissions';
 import { PrivateToggle } from '../common/PrivateToggle';
@@ -12,7 +12,7 @@ export const TaskEditModal = () => {
     updateTask, 
     allUsers,
     currentUser,
-    permissionMatrix, getStatuses, getStatusCategory } = useApp();
+    permissionMatrix, getStatuses, getStatusCategory } = useAppSelector(s => ({ tasks: s.tasks, selectedTaskEditId: s.selectedTaskEditId, setSelectedTaskEditId: s.setSelectedTaskEditId, updateTask: s.updateTask, allUsers: s.allUsers, currentUser: s.currentUser, permissionMatrix: s.permissionMatrix, getStatuses: s.getStatuses, getStatusCategory: s.getStatusCategory }));
 
   // Reassigning needs the assign_tickets permission ("Reassign Tickets &
   // Tasks"); the backend now enforces it, so don't offer a control that will

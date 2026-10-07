@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useApp, getBackendId } from '../../context/AppContext';
+import { getBackendId, useAppSelector } from '../../context/AppContext';
 import { 
   Users, Plus, Search, Shield, UserCheck, Mail, Building, 
   CheckCircle, AlertCircle, Edit, ToggleLeft, ToggleRight, X, Phone, Archive,
@@ -23,7 +23,7 @@ export const TeamView = () => {
     permissionMatrix,
     archiveUser,
     apiFetch
-  } = useApp();
+  } = useAppSelector(s => ({ allUsers: s.allUsers, currentUser: s.currentUser, tasks: s.tasks, tickets: s.tickets, toggleUserActiveStatus: s.toggleUserActiveStatus, createUser: s.createUser, updateUser: s.updateUser, changeUserRole: s.changeUserRole, customRoles: s.customRoles, departments: s.departments, permissionMatrix: s.permissionMatrix, archiveUser: s.archiveUser, apiFetch: s.apiFetch }));
 
   // L1..L4 are support tiers inside CNOC (spec), not departments. The tier
   // field only applies to CNOC users; the backend stores it empty otherwise.

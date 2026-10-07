@@ -1,10 +1,10 @@
 import React from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 
 // Inputs for the admin-defined extra client fields (spec slide 8). `values`
 // is the client's customFields object; onChange receives the updated object.
 export const CustomFieldInputs = ({ values = {}, onChange, inputClassName = '' }) => {
-  const { clientFields } = useApp();
+  const { clientFields } = useAppSelector(s => ({ clientFields: s.clientFields }));
   const fields = (clientFields || []).filter(f => f.enabled);
   if (fields.length === 0) return null;
 

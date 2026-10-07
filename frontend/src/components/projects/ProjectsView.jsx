@@ -1,11 +1,12 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { 
   FolderKanban, Plus, Search, Filter, Download, Pin, Star, 
   Calendar, Clock, Users, ArrowUpRight, Grid, List as ListIcon, CheckCircle2
 } from 'lucide-react';
 import { PriorityBadge, ProjectStatusBadge } from '../common/Badge';
 import { canCreateProject, formatDate } from '../../utils/permissions';
+import { clientOptionsFromProjects } from '../../utils/clientOptions';
 import { exportProjectsToCSV } from '../../utils/exportUtils';
 
 import { FilterSelect } from '../common/FilterSelect';
@@ -20,9 +21,8 @@ export const ProjectsView = () => {
     permissionMatrix,
     departments,
     listPreset,
-    setListPreset,
-    clients
-  } = useApp();
+    setListPreset
+  } = useAppSelector(s => ({ visibleProjects: s.visibleProjects, allUsers: s.allUsers, currentUser: s.currentUser, togglePinProject: s.togglePinProject, setSelectedProjectDetailId: s.setSelectedProjectDetailId, setQuickCreateOpen: s.setQuickCreateOpen, permissionMatrix: s.permissionMatrix, departments: s.departments, listPreset: s.listPreset, setListPreset: s.setListPreset }));
 
   const deptFilterOptions = Array.from(new Set([
     ...(departments || []).map(d => d.name),
@@ -148,7 +148,7 @@ export const ProjectsView = () => {
             <option value="completed">Completed</option>
           </select>
           <FilterSelect id="projects-client-filter" value={clientFilter} onChange={setClientFilter} allLabel="All Clients"
-            options={(clients || []).filter(c => c.status !== 'archived').map(c => [String(c.id), c.companyName])} />
+            options={clientOptionsFromProjects(visibleProjects)} />
           <FilterSelect id="projects-staff-filter" value={staffFilter} onChange={setStaffFilter} allLabel="All Staff"
             options={(allUsers || []).filter(u => u.status !== 'archived').map(u => [String(u.id), u.name])} />
         </div>

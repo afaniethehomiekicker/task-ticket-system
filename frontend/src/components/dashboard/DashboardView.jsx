@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { 
   FolderKanban, CheckSquare, LifeBuoy, ShieldCheck, 
   TrendingUp, Clock, Plus, Flame, ChevronRight, FileSearch, Pin, UserCheck
@@ -21,11 +21,11 @@ export const DashboardView = () => {
     setTaskListPreset,
     getStatuses,
     setListPreset,
-    visibleFeasibilities,
+    feasibilitySummary, isPinnedFor,
     setSelectedTicketId,
     setSelectedProjectDetailId,
     setSelectedFeasibilityId
-  } = useApp();
+  } = useAppSelector(s => ({ currentUser: s.currentUser, visibleProjects: s.visibleProjects, visibleTasks: s.visibleTasks, visibleTickets: s.visibleTickets, allUsers: s.allUsers, auditLogs: s.auditLogs, setActiveTab: s.setActiveTab, setSelectedTaskId: s.setSelectedTaskId, setQuickCreateOpen: s.setQuickCreateOpen, getStatusCategory: s.getStatusCategory, setTaskListPreset: s.setTaskListPreset, getStatuses: s.getStatuses, setListPreset: s.setListPreset, feasibilitySummary: s.feasibilitySummary, isPinnedFor: s.isPinnedFor, setSelectedTicketId: s.setSelectedTicketId, setSelectedProjectDetailId: s.setSelectedProjectDetailId, setSelectedFeasibilityId: s.setSelectedFeasibilityId }));
   const [showPinned, setShowPinned] = useState(false);
 
   if (!currentUser) return null;
@@ -69,12 +69,14 @@ export const DashboardView = () => {
   const criticalTickets = openTickets.filter(t => t.priority === 'critical');
   const overdueTasks = activeTasks.filter(t => t.dueDate && String(t.dueDate).slice(0, 10) < today);
   const runningProjects = visibleProjects.filter(p => p.status === 'active');
-  const pendingFeasibilities = (visibleFeasibilities || []).filter(f => ['draft', 'in_progress'].includes(f.status));
+  // Feasibilities aren't all loaded in the browser: counts and pins come
+  // from the server summary.
+  const pendingFeasibilityCount = feasibilitySummary?.pending || 0;
   const pinnedItems = [
     ...visibleProjects.filter(p => p.isPinned).map(p => ({ kind: 'project', id: p.id, ref: p.code, title: p.title, open: () => setSelectedProjectDetailId(p.id) })),
     ...visibleTasks.filter(t => t.isPinned).map(t => ({ kind: 'task', id: t.id, ref: t.taskNumber, title: t.title, open: () => setSelectedTaskId(t.id) })),
     ...visibleTickets.filter(t => t.isPinned).map(t => ({ kind: 'ticket', id: t.id, ref: t.ticketNumber, title: t.title, open: () => setSelectedTicketId(t.id) })),
-    ...(visibleFeasibilities || []).filter(f => f.isPinned).map(f => ({ kind: 'feasibility', id: f.id, ref: f.feasibilityNumber, title: [f.product, f.capacity].filter(Boolean).join(' · '), open: () => setSelectedFeasibilityId(f.id) })),
+    ...(feasibilitySummary?.pinned || []).filter(f => isPinnedFor('feasibility', f.id)).map(f => ({ kind: 'feasibility', id: f.id, ref: f.feasibilityNumber, title: [f.product, f.capacity].filter(Boolean).join(' · '), open: () => setSelectedFeasibilityId(f.id) })),
   ];
 
   return (
@@ -119,7 +121,7 @@ export const DashboardView = () => {
             go: () => { setListPreset({ tab: 'tasks', status: 'overdue', priority: 'all' }); setActiveTab('tasks'); } },
           { id: 'running-projects', label: 'Running Projects', value: runningProjects.length, icon: FolderKanban, tone: 'text-indigo-600 dark:text-indigo-400 bg-indigo-100 dark:bg-indigo-950',
             go: () => { setListPreset({ tab: 'projects', status: 'active' }); setActiveTab('projects'); } },
-          { id: 'pending-feas', label: 'Pending Feasibilities', value: pendingFeasibilities.length, icon: FileSearch, tone: 'text-sky-600 dark:text-sky-400 bg-sky-100 dark:bg-sky-950',
+          { id: 'pending-feas', label: 'Pending Feasibilities', value: pendingFeasibilityCount, icon: FileSearch, tone: 'text-sky-600 dark:text-sky-400 bg-sky-100 dark:bg-sky-950',
             go: () => { setListPreset({ tab: 'feasibilities', status: 'pending' }); setActiveTab('feasibilities'); } },
           { id: 'pinned', label: 'Pinned Items', value: pinnedItems.length, icon: Pin, tone: 'text-yellow-600 dark:text-yellow-400 bg-yellow-100 dark:bg-yellow-950',
             go: () => setShowPinned(v => !v), active: showPinned },

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { Search, FolderKanban, CheckSquare, LifeBuoy, Users, X, FileSearch, Building2, ListTree } from 'lucide-react';
 import { TaskStatusBadge, TicketStatusBadge } from './Badge';
 
@@ -18,10 +18,10 @@ const idRe = /^(cl|prj|tkt|tsk|stk|fea|usr|dep)-\d+$/i;
 export const GlobalSearchModal = () => {
   const {
     globalSearchOpen, setGlobalSearchOpen,
-    visibleProjects, visibleTasks, visibleTickets, visibleFeasibilities, clients, allUsers,
+    visibleProjects, visibleTasks, visibleTickets, fetchFeasibilitiesPage, fetchTicketsPage, fetchTasksPage, fetchClientsPage, allUsers,
     setSelectedTaskId, setSelectedTicketId, setSelectedProjectDetailId, setSelectedFeasibilityId,
     setActiveTab,
-  } = useApp();
+  } = useAppSelector(s => ({ globalSearchOpen: s.globalSearchOpen, setGlobalSearchOpen: s.setGlobalSearchOpen, visibleProjects: s.visibleProjects, visibleTasks: s.visibleTasks, visibleTickets: s.visibleTickets, fetchFeasibilitiesPage: s.fetchFeasibilitiesPage, fetchTicketsPage: s.fetchTicketsPage, fetchTasksPage: s.fetchTasksPage, fetchClientsPage: s.fetchClientsPage, allUsers: s.allUsers, setSelectedTaskId: s.setSelectedTaskId, setSelectedTicketId: s.setSelectedTicketId, setSelectedProjectDetailId: s.setSelectedProjectDetailId, setSelectedFeasibilityId: s.setSelectedFeasibilityId, setActiveTab: s.setActiveTab }));
 
   const [query, setQuery] = useState('');
 
@@ -40,17 +40,55 @@ export const GlobalSearchModal = () => {
 
   useEffect(() => { if (!globalSearchOpen) setQuery(''); }, [globalSearchOpen]);
 
+  // Clients aren't kept in the browser (there can be thousands): ask the
+  // server, after a short pause in typing. Same visibility rules as the
+  // Clients page.
+  // Feasibilities likewise (not all loaded in the browser any more).
+  const [remoteClients, setRemoteClients] = useState([]);
+  const [remoteFeasibilities, setRemoteFeasibilities] = useState([]);
+  // Older tickets (only open and recent ones are loaded in the browser).
+  const [remoteTickets, setRemoteTickets] = useState([]);
+  const [remoteTasks, setRemoteTasks] = useState([]);
+  useEffect(() => {
+    const q = query.trim();
+    if (!globalSearchOpen || q.length < 2) { setRemoteClients([]); setRemoteFeasibilities([]); setRemoteTickets([]); setRemoteTasks([]); return undefined; }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      fetchClientsPage({ page: 1, limit: 5, search: q })
+        .then(({ clients }) => { if (!cancelled) setRemoteClients(clients); })
+        .catch(() => { if (!cancelled) setRemoteClients([]); });
+      // Search all statuses (archived excluded by the server).
+      fetchFeasibilitiesPage({ page: 1, limit: 5, search: q, sort: 'created' })
+        .then(({ feasibilities }) => { if (!cancelled) setRemoteFeasibilities(feasibilities); })
+        .catch(() => { if (!cancelled) setRemoteFeasibilities([]); });
+      fetchTicketsPage({ page: 1, limit: 6, search: q, sort: 'date' })
+        .then(({ tickets }) => { if (!cancelled) setRemoteTickets(tickets); })
+        .catch(() => { if (!cancelled) setRemoteTickets([]); });
+      fetchTasksPage({ page: 1, limit: 6, search: q, sort: 'number' })
+        .then(({ tasks }) => { if (!cancelled) setRemoteTasks(tasks); })
+        .catch(() => { if (!cancelled) setRemoteTasks([]); });
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, globalSearchOpen]);
+
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (q.length < 2) return null;
     const userName = (id) => (allUsers || []).find(u => String(u.id) === String(id))?.name || '';
 
-    const tickets = (visibleTickets || []).filter(t => has(q,
+    const localTickets = (visibleTickets || []).filter(t => has(q,
       t.ticketNumber, t.title, t.description, t.requesterCompany, t.requesterName, t.department,
       t.category, userName(t.assignedToId)));
+    // Loaded matches first (instant), then older ones from the server.
+    const seenTickets = new Set(localTickets.map(t => String(t.id)));
+    const tickets = [...localTickets, ...(remoteTickets || []).filter(t => !seenTickets.has(String(t.id)))];
 
-    const tasks = (visibleTasks || []).filter(t => has(q,
+    const localTasks = (visibleTasks || []).filter(t => has(q,
       t.taskNumber, t.title, t.description, t.department, (t.labels || []).join(' '), userName(t.assignedToId)));
+    // Loaded matches first (instant), then older ones from the server.
+    const seenTasks = new Set(localTasks.map(t => String(t.id)));
+    const tasks = [...localTasks, ...(remoteTasks || []).filter(t => !seenTasks.has(String(t.id)))];
 
     // Sub-tasks, by their own STK- ID or title — opening one opens its task.
     const subtasks = [];
@@ -62,12 +100,9 @@ export const GlobalSearchModal = () => {
       p.code, p.title, p.description, p.department, p.clientName,
       (p.clients || []).map(c => `${c.companyName} ${c.clientNumber}`).join(' ')));
 
-    const feasibilities = (visibleFeasibilities || []).filter(f => has(q,
-      f.feasibilityNumber, f.product, f.capacity, f.city, f.fromLocation, f.toLocation,
-      f.client?.companyName, (f.vendors || []).map(v => v.vendorName).join(' ')));
+    const feasibilities = remoteFeasibilities || [];
 
-    const clientList = (clients || []).filter(c => c.status !== 'archived' && has(q,
-      c.clientNumber, c.companyName, c.clientName, c.contactPerson, c.city, c.email, c.phone, c.mobile));
+    const clientList = (remoteClients || []).filter(c => c.status !== 'archived');
 
     const people = (allUsers || []).filter(u => u.status !== 'archived' && has(q,
       u.userNumber, u.name, u.email, u.title, u.department));
@@ -94,7 +129,7 @@ export const GlobalSearchModal = () => {
       projects: projects.slice(0, 5), feasibilities: feasibilities.slice(0, 5),
       clients: clientList.slice(0, 5), people: people.slice(0, 5),
     };
-  }, [query, visibleTickets, visibleTasks, visibleProjects, visibleFeasibilities, clients, allUsers]);
+  }, [query, visibleTickets, visibleTasks, visibleProjects, remoteFeasibilities, remoteClients, remoteTickets, remoteTasks, allUsers]);
 
   if (!globalSearchOpen) return null;
 

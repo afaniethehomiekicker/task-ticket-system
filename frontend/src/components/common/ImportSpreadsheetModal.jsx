@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   X, FileSpreadsheet, Upload, Download, CheckCircle2, AlertTriangle, MinusCircle, Loader2, RotateCcw,
 } from 'lucide-react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import {
   parseSpreadsheetFile, downloadImportTemplate, downloadProblemRows, newIdempotencyKey, normalizeHeader,
 } from '../../utils/spreadsheetImport';
@@ -109,7 +109,7 @@ const VirtualRows = ({ rows, columns, gridTemplate }) => {
 };
 
 export const ImportSpreadsheetModal = ({ config, onClose, onImported }) => {
-  const { apiFetch } = useApp();
+  const { apiFetch } = useAppSelector(s => ({ apiFetch: s.apiFetch }));
   const fileInputRef = useRef(null);
   // Whether the dialog is still open, so late answers (file read, server
   // check, import) don't update a closed dialog. Set on every mount: in

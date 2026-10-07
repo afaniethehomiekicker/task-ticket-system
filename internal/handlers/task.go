@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,10 @@ type CreateTaskInput struct {
 	// Checklist items created with the task, in one step, so the assignee
 	// receives the task complete (the create form had no way to add them).
 	Checklist []string `json:"checklist"`
+
+	// Private: only the people on the task (and their managers) see it.
+	// Off by default: the whole department can view it (visibility.go).
+	IsPrivate bool `json:"is_private"`
 }
 
 type UpdateTaskInput struct {
@@ -55,6 +60,9 @@ type UpdateTaskInput struct {
 	EstimatedHours *float64 `json:"estimated_hours"`
 	ActualHours    *float64 `json:"actual_hours"`
 	IsPinned       *bool    `json:"is_pinned"`
+	// Private / department-visible. Only the creator, supervisors and
+	// admins may change it (canSetPrivacy).
+	IsPrivate *bool `json:"is_private"`
 }
 
 type TaskQueryParams struct {
@@ -69,6 +77,18 @@ type TaskQueryParams struct {
 	Limit      int    `form:"limit,default=20"`
 	SortBy     string `form:"sort_by,default=created_at"`
 	SortOrder  string `form:"sort_order,default=desc"`
+	// Client: tasks whose project has this client (primary or linked).
+	ClientID string `form:"client_id"`
+	// The Tasks page's sort: due | priority | status | number. Pinned first.
+	// When set, it replaces sort_by / sort_order.
+	Sort string `form:"sort"`
+	// "1": the person filter and the search also match sub-tasks (a task
+	// is listed when one of its sub-tasks is that person's, or matches the
+	// search) — the Tasks page with "show sub-tasks" on.
+	Sub string `form:"sub"`
+	// "1": the working set loaded at sign-in — unfinished tasks, tasks
+	// finished in the last 30 days, and tasks the caller pinned.
+	Working string `form:"working"`
 }
 
 // Sortable columns for GET /api/tasks (whitelist — see safeOrderClause).
@@ -91,9 +111,6 @@ func GetTasks(c *gin.Context) {
 	}
 	params.Page, params.Limit = clampPagination(params.Page, params.Limit)
 
-	userRoleVal, _ := c.Get("user_role")
-	currentUserRole := userRoleVal.(string)
-
 	query := database.DB.
 		Preload("Project").
 		Preload("Ticket").
@@ -102,9 +119,11 @@ func GetTasks(c *gin.Context) {
 		Preload("Creator").
 		Preload("SubTasks.Assignee").
 		Preload("SubTasks.AssignedBy", userBasics).
-		Preload("Comments.User").
-		Preload("Dependencies").
-		Order(safeOrderClause(params.SortBy, params.SortOrder, taskSortColumns, "tasks.created_at"))
+		// No comments in the list: they made the download grow with every
+		// comment ever written. The task drawer loads them when it opens
+		// (GET /api/tasks/:id/comments); GetTask still includes them.
+		Preload("Dependencies")
+	// The order is added below (sort, or sort_by / sort_order).
 
 	// Checklist items must come back with the task or they vanish on refresh.
 	if hasTaskRelation("Checklists") {
@@ -116,13 +135,26 @@ func GetTasks(c *gin.Context) {
 	// the API never returns what the UI would have hidden.
 	query = applyTaskScope(query, viewerFrom(c))
 
-	if params.Status != "" {
-		query = query.Where("tasks.status = ?", params.Status)
-	} else {
+	// Finished = a "done" or "cancelled" category in the status catalog.
+	finished := statusKeysIn("task", "done", "cancelled")
+	switch params.Status {
+	case "":
 		// See the matching comment in projects.go's GetProjects — same
 		// reasoning, archived tasks stay reachable but out of the
 		// default list.
 		query = query.Where("tasks.status != ?", "archived")
+	case "open": // not finished (dashboard drill-down)
+		query = query.Where("tasks.status != ? AND tasks.status NOT IN ?", "archived", finished)
+	case "overdue": // not finished and past the due date
+		query = query.Where("tasks.status != ? AND tasks.status NOT IN ? AND tasks.due_date IS NOT NULL AND tasks.due_date < ?",
+			"archived", finished, time.Now().Truncate(24*time.Hour))
+	default:
+		query = query.Where("tasks.status = ?", params.Status)
+	}
+	if params.Working == "1" {
+		query = query.Where(fmt.Sprintf(`(tasks.status NOT IN ? OR tasks.updated_at >= ?
+			OR EXISTS (SELECT 1 FROM pins WHERE pins.user_id = %d AND pins.record_type = 'task' AND pins.record_id = tasks.id))`,
+			viewerFrom(c).ID), finished, time.Now().AddDate(0, 0, -30))
 	}
 	if params.Priority != "" {
 		query = query.Where("tasks.priority = ?", params.Priority)
@@ -133,18 +165,57 @@ func GetTasks(c *gin.Context) {
 	if params.TicketID != "" {
 		query = query.Where("tasks.ticket_id = ?", params.TicketID)
 	}
-	if params.AssigneeID != "" {
-		query = query.Where("tasks.assignee_id = ?", params.AssigneeID)
+	if id, err := strconv.Atoi(params.ClientID); err == nil && id > 0 {
+		query = query.Where(`tasks.project_id IN (SELECT projects.id FROM projects WHERE projects.client_id = ? AND projects.deleted_at IS NULL
+			UNION SELECT project_clients.project_id FROM project_clients WHERE project_clients.client_id = ?)`, id, id)
 	}
-	if params.Department != "" && (currentUserRole == "super_admin" || currentUserRole == "admin") {
-		query = query.Where("tasks.department = ?", params.Department)
+	// Any role: the visibility scope above already limits what's returned.
+	if d := strings.TrimSpace(params.Department); d != "" {
+		query = query.Where("LOWER(TRIM(tasks.department)) = LOWER(?)", d)
 	}
-	if params.Search != "" {
-		searchTerm := "%" + strings.ToLower(params.Search) + "%"
-		query = query.Where(
-			"LOWER(tasks.title) LIKE ? OR LOWER(tasks.description) LIKE ? OR LOWER(tasks.task_number) LIKE ?",
-			searchTerm, searchTerm, searchTerm,
-		)
+
+	// Person and search. With sub=1 (sub-tasks shown), a task also matches
+	// through a live sub-task that is the person's and, when searching,
+	// whose title matches (or whose parent's title / number does) — the
+	// rule the Tasks page used in the browser.
+	assigneeID, _ := strconv.Atoi(params.AssigneeID)
+	search := strings.TrimSpace(params.Search)
+	like := "%" + strings.ToLower(search) + "%"
+	var parentConds []string
+	var parentArgs []interface{}
+	if assigneeID > 0 {
+		parentConds = append(parentConds, "tasks.assignee_id = ?")
+		parentArgs = append(parentArgs, assigneeID)
+	}
+	if search != "" {
+		parentConds = append(parentConds, `(LOWER(tasks.title) LIKE ? OR LOWER(tasks.description) LIKE ?
+			OR LOWER(tasks.task_number) LIKE ? OR LOWER(tasks.labels) LIKE ?)`)
+		parentArgs = append(parentArgs, like, like, like, like)
+	}
+	if len(parentConds) > 0 {
+		parentSQL := "(" + strings.Join(parentConds, " AND ") + ")"
+		if params.Sub == "1" {
+			subConds := []string{"st.task_id = tasks.id", "st.deleted_at IS NULL", "st.status != 'archived'"}
+			var subArgs []interface{}
+			if assigneeID > 0 {
+				subConds = append(subConds, "st.assignee_id = ?")
+				subArgs = append(subArgs, assigneeID)
+			}
+			if search != "" {
+				subConds = append(subConds, "(LOWER(st.title) LIKE ? OR LOWER(tasks.title) LIKE ? OR LOWER(tasks.task_number) LIKE ?)")
+				subArgs = append(subArgs, like, like, like)
+			}
+			query = query.Where("("+parentSQL+" OR EXISTS (SELECT 1 FROM sub_tasks st WHERE "+strings.Join(subConds, " AND ")+"))",
+				append(parentArgs, subArgs...)...)
+		} else {
+			query = query.Where(parentSQL, parentArgs...)
+		}
+	}
+
+	if params.Sort != "" {
+		query = orderTasks(query, params.Sort, viewerFrom(c).ID)
+	} else {
+		query = query.Order(safeOrderClause(params.SortBy, params.SortOrder, taskSortColumns, "tasks.created_at"))
 	}
 
 	var total int64
@@ -171,6 +242,23 @@ func GetTasks(c *gin.Context) {
 			"pages": (total + int64(params.Limit) - 1) / int64(params.Limit),
 		},
 	})
+}
+
+// orderTasks — the caller's pinned tasks first, then due (soonest; none
+// last), priority, status (by key), or number (newest first, the default).
+func orderTasks(q *gorm.DB, sort string, userID uint) *gorm.DB {
+	q = q.Order(fmt.Sprintf(
+		"(EXISTS (SELECT 1 FROM pins WHERE pins.user_id = %d AND pins.record_type = 'task' AND pins.record_id = tasks.id)) DESC",
+		userID))
+	switch sort {
+	case "due":
+		q = q.Order("tasks.due_date ASC NULLS LAST")
+	case "priority":
+		q = q.Order("CASE tasks.priority WHEN 'critical' THEN 5 WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC")
+	case "status":
+		q = q.Order("tasks.status ASC")
+	}
+	return q.Order("tasks.task_number DESC").Order("tasks.id DESC")
 }
 
 // GetTask returns a single task by ID
@@ -205,13 +293,18 @@ func GetTask(c *gin.Context) {
 	}
 
 	// Privacy check (department, project department, or explicit assignment).
-	// Someone assigned only a subtask gets the reference view instead.
+	// A non-private task of the caller's department is readable as a whole
+	// (read-only); someone assigned only a subtask gets the reference view.
 	if !userCanAccessTask(c, &task) {
-		if !hasSubtaskAssignedIn(task.ID, viewerFrom(c).ID) {
+		switch {
+		case taskInViewerDepts(viewerFrom(c), &task, nil):
+			limitToDeptView(&task)
+		case hasSubtaskAssignedIn(task.ID, viewerFrom(c).ID):
+			limitToSubtaskView(&task, viewerFrom(c).ID)
+		default:
 			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: task belongs to different department"})
 			return
 		}
-		limitToSubtaskView(&task, viewerFrom(c).ID)
 	}
 
 	redactTask(c, &task) // internal notes only for view_internal_notes
@@ -305,6 +398,7 @@ func CreateTask(c *gin.Context) {
 		StartDate:  input.StartDate,
 		Department: department,
 		Status:     "todo",
+		IsPrivate:  input.IsPrivate,
 	}
 
 	if task.Priority == "" {
@@ -396,6 +490,14 @@ func UpdateTask(c *gin.Context) {
 	var input UpdateTaskInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Private / department-visible. Checked before anything is logged or
+	// saved. An unchanged value is a no-op (edit forms resend the current one).
+	privacyChange := input.IsPrivate != nil && *input.IsPrivate != task.IsPrivate
+	if privacyChange && !canSetPrivacy(viewerFrom(c), task.CreatorID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the person who created this task, a supervisor or an admin can change whether it is private"})
 		return
 	}
 
@@ -520,6 +622,9 @@ func UpdateTask(c *gin.Context) {
 	}
 	if input.IsPinned != nil && taskHasColumn("is_pinned") {
 		updates["is_pinned"] = *input.IsPinned
+	}
+	if privacyChange {
+		updates["is_private"] = *input.IsPrivate
 	}
 
 	before := task

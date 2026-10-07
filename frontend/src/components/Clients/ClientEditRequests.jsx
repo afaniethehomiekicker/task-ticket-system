@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { X, KeyRound, Check, Ban, Loader2, Clock } from 'lucide-react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 
 // Edit requests for clients (server: internal/handlers/client_edit.go).
 //
@@ -56,7 +56,7 @@ const when = (iso) => {
 // ---- Staff: ask for edit access ---------------------------------------------
 
 export const RequestEditModal = ({ client, onClose, onSent }) => {
-  const { apiFetch } = useApp();
+  const { apiFetch } = useAppSelector(s => ({ apiFetch: s.apiFetch }));
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -113,7 +113,7 @@ export const RequestEditModal = ({ client, onClose, onSent }) => {
 // ---- Super Admin / Admin: decide requests ------------------------------------
 
 const RequestRow = ({ req, onDecided }) => {
-  const { apiFetch } = useApp();
+  const { apiFetch } = useAppSelector(s => ({ apiFetch: s.apiFetch }));
   const [minutes, setMinutes] = useState(30);
   const [note, setNote] = useState('');
   const [rejecting, setRejecting] = useState(false);
@@ -182,7 +182,7 @@ const RequestRow = ({ req, onDecided }) => {
 };
 
 export const EditRequestsPanel = ({ onClose, onCountChange }) => {
-  const { apiFetch } = useApp();
+  const { apiFetch } = useAppSelector(s => ({ apiFetch: s.apiFetch }));
   const [view, setView] = useState('pending'); // pending | all
   const [requests, setRequests] = useState(null);
   const [error, setError] = useState('');

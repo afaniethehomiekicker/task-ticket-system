@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { UserCheck } from 'lucide-react';
 
 // Record-level access grants (spec slide 16) for one record: who has been
@@ -7,7 +7,7 @@ import { UserCheck } from 'lucide-react';
 // ('clients' | 'tasks'). Render it only for people allowed to manage grants
 // on that record — the backend checks again.
 export const RecordAccessPanel = ({ kind, recordId, recordLabel, excludeUserIds = [] }) => {
-  const { allUsers, fetchRecordAccess, grantRecordAccess, revokeRecordAccess } = useApp();
+  const { allUsers, fetchRecordAccess, grantRecordAccess, revokeRecordAccess } = useAppSelector(s => ({ allUsers: s.allUsers, fetchRecordAccess: s.fetchRecordAccess, grantRecordAccess: s.grantRecordAccess, revokeRecordAccess: s.revokeRecordAccess }));
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');

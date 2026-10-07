@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { Paperclip, Upload, Download, History, Trash2, RefreshCw } from 'lucide-react';
 
 // Documents & evidence for one record — spec slide 27 ("tracked with who
@@ -14,7 +14,7 @@ const ACCEPT = '.pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.log,.csv,.xlsx,.xls,.docx,
 // readOnly: list and download only (a department viewer of someone else's
 // task or ticket — the server refuses their uploads and removals).
 export const DocumentsPanel = ({ recordType, recordId, compact = false, title = 'Documents', readOnly = false }) => {
-  const { apiFetch, currentUser } = useApp();
+  const { apiFetch, currentUser } = useAppSelector(s => ({ apiFetch: s.apiFetch, currentUser: s.currentUser }));
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');

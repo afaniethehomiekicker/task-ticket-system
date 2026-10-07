@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { X, Trash2 } from 'lucide-react';
 import AsyncSelect from 'react-select/async';
 
 import { isTaskAssignable, canArchiveRecords, allowedTicketStatuses, canSetPrivacy } from '../../utils/permissions';
 import { PrivateToggle } from '../common/PrivateToggle';
 export const TicketEditModal = () => {
-  const { tickets, selectedTicketEditId, setSelectedTicketEditId, updateTicket, deleteTicket, allUsers, apiFetch, searchAssignees, getStatuses, getStatusLabel, getStatusCategory, currentUser, permissionMatrix } = useApp();
+  const { tickets, selectedTicketEditId, setSelectedTicketEditId, updateTicket, deleteTicket, allUsers, apiFetch, searchAssignees, getStatuses, getStatusLabel, getStatusCategory, currentUser, permissionMatrix } = useAppSelector(s => ({ tickets: s.tickets, selectedTicketEditId: s.selectedTicketEditId, setSelectedTicketEditId: s.setSelectedTicketEditId, updateTicket: s.updateTicket, deleteTicket: s.deleteTicket, allUsers: s.allUsers, apiFetch: s.apiFetch, searchAssignees: s.searchAssignees, getStatuses: s.getStatuses, getStatusLabel: s.getStatusLabel, getStatusCategory: s.getStatusCategory, currentUser: s.currentUser, permissionMatrix: s.permissionMatrix }));
 
   const ticket = (tickets || []).find(t => String(t.id) === String(selectedTicketEditId));
 

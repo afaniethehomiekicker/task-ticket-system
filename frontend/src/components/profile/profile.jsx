@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { User, Lock, Mail, MapPin, Code, Award, Save, CheckCircle2, Camera } from 'lucide-react';
 import { RoleBadge } from '../common/Badge';
 
 export const Profile = () => {
-  const { currentUser, updateUser, logAudit, uploadAvatar } = useApp();
+  const { currentUser, updateUser, logAudit, uploadAvatar } = useAppSelector(s => ({ currentUser: s.currentUser, updateUser: s.updateUser, logAudit: s.logAudit, uploadAvatar: s.uploadAvatar }));
 
   const [formData, setFormData] = useState({
     name: currentUser.name || '',

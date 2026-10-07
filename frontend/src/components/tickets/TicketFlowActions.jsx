@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { isTaskAssignable, isInDepartment, canWorkTicket, handlesTicketNow, raisedTicket } from '../../utils/permissions';
 import { Route, Undo2, RotateCcw, Building2 } from 'lucide-react';
 
@@ -20,7 +20,7 @@ export const TicketFlowActions = ({ ticket }) => {
   const {
     currentUser, permissionMatrix, departments, searchAssignees, apiFetch,
     routeTicket, returnTicket, reopenTicket, getStatusCategory,
-  } = useApp();
+  } = useAppSelector(s => ({ currentUser: s.currentUser, permissionMatrix: s.permissionMatrix, departments: s.departments, searchAssignees: s.searchAssignees, apiFetch: s.apiFetch, routeTicket: s.routeTicket, returnTicket: s.returnTicket, reopenTicket: s.reopenTicket, getStatusCategory: s.getStatusCategory }));
   const [mode, setMode] = useState(null); // 'route' | 'return' | 'reopen'
   const [dept, setDept] = useState('');
   const [assignee, setAssignee] = useState('');

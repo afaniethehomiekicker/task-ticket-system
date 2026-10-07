@@ -49,7 +49,7 @@ type Feasibility struct {
 	gorm.Model
 	FeasibilityNumber string `json:"feasibility_number" gorm:"unique"`
 
-	ClientID *uint   `json:"client_id"`
+	ClientID *uint   `json:"client_id" gorm:"index"`
 	Client   *Client `json:"client,omitempty" gorm:"foreignKey:ClientID"`
 
 	Product            string `json:"product" binding:"required"`
@@ -58,6 +58,8 @@ type Feasibility struct {
 	ToLocation         string `json:"to_location"`
 	City               string `json:"city"`
 	RequirementDetails string `json:"requirement_details"`
+	// Optional short subject line (shown under the requirement details).
+	Subject string `json:"subject"`
 
 	AssignedDept   string `json:"assigned_dept"`
 	AssignedUserID *uint  `json:"assigned_user_id"`
@@ -120,7 +122,7 @@ type User struct {
 	PreArchiveStatus string     `json:"pre_archive_status,omitempty"`
 	ManagerID    *uint      `json:"manager_id,omitempty"`
 	Manager      *User      `json:"manager,omitempty" gorm:"foreignKey:ManagerID"`
-	SupervisorID *uint      `json:"supervisor_id,omitempty"`
+	SupervisorID *uint      `json:"supervisor_id,omitempty" gorm:"index"`
 	Supervisor   *User      `json:"supervisor,omitempty" gorm:"foreignKey:SupervisorID"`
 	// Set whenever the password changes; sessions issued before it stop
 	// working (see middleware.AuthenticateJWT).
@@ -261,7 +263,7 @@ type Ticket struct {
 	Title        string `json:"title" binding:"required"`
 	Description  string `json:"description"`
 	Category     string `json:"category"`                    // incident, request, problem, change
-	Status       string `json:"status" gorm:"default:'new'"` // new, assigned, in_progress, pending, resolved, closed, cancelled, archived
+	Status       string `json:"status" gorm:"default:'new';index"` // new, assigned, in_progress, pending, resolved, closed, cancelled, archived
 
 	// See the matching comment on Project.ArchivedAt in this file —
 	// same reasoning, same "delete" behavior, applied consistently.
@@ -289,7 +291,7 @@ type Ticket struct {
 	// "client says not resolved" reopens it straight to them — "the loop is
 	// fully tracked, not restarted".
 	OriginDepartment string `json:"origin_department"`
-	ReturnedByID     *uint  `json:"returned_by_id,omitempty"`
+	ReturnedByID     *uint  `json:"returned_by_id,omitempty" gorm:"index"`
 	ReturnedFromDept string `json:"returned_from_dept,omitempty"`
 	ResolvedAt      *time.Time `json:"resolved_at"`
 	ClosedAt        *time.Time `json:"closed_at"`
@@ -306,20 +308,25 @@ type Ticket struct {
 
 	// Department-level ownership (for privacy filtering)
 	Department   string `json:"department"` // e.g. "Technical", "Support"
-	AssignedToID *uint  `json:"assigned_to_id"`
+
+	// Private ticket: same meaning as Task.IsPrivate. A ticket that is NOT
+	// private is visible, read-only, to everyone in the department it is
+	// with now and the department that raised it (ticketDeptClause).
+	IsPrivate bool `json:"is_private" gorm:"not null;default:false"`
+	AssignedToID *uint  `json:"assigned_to_id" gorm:"index"`
 	AssignedTo   *User  `json:"assigned_to,omitempty" gorm:"foreignKey:AssignedToID"`
 	// Who gave the work to its current assignee — set on every assign,
 	// reassign, transfer, route, return and reopen.
 	AssignedByID *uint `json:"assigned_by_id,omitempty"`
 	AssignedBy   *User `json:"assigned_by,omitempty" gorm:"foreignKey:AssignedByID"`
-	CreatedByID  *uint  `json:"created_by_id"`
+	CreatedByID  *uint  `json:"created_by_id" gorm:"index"`
 	CreatedBy    *User  `json:"created_by,omitempty" gorm:"foreignKey:CreatedByID"`
 
 	// Project linkage (optional - for ticketing projects)
-	ProjectID *uint    `json:"project_id"`
+	ProjectID *uint    `json:"project_id" gorm:"index"`
 	Project   *Project `json:"project,omitempty" gorm:"foreignKey:ProjectID"`
 
-	ClientID *uint   `json:"client_id"`
+	ClientID *uint   `json:"client_id" gorm:"index"`
 	Client   *Client `json:"client,omitempty" gorm:"foreignKey:ClientID"`
 
 	// Relationships
@@ -327,6 +334,11 @@ type Ticket struct {
 	Attachments []Attachment `json:"attachments,omitempty" gorm:"foreignKey:TicketID"`
 	Tasks       []Task       `json:"tasks,omitempty" gorm:"foreignKey:TicketID"`
 	WorkLogs    []WorkLog    `json:"work_logs,omitempty" gorm:"foreignKey:TicketID"`
+
+	// Set per response, never stored: "department" means the caller sees
+	// this ticket only because it is a non-private ticket of their
+	// department — read-only (see applyTicketAccessLevels).
+	AccessLevel string `gorm:"-" json:"access_level,omitempty"`
 }
 
 // --- Task ----------------------------------------------------------------
@@ -336,7 +348,7 @@ type Task struct {
 	TaskNumber  string `json:"task_number" gorm:"uniqueIndex"`
 	Title       string `json:"title" binding:"required"`
 	Description string `json:"description"`
-	Status      string `json:"status" gorm:"default:'todo'"` // todo, in_progress, in_review, done, blocked, cancelled, archived
+	Status      string `json:"status" gorm:"default:'todo';index"` // todo, in_progress, in_review, done, blocked, cancelled, archived
 
 	// See the matching comment on Project.ArchivedAt in this file.
 	ArchivedAt   *time.Time `json:"archived_at,omitempty"`
@@ -351,23 +363,30 @@ type Task struct {
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 
 	// Ownership
-	ProjectID *uint    `json:"project_id"`
+	ProjectID *uint    `json:"project_id" gorm:"index"`
 	Project   *Project `json:"project,omitempty" gorm:"foreignKey:ProjectID"`
 
-	TicketID *uint   `json:"ticket_id"` // optional link to parent ticket
+	TicketID *uint   `json:"ticket_id" gorm:"index"` // optional link to parent ticket
 	Ticket   *Ticket `json:"ticket,omitempty" gorm:"foreignKey:TicketID"`
 
-	AssigneeID *uint `json:"assignee_id"`
+	AssigneeID *uint `json:"assignee_id" gorm:"index"`
 	Assignee   *User `json:"assignee,omitempty" gorm:"foreignKey:AssigneeID"`
 	// Who gave the work to its current assignee — set on every assign,
 	// reassign, transfer, route, return and reopen.
 	AssignedByID *uint `json:"assigned_by_id,omitempty"`
 	AssignedBy   *User `json:"assigned_by,omitempty" gorm:"foreignKey:AssignedByID"`
-	CreatorID  *uint `json:"creator_id"`
+	CreatorID  *uint `json:"creator_id" gorm:"index"`
 	Creator    *User `json:"creator,omitempty" gorm:"foreignKey:CreatorID"`
 
 	// Department (derived from project or assignee for privacy)
 	Department string `json:"department"`
+
+	// Private work: only the people directly on it (assignee, creator,
+	// subtask assignees, explicit grants), the assignee's supervisor, the
+	// department's admins and the Super Admin can see it. A task that is
+	// NOT private is also visible, read-only, to everyone in its department
+	// (see taskDeptClause in visibility.go). Default false.
+	IsPrivate bool `json:"is_private" gorm:"not null;default:false"`
 
 	// Fields the frontend reads (normalizeTask) and that handlers already
 	// reference by column name (checklist progress, global search) but which
@@ -395,7 +414,10 @@ type Task struct {
 
 	// AccessLevel is set per response, never stored: "subtask" means the
 	// caller can see this task only because they're assigned one of its
-	// subtasks, so they get a reference view (see limitToSubtaskView).
+	// subtasks, so they get a reference view (see limitToSubtaskView);
+	// "granted" means it was shared with them; "department" means they see
+	// it only because it is a non-private task of their department — they
+	// can read it but not change it.
 	AccessLevel string `gorm:"-" json:"access_level,omitempty"`
 }
 
@@ -409,9 +431,9 @@ type SubTask struct {
 	Status         string  `json:"status" gorm:"default:'todo'"`     // todo, in_progress, done, archived
 	Priority       string  `json:"priority" gorm:"default:'normal'"` // low, normal, high
 	Deadline       string  `json:"deadline"`
-	TaskID         uint    `json:"task_id" binding:"required"`
+	TaskID         uint    `json:"task_id" binding:"required" gorm:"index"`
 	Task           *Task   `json:"task,omitempty" gorm:"foreignKey:TaskID"`
-	AssigneeID     *uint   `json:"assignee_id"`
+	AssigneeID     *uint   `json:"assignee_id" gorm:"index"`
 	Assignee       *User   `json:"assignee,omitempty" gorm:"foreignKey:AssigneeID"`
 	// Who gave the work to its current assignee — set on every assign,
 	// reassign, transfer, route, return and reopen.
@@ -433,7 +455,7 @@ type SubTask struct {
 
 type ChecklistItem struct {
 	gorm.Model
-	TaskID        uint       `json:"task_id" binding:"required"`
+	TaskID        uint       `json:"task_id" binding:"required" gorm:"index"`
 	Task          *Task      `json:"task,omitempty" gorm:"foreignKey:TaskID"`
 	Title         string     `json:"title" binding:"required"`
 	Completed     bool       `json:"completed"`
@@ -452,9 +474,9 @@ type Comment struct {
 	User       *User  `json:"user,omitempty" gorm:"foreignKey:UserID"`
 
 	// Polymorphic: either Ticket or Task (one will be set)
-	TicketID *uint   `json:"ticket_id"`
+	TicketID *uint   `json:"ticket_id" gorm:"index"`
 	Ticket   *Ticket `json:"ticket,omitempty" gorm:"foreignKey:TicketID"`
-	TaskID   *uint   `json:"task_id"`
+	TaskID   *uint   `json:"task_id" gorm:"index"`
 	Task     *Task   `json:"task,omitempty" gorm:"foreignKey:TaskID"`
 }
 
@@ -469,9 +491,9 @@ type Attachment struct {
 	UploadedByID uint   `json:"uploaded_by_id"`
 	UploadedBy   *User  `json:"uploaded_by,omitempty" gorm:"foreignKey:UploadedByID"`
 
-	TicketID  *uint    `json:"ticket_id"`
+	TicketID  *uint    `json:"ticket_id" gorm:"index"`
 	Ticket    *Ticket  `json:"ticket,omitempty" gorm:"foreignKey:TicketID"`
-	TaskID    *uint    `json:"task_id"`
+	TaskID    *uint    `json:"task_id" gorm:"index"`
 	Task      *Task    `json:"task,omitempty" gorm:"foreignKey:TaskID"`
 	ProjectID *uint    `json:"project_id"`
 	Project   *Project `json:"project,omitempty" gorm:"foreignKey:ProjectID"`
@@ -487,9 +509,9 @@ type WorkLog struct {
 	Date        time.Time `json:"date" binding:"required"`
 	Description string    `json:"description"`
 
-	TicketID  *uint    `json:"ticket_id"`
+	TicketID  *uint    `json:"ticket_id" gorm:"index"`
 	Ticket    *Ticket  `json:"ticket,omitempty" gorm:"foreignKey:TicketID"`
-	TaskID    *uint    `json:"task_id"`
+	TaskID    *uint    `json:"task_id" gorm:"index"`
 	Task      *Task    `json:"task,omitempty" gorm:"foreignKey:TaskID"`
 	ProjectID *uint    `json:"project_id"`
 	Project   *Project `json:"project,omitempty" gorm:"foreignKey:ProjectID"`

@@ -1,9 +1,9 @@
 import React from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { Clock, CheckCircle2, UserPlus, FileText, AlertCircle } from 'lucide-react';
 
 export const ProjectActivityLog = ({ projectId }) => {
-  const { tasks, tickets, projects, allUsers } = useApp() || {};
+  const { tasks, tickets, projects, allUsers } = useAppSelector(s => ({ tasks: s.tasks, tickets: s.tickets, projects: s.projects, allUsers: s.allUsers }));
   const project = (projects || []).find(p => p.id === projectId);
 
   if (!project) return null;

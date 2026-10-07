@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { 
   ScrollText, Search, Filter, Download, ShieldCheck, 
   Clock, ShieldAlert, FileText, CheckCircle, RefreshCw,
@@ -13,7 +13,7 @@ export const AuditLogsView = () => {
   const {
     auditLogs, auditPagination, auditLoading, fetchAuditLogs,
     currentUser, permissionMatrix
-  } = useApp();
+  } = useAppSelector(s => ({ auditLogs: s.auditLogs, auditPagination: s.auditPagination, auditLoading: s.auditLoading, fetchAuditLogs: s.fetchAuditLogs, currentUser: s.currentUser, permissionMatrix: s.permissionMatrix }));
 
   const [search, setSearch] = useState('');
   const [entityFilter, setEntityFilter] = useState('all');

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { Archive, Search, RefreshCw, ShieldAlert, RotateCcw } from 'lucide-react';
 import { canCreateProject, canManageClients, canManageUsers, canManageDepartments, canArchiveRecords } from '../../utils/permissions';
 
@@ -69,7 +69,7 @@ const contextLabel = {
 };
 
 export const ArchiveView = () => {
-  const { currentUser, allUsers, fetchArchived, restoreArchived, permissionMatrix } = useApp();
+  const { currentUser, allUsers, fetchArchived, restoreArchived, permissionMatrix } = useAppSelector(s => ({ currentUser: s.currentUser, allUsers: s.allUsers, fetchArchived: s.fetchArchived, restoreArchived: s.restoreArchived, permissionMatrix: s.permissionMatrix }));
   const [restoringId, setRestoringId] = useState(null);
   // Admins (for users, clients, feasibilities) and anyone with the
   // archive_records permission (projects, tasks, tickets) — same as Sidebar.

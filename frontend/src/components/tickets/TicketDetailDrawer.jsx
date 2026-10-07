@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import React, { useState, useEffect } from 'react';
+import { getBackendId, useAppSelector } from '../../context/AppContext';
 import {
   X, Clock, AlertTriangle, ShieldAlert, Pencil, Trash2, Send, Lock,
   User as UserIcon, Building, Paperclip, MessageSquare, Archive, History
@@ -49,7 +49,8 @@ export const TicketDetailDrawer = () => {
     addTicketComment,
     addTicketInternalNote,
     assignTicket,
-    deleteTicket, getStatuses, getStatusLabel, getStatusCategory } = useApp();
+    deleteTicket, getStatuses, getStatusLabel, getStatusCategory,
+    recordComments, loadRecordComments } = useAppSelector(s => ({ tickets: s.tickets, selectedTicketId: s.selectedTicketId, setSelectedTicketId: s.setSelectedTicketId, setSelectedTicketEditId: s.setSelectedTicketEditId, allUsers: s.allUsers, currentUser: s.currentUser, permissionMatrix: s.permissionMatrix, updateTicketStatus: s.updateTicketStatus, escalateTicket: s.escalateTicket, addTicketComment: s.addTicketComment, addTicketInternalNote: s.addTicketInternalNote, assignTicket: s.assignTicket, deleteTicket: s.deleteTicket, getStatuses: s.getStatuses, getStatusLabel: s.getStatusLabel, getStatusCategory: s.getStatusCategory, recordComments: s.recordComments, loadRecordComments: s.loadRecordComments }));
 
   const [tab, setTab] = useState('public');
   const [commentText, setCommentText] = useState('');
@@ -60,6 +61,15 @@ export const TicketDetailDrawer = () => {
   const [showEscalate, setShowEscalate] = useState(false);
   const [escLevel, setEscLevel] = useState('supervisor');
   const [escReason, setEscReason] = useState('');
+
+  // Replies and internal notes are loaded when the drawer opens (the ticket
+  // list doesn't carry them). The server leaves out internal notes for people
+  // without view_internal_notes.
+  const commentsTicketId = (tickets || []).some(t => String(t.id) === String(selectedTicketId)) ? selectedTicketId : null;
+  useEffect(() => {
+    if (commentsTicketId) loadRecordComments('ticket', commentsTicketId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commentsTicketId]);
 
   if (!selectedTicketId) return null;
   const ticket = (tickets || []).find(t => String(t.id) === String(selectedTicketId));
@@ -110,8 +120,13 @@ export const TicketDetailDrawer = () => {
   // Archive button: the archive_records permission (backend DeleteTicket).
   const isAdminTier = !isViewOnly && canArchiveRecords(currentUser, permissionMatrix);
 
-  const publicComments = ticket.comments || [];
-  const internalNotes = ticket.internalNotes || [];
+  const loadedComments = recordComments?.[`ticket:${getBackendId(ticket.id)}`];
+  const haveLoaded = loadedComments?.status === 'loaded' || (loadedComments?.comments || []).length > 0;
+  // While loading, fall back to whatever the ticket record already has.
+  const publicComments = haveLoaded ? loadedComments.comments.filter(c => !c.isInternal) : (ticket.comments || []);
+  const internalNotes = haveLoaded ? loadedComments.comments.filter(c => c.isInternal) : (ticket.internalNotes || []);
+  const commentsLoading = !loadedComments || loadedComments.status === 'loading';
+  const commentsFailed = loadedComments?.status === 'error';
   const visibleComments = activeTab === 'internal' ? internalNotes : publicComments;
 
   const close = () => setSelectedTicketId(null);
@@ -417,7 +432,11 @@ export const TicketDetailDrawer = () => {
             <div className="space-y-3 mb-3">
               {visibleComments.length === 0 ? (
                 <p className="text-xs text-slate-500 dark:text-zinc-500 italic">
-                  {activeTab === 'internal' ? 'No internal notes yet.' : 'No replies yet.'}
+                  {commentsLoading ? 'Loading…' : commentsFailed ? (
+                    <>Couldn't load replies.{' '}
+                      <button type="button" onClick={() => loadRecordComments('ticket', ticket.id)} className="not-italic text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer">Try again</button>
+                    </>
+                  ) : activeTab === 'internal' ? 'No internal notes yet.' : 'No replies yet.'}
                 </p>
               ) : (
                 visibleComments.map(c => (

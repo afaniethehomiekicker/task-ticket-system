@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { Columns3, Plus, Search, Clock, CheckSquare } from 'lucide-react';
 import { PriorityBadge } from '../common/Badge';
 import { canCreateTask, isStaffRole, isDepartmentView, isLimitedTaskView } from '../../utils/permissions';
@@ -17,7 +17,7 @@ export const KanbanBoardView = () => {
     setQuickCreateOpen,
     permissionMatrix,
     getStatuses
-  } = useApp();
+  } = useAppSelector(s => ({ visibleTasks: s.visibleTasks, visibleProjects: s.visibleProjects, allUsers: s.allUsers, currentUser: s.currentUser, updateTaskStatus: s.updateTaskStatus, updateSubTaskStatus: s.updateSubTaskStatus, setSelectedTaskId: s.setSelectedTaskId, setQuickCreateOpen: s.setQuickCreateOpen, permissionMatrix: s.permissionMatrix, getStatuses: s.getStatuses }));
 
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState('all');
@@ -58,6 +58,9 @@ export const KanbanBoardView = () => {
     .map(st => ({
       id: st.key,
       title: st.label,
+      // Finished tasks are loaded for the last 30 days only (older ones are
+      // on the Tasks page), so say so on those columns.
+      recentOnly: ['done', 'cancelled'].includes(st.category),
       ...(st.key === 'blocked'
         ? { color: 'border-rose-400 dark:border-rose-700', dot: 'bg-rose-500' }
         : (CATEGORY_STYLE[st.category] || CATEGORY_STYLE.open)),
@@ -263,6 +266,11 @@ export const KanbanBoardView = () => {
                     <span className={`w-2 h-2 rounded-full ${col.dot}`} />
                     <span className="text-xs font-bold text-slate-800 dark:text-zinc-200 uppercase tracking-wider">
                       {col.title}
+                      {col.recentOnly && (
+                        <span className="ml-1 text-[10px] font-normal normal-case tracking-normal text-slate-500 dark:text-zinc-500" title="Older finished tasks are on the Tasks page">
+                          · last 30 days
+                        </span>
+                      )}
                     </span>
                   </div>
                   <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-full bg-slate-300/60 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300">

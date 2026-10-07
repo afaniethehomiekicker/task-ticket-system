@@ -138,6 +138,7 @@ func RegisterRoutes(r *gin.Engine) {
 				// Public read access (for dropdowns/pickers)
 				feasibilities.GET("", handlers.GetFeasibilities)
 				feasibilities.GET("/products", handlers.GetFeasibilityProducts)
+				feasibilities.GET("/summary", handlers.GetFeasibilitySummary)
 				feasibilities.GET("/vendor-statuses", handlers.GetFeasibilityVendorStatuses)
 				feasibilities.GET("/statuses", handlers.GetFeasibilityStatuses)
 				feasibilities.GET("/:id", handlers.GetFeasibility)
@@ -340,6 +341,7 @@ func RegisterRoutes(r *gin.Engine) {
 			reports := protected.Group("/reports")
 			{
 				reports.GET("/dashboard", handlers.GetDashboardStats)
+				reports.GET("/summary", handlers.GetReportsSummary)
 				reports.GET("/tickets-by-status", handlers.GetTicketsByStatus)
 				reports.GET("/tasks-by-status", handlers.GetTasksByStatus)
 				reports.GET("/workload", handlers.GetWorkloadReport)

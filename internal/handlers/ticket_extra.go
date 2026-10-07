@@ -176,14 +176,14 @@ func GetTicketComments(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Ticket not found"})
 		return
 	}
-	if !userCanAccessTicket(c, &ticket) {
+	if !userCanViewTicket(c, &ticket) { // read: department viewers too
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: ticket belongs to different department"})
 		return
 	}
 
 	var comments []models.Comment
 	database.DB.Where("ticket_id = ?", ticketID).
-		Preload("User").
+		Preload("User", userCard). // name/avatar only
 		Order("created_at asc").
 		Find(&comments)
 
@@ -269,7 +269,7 @@ func GetTicketWorkLogs(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Ticket not found"})
 		return
 	}
-	if !userCanAccessTicket(c, &ticket) {
+	if !userCanViewTicket(c, &ticket) { // read: department viewers too
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: ticket belongs to different department"})
 		return
 	}
@@ -348,6 +348,7 @@ func GetTicketTasks(c *gin.Context) {
 		Preload("Creator").
 		Preload("SubTasks").
 		Find(&tasks)
+	applySubtaskViews(c, tasks) // department / subtask viewers: limited views
 
 	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
 }

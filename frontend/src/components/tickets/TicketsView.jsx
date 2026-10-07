@@ -1,5 +1,6 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { useApp } from '../../context/AppContext';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { Pager } from '../common/Pager';
+import { useAppSelector } from '../../context/AppContext';
 import { 
   LifeBuoy, Plus, Search, Filter, Download, Clock, 
   AlertTriangle, ShieldAlert, ArrowUpDown, Building, User as UserIcon, Pin, Pencil
@@ -8,6 +9,7 @@ import { PriorityBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
 import { exportTicketsToCSV } from '../../utils/exportUtils';
 
 import { assignedByName, ticketSlaState, isStaffRole, isDepartmentView } from '../../utils/permissions';
+import { clientOptionsFromTickets } from '../../utils/clientOptions';
 import { PrivateBadge, DeptViewBadge } from '../common/PrivateToggle';
 import { FilterSelect } from '../common/FilterSelect';
 export const TicketsView = () => {
@@ -22,10 +24,9 @@ export const TicketsView = () => {
     listPreset,
     setListPreset,
     getStatusCategory,
-    clients,
     visibleProjects,
-    departments
-  } = useApp();
+    departments, fetchTicketsPage, ticketsVersion,
+  } = useAppSelector(s => ({ fetchTicketsPage: s.fetchTicketsPage, ticketsVersion: s.ticketsVersion, visibleTickets: s.visibleTickets, allUsers: s.allUsers, currentUser: s.currentUser, setSelectedTicketId: s.setSelectedTicketId, setSelectedTicketEditId: s.setSelectedTicketEditId, openQuickCreate: s.openQuickCreate, updateTicket: s.updateTicket, getStatuses: s.getStatuses, listPreset: s.listPreset, setListPreset: s.setListPreset, getStatusCategory: s.getStatusCategory, visibleProjects: s.visibleProjects, departments: s.departments }));
 
   // A dashboard card's filter is used as the INITIAL filter, so the page
   // draws once, already filtered. (It used to draw the full list first and
@@ -52,51 +53,90 @@ export const TicketsView = () => {
   const [slaFilter, setSlaFilter] = useState('all');
   const [sortBy, setSortBy] = useState('sla');
 
-  const filteredTickets = useMemo(() => {
-    return visibleTickets.filter(t => {
-      const matchSearch = t.title.toLowerCase().includes(search.toLowerCase()) || 
-                          t.ticketNumber.toLowerCase().includes(search.toLowerCase()) ||
-                          t.requesterName.toLowerCase().includes(search.toLowerCase()) ||
-                          (t.requesterCompany && t.requesterCompany.toLowerCase().includes(search.toLowerCase()));
-      // Statuses are the backend's real Ticket.Status values. The old list
-      // (open / pending_customer) matched nothing. "Escalated" isn't a status —
-      // it's escalation_level != none.
-      // 'open' = anything not finished (dashboard drill-down).
-      const matchStatus = statusFilter === 'all'
-        || (statusFilter === 'open' && !['done', 'cancelled', 'archived'].includes(getStatusCategory('ticket', t.status)))
-        || (statusFilter === 'escalated' ? t.escalationLevel !== 'none' : t.status === statusFilter);
-      const matchPriority = priorityFilter === 'all' || t.priority === priorityFilter;
-      const matchCategory = categoryFilter === 'all' || t.category === categoryFilter;
-      // String compare: the select's value is text, the id a number (this
-      // never matched before).
-      const matchAssignee = assigneeFilter === 'all' || String(t.assignedToId) === assigneeFilter;
-      // Slide 28 filters.
-      const matchClient = clientFilter === 'all' || String(t.clientId) === clientFilter;
-      const matchProjectF = projectFilter === 'all' || String(t.projectId) === projectFilter;
-      const matchDept = deptFilter === 'all' || (t.department || '').toLowerCase() === deptFilter.toLowerCase();
-      const matchSla = slaFilter === 'all' ||
-        ticketSlaState(t, (st) => ['done', 'cancelled', 'archived'].includes(getStatusCategory('ticket', st))) === slaFilter;
+  // ---- One page at a time, from the server, across all history ----
+  // The browser only keeps the working set (open + recently finished
+  // tickets), so the list asks GET /api/tickets for the page shown, with
+  // every filter, the search and the sort applied there. It keeps the ids
+  // and reads each ticket from the shared cache, so edits show at once, and
+  // refetches after any ticket change (ticketsVersion).
+  const TICKETS_PER_PAGE = 50;
+  const SORT_PARAM = { sla: 'sla', priority: 'priority', date: 'date' };
+  const [page, setPage] = useState(1);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [pageIds, setPageIds] = useState([]);
+  const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
 
-      return matchSearch && matchStatus && matchPriority && matchCategory && matchAssignee &&
-        matchClient && matchProjectF && matchDept && matchSla;
-    }).sort((a, b) => {
-      if (a.isPinned && !b.isPinned) return -1;
-      if (!a.isPinned && b.isPinned) return 1;
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-      if (sortBy === 'sla') {
-        return (a.slaDueTime ? new Date(a.slaDueTime).getTime() : 0) - (b.slaDueTime ? new Date(b.slaDueTime).getTime() : 0);
+  const filters = {
+    search: debouncedSearch, status: statusFilter, priority: priorityFilter, category: categoryFilter,
+    assignedToId: assigneeFilter, clientId: clientFilter, projectId: projectFilter, department: deptFilter,
+    sla: slaFilter, sort: SORT_PARAM[sortBy] || 'date',
+  };
+  const filterKey = JSON.stringify(filters);
+  // Any filter change goes back to page 1 (one request, not two).
+  const lastFilterKeyRef = useRef(filterKey);
+
+  useEffect(() => {
+    if (lastFilterKeyRef.current !== filterKey) {
+      lastFilterKeyRef.current = filterKey;
+      if (page !== 1) { setPage(1); return undefined; }
+    }
+    let cancelled = false;
+    setLoading(true);
+    setLoadError('');
+    fetchTicketsPage({ ...filters, page, limit: TICKETS_PER_PAGE })
+      .then(({ tickets, pagination: pg }) => {
+        if (cancelled) return;
+        if (tickets.length === 0 && page > 1 && page > (pg.pages || 1)) { setPage(Math.max(1, pg.pages || 1)); return; }
+        setPageIds(tickets.map(t => String(t.id)));
+        setPagination(pg);
+      })
+      .catch(err => { if (!cancelled) setLoadError(err.message || 'Failed to load tickets'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, filterKey, ticketsVersion, reloadKey]);
+
+  // This page's tickets, in the server's order, from the shared cache.
+  const pageTickets = useMemo(() => {
+    const byId = new Map((visibleTickets || []).map(t => [String(t.id), t]));
+    return pageIds.map(id => byId.get(id)).filter(Boolean);
+  }, [pageIds, visibleTickets]);
+  const filteredTickets = pageTickets; // (name kept for the render below)
+
+  const ticketPager = {
+    page: pagination.page || page,
+    pages: Math.max(1, pagination.pages || 1),
+    total: pagination.total || 0,
+    start: ((pagination.page || page) - 1) * TICKETS_PER_PAGE,
+    count: pageTickets.length,
+    setPage,
+  };
+
+  // Export: every ticket matching the filters, not just this page.
+  const [exporting, setExporting] = useState(false);
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      let all = [];
+      for (let p = 1; p <= 50; p++) {
+        const { tickets, pagination: pg } = await fetchTicketsPage({ ...filters, page: p, limit: 200 });
+        all = all.concat(tickets);
+        if (p >= (pg.pages || 1)) break;
       }
-      if (sortBy === 'priority') {
-        const order = { critical: 5, urgent: 4, high: 3, normal: 2, low: 1 };
-        return order[b.priority] - order[a.priority];
-      }
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    });
-  }, [visibleTickets, search, statusFilter, priorityFilter, categoryFilter, assigneeFilter, sortBy,
-      clientFilter, projectFilter, deptFilter, slaFilter]);
-
-  const handleExport = () => {
-    exportTicketsToCSV(filteredTickets, allUsers);
+      exportTicketsToCSV(all, allUsers);
+    } catch (err) {
+      alert(err.message || 'Export failed');
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -117,10 +157,11 @@ export const TicketsView = () => {
           <button
             id="export-tickets-csv-btn"
             onClick={handleExport}
-            className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-zinc-800 bg-slate-200/60 dark:bg-zinc-900 text-slate-800 dark:text-zinc-300 hover:bg-slate-300/80 dark:hover:bg-zinc-800 transition cursor-pointer"
+            disabled={exporting}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-zinc-800 bg-slate-200/60 dark:bg-zinc-900 text-slate-800 dark:text-zinc-300 hover:bg-slate-300/80 dark:hover:bg-zinc-800 transition cursor-pointer disabled:opacity-60 disabled:cursor-wait"
           >
             <Download className="w-4 h-4" />
-            Export CSV
+            {exporting ? 'Exporting…' : 'Export CSV'}
           </button>
 
           <button
@@ -165,7 +206,7 @@ export const TicketsView = () => {
         <FilterSelect id="tickets-sla-filter" value={slaFilter} onChange={setSlaFilter} allLabel="Any SLA"
           options={[['breached', 'SLA breached'], ['near', 'SLA near'], ['within', 'Within SLA'], ['none', 'No SLA / finished']]} />
         <FilterSelect id="tickets-client-filter" value={clientFilter} onChange={setClientFilter} allLabel="All Clients"
-          options={(clients || []).filter(c => c.status !== 'archived').map(c => [String(c.id), c.companyName])} />
+          options={clientOptionsFromTickets(visibleTickets)} />
         <FilterSelect id="tickets-project-filter" value={projectFilter} onChange={setProjectFilter} allLabel="All Projects"
           options={(visibleProjects || []).map(p => [String(p.id), `${p.code} ${p.title}`])} />
         <FilterSelect id="tickets-dept-filter" value={deptFilter} onChange={setDeptFilter} allLabel="All Departments"
@@ -249,12 +290,17 @@ export const TicketsView = () => {
       </div>
 
       {/* Tickets List Table */}
-      <div className="bg-slate-200/60 dark:bg-zinc-900 rounded-xl border border-slate-300 dark:border-zinc-800 overflow-hidden shadow-2xs">
-        {filteredTickets.length === 0 ? (
+      <div className={`bg-slate-200/60 dark:bg-zinc-900 rounded-xl border border-slate-300 dark:border-zinc-800 overflow-hidden shadow-2xs transition-opacity ${loading ? 'opacity-70' : ''}`}>
+        {loadError ? (
+          <div className="py-10 text-center text-sm">
+            <p className="text-rose-600 dark:text-rose-400">{loadError}</p>
+            <button type="button" onClick={() => setReloadKey(k => k + 1)} className="mt-2 text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer">Try again</button>
+          </div>
+        ) : filteredTickets.length === 0 ? (
           <div className="py-16 text-center text-slate-500 p-8">
             <LifeBuoy className="w-12 h-12 mx-auto mb-3 text-slate-400 dark:text-zinc-700" />
-            <p className="text-sm font-semibold text-slate-800 dark:text-zinc-300">No tickets found</p>
-            <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">Check search parameters or verify assigned tickets.</p>
+            <p className="text-sm font-semibold text-slate-800 dark:text-zinc-300">{loading ? 'Loading tickets…' : 'No tickets found'}</p>
+            {!loading && <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">Check search parameters or verify assigned tickets.</p>}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -273,7 +319,7 @@ export const TicketsView = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-300/50 dark:divide-zinc-800/60 text-slate-800 dark:text-zinc-300">
-                {filteredTickets.map(t => {
+                {pageTickets.map(t => {
                   const assignee = allUsers.find(u => u.id === t.assignedToId);
                   const isEscalated = t.status === 'escalated' || t.escalationLevel !== 'none';
 
@@ -380,6 +426,10 @@ export const TicketsView = () => {
             </table>
           </div>
         )}
+        {/* A page at a time: drawing thousands of rows froze the page. */}
+        <div className="px-3.5 py-2.5 border-t border-slate-300 dark:border-zinc-800">
+          <Pager {...ticketPager} noun="tickets" />
+        </div>
       </div>
 
       {/* Ticket Drawer */}

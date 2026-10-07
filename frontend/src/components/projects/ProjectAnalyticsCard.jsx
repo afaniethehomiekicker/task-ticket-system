@@ -1,9 +1,9 @@
 import React from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { TrendingUp, Clock, DollarSign, AlertTriangle, CheckCircle2 } from 'lucide-react';
 
 export const ProjectAnalyticsCard = ({ projectId }) => {
-  const { tasks, projects, getStatusCategory } = useApp() || {};
+  const { tasks, projects, getStatusCategory } = useAppSelector(s => ({ tasks: s.tasks, projects: s.projects, getStatusCategory: s.getStatusCategory }));
   const project = (projects || []).find(p => p.id === projectId);
 
   if (!project) return null;

@@ -1,5 +1,6 @@
-import React, { useState, useMemo, useEffect, Fragment } from 'react';
-import { useApp } from '../../context/AppContext';
+import React, { useState, useMemo, useEffect, useRef, Fragment } from 'react';
+import { Pager } from '../common/Pager';
+import { useAppSelector } from '../../context/AppContext';
 import { 
   CheckSquare, Plus, Search, Filter, Download, Clock, 
   Calendar, CheckCircle, ShieldAlert, ArrowUpDown, ChevronRight, User as UserIcon, Pin
@@ -7,6 +8,7 @@ import {
 import { PriorityBadge, TaskStatusBadge, RoleBadge } from '../common/Badge';
 
 import { canCreateTask, canAssignTickets, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName, isStaffRole, isLimitedTaskView, isDepartmentView } from '../../utils/permissions';
+import { clientOptionsFromProjects } from '../../utils/clientOptions';
 import { PrivateBadge, DeptViewBadge } from '../common/PrivateToggle';
 import { exportTasksToCSV } from '../../utils/exportUtils';
 
@@ -29,9 +31,8 @@ export const TasksView = () => {
     listPreset,
     setListPreset,
     getStatusCategory,
-    clients,
-    departments
-  } = useApp();
+    departments, fetchTasksPage, tasksVersion,
+  } = useAppSelector(s => ({ fetchTasksPage: s.fetchTasksPage, tasksVersion: s.tasksVersion, visibleTasks: s.visibleTasks, visibleProjects: s.visibleProjects, allUsers: s.allUsers, currentUser: s.currentUser, setSelectedTaskId: s.setSelectedTaskId, openQuickCreate: s.openQuickCreate, permissionMatrix: s.permissionMatrix, updateTaskStatus: s.updateTaskStatus, updateTask: s.updateTask, updateSubTaskStatus: s.updateSubTaskStatus, updateSubTaskAssignee: s.updateSubTaskAssignee, getStatuses: s.getStatuses, taskListPreset: s.taskListPreset, setTaskListPreset: s.setTaskListPreset, listPreset: s.listPreset, setListPreset: s.setListPreset, getStatusCategory: s.getStatusCategory, departments: s.departments }));
 
   // A dashboard card's filter is the INITIAL filter, so the page draws once,
   // already filtered (instead of the full list first, then the filter).
@@ -79,58 +80,91 @@ export const TasksView = () => {
     );
   };
 
-  const filteredTasks = useMemo(() => {
-    return visibleTasks.filter(t => {
-      const matchSearch = t.title.toLowerCase().includes(search.toLowerCase()) || 
-                          t.taskNumber.toLowerCase().includes(search.toLowerCase()) ||
-                          (t.description || '').toLowerCase().includes(search.toLowerCase()) ||
-                          (t.labels || []).some(l => l.toLowerCase().includes(search.toLowerCase()));
-      // 'open' / 'overdue' are dashboard drill-downs, not real statuses.
-      const unfinished = !['done', 'cancelled', 'archived'].includes(getStatusCategory('task', t.status));
-      const today = new Date().toISOString().slice(0, 10);
-      const matchStatus = statusFilter === 'all' || t.status === statusFilter
-        || (statusFilter === 'open' && unfinished)
-        || (statusFilter === 'overdue' && unfinished && !!t.dueDate && String(t.dueDate).slice(0, 10) < today);
-      const matchPriority = priorityFilter === 'all' || t.priority === priorityFilter;
-      // projectId/assignedToId are numbers on normalized tasks, but a
-      // native <select>'s value is always a string — comparing them
-      // with strict equality could never match, meaning picking a
-      // specific project or assignee from these dropdowns silently
-      // returned zero results regardless of what was actually selected.
-      const matchProject = projectFilter === 'all' || String(t.projectId) === projectFilter;
-      const matchAssignee = assigneeFilter === 'all' || String(t.assignedToId) === assigneeFilter;
-      // Slide 28 filters: client (through the task's project) and department.
-      const tProject = (visibleProjects || []).find(p => String(p.id) === String(t.projectId));
-      const matchClient = clientFilter === 'all' || !!tProject && (String(tProject.clientId) === clientFilter ||
-        (tProject.clientIds || []).some(id => String(id) === clientFilter));
-      const matchDeptF = deptFilter === 'all' || (t.department || '').toLowerCase() === deptFilter.toLowerCase();
+  // ---- One page at a time, from the server, across all history ----
+  // The browser only keeps the working set (open + recently finished tasks),
+  // so the list asks GET /api/tasks for the page shown, with every filter,
+  // the search and the sort applied there (sub=1: a sub-task can match the
+  // person / search, as before). It keeps the ids and reads each task from
+  // the shared cache, so edits show at once, and refetches after any task
+  // change (tasksVersion).
+  const TASKS_PER_PAGE = 50;
+  const SORT_PARAM = { dueDate: 'due', priority: 'priority', status: 'status' };
+  const [page, setPage] = useState(1);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [pageIds, setPageIds] = useState([]);
+  const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
 
-      if (!matchClient || !matchDeptF) return false;
-      if (matchSearch && matchStatus && matchPriority && matchProject && matchAssignee) return true;
-      // Also keep a task whose sub-task matches the assignee/search filter
-      // (e.g. filtering by a person shows the tasks they have sub-tasks in).
-      return matchStatus && matchPriority && matchProject && subTasksToShow(t).length > 0;
-    }).sort((a, b) => {
-      if (a.isPinned && !b.isPinned) return -1;
-      if (!a.isPinned && b.isPinned) return 1;
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-      if (sortBy === 'dueDate') {
-        return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
-      }
-      if (sortBy === 'priority') {
-        const order = { critical: 5, urgent: 4, high: 3, normal: 2, low: 1 };
-        return order[b.priority] - order[a.priority];
-      }
-      if (sortBy === 'status') {
-        return a.status.localeCompare(b.status);
-      }
-      return b.taskNumber.localeCompare(a.taskNumber);
-    });
-  }, [visibleTasks, search, statusFilter, priorityFilter, projectFilter, assigneeFilter, sortBy, showSubTasks,
-      clientFilter, deptFilter, visibleProjects]);
+  const filters = {
+    search: debouncedSearch, status: statusFilter, priority: priorityFilter, projectId: projectFilter,
+    assignedToId: assigneeFilter, clientId: clientFilter, department: deptFilter, sub: showSubTasks,
+    sort: SORT_PARAM[sortBy] || 'number',
+  };
+  const filterKey = JSON.stringify(filters);
+  // Any filter change goes back to page 1 (one request, not two).
+  const lastFilterKeyRef = useRef(filterKey);
 
-  const handleExport = () => {
-    exportTasksToCSV(filteredTasks, allUsers, visibleProjects);
+  useEffect(() => {
+    if (lastFilterKeyRef.current !== filterKey) {
+      lastFilterKeyRef.current = filterKey;
+      if (page !== 1) { setPage(1); return undefined; }
+    }
+    let cancelled = false;
+    setLoading(true);
+    setLoadError('');
+    fetchTasksPage({ ...filters, page, limit: TASKS_PER_PAGE })
+      .then(({ tasks, pagination: pg }) => {
+        if (cancelled) return;
+        if (tasks.length === 0 && page > 1 && page > (pg.pages || 1)) { setPage(Math.max(1, pg.pages || 1)); return; }
+        setPageIds(tasks.map(t => String(t.id)));
+        setPagination(pg);
+      })
+      .catch(err => { if (!cancelled) setLoadError(err.message || 'Failed to load tasks'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, filterKey, tasksVersion, reloadKey]);
+
+  // This page's tasks, in the server's order, from the shared cache.
+  const pageTasks = useMemo(() => {
+    const byId = new Map((visibleTasks || []).map(t => [String(t.id), t]));
+    return pageIds.map(id => byId.get(id)).filter(Boolean);
+  }, [pageIds, visibleTasks]);
+  const filteredTasks = pageTasks; // (name kept for the render below)
+
+  const taskPager = {
+    page: pagination.page || page,
+    pages: Math.max(1, pagination.pages || 1),
+    total: pagination.total || 0,
+    start: ((pagination.page || page) - 1) * TASKS_PER_PAGE,
+    count: pageTasks.length,
+    setPage,
+  };
+
+  // Export: every task matching the filters, not just this page.
+  const [exporting, setExporting] = useState(false);
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      let all = [];
+      for (let p = 1; p <= 50; p++) {
+        const { tasks, pagination: pg } = await fetchTasksPage({ ...filters, page: p, limit: 200 });
+        all = all.concat(tasks);
+        if (p >= (pg.pages || 1)) break;
+      }
+      exportTasksToCSV(all, allUsers, visibleProjects);
+    } catch (err) {
+      alert(err.message || 'Export failed');
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -151,10 +185,11 @@ export const TasksView = () => {
           <button
             id="export-tasks-csv-btn"
             onClick={handleExport}
-            className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-zinc-800 bg-slate-200/60 dark:bg-zinc-900 text-slate-800 dark:text-zinc-300 hover:bg-slate-300/80 dark:hover:bg-zinc-800 transition cursor-pointer"
+            disabled={exporting}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-zinc-800 bg-slate-200/60 dark:bg-zinc-900 text-slate-800 dark:text-zinc-300 hover:bg-slate-300/80 dark:hover:bg-zinc-800 transition cursor-pointer disabled:opacity-60 disabled:cursor-wait"
           >
             <Download className="w-4 h-4" />
-            Export CSV
+            {exporting ? 'Exporting…' : 'Export CSV'}
           </button>
 
           {canCreateTask(currentUser, permissionMatrix) && (
@@ -221,7 +256,7 @@ export const TasksView = () => {
           ))}
         </select>
           <FilterSelect id="tasks-client-filter" value={clientFilter} onChange={setClientFilter} allLabel="All Clients"
-            options={(clients || []).filter(c => c.status !== 'archived').map(c => [String(c.id), c.companyName])} />
+            options={clientOptionsFromProjects(visibleProjects)} />
           <FilterSelect id="tasks-dept-filter" value={deptFilter} onChange={setDeptFilter} allLabel="All Departments"
             options={(departments || []).map(d => [d.name, d.name])} />
 
@@ -284,12 +319,17 @@ export const TasksView = () => {
       </div>
 
       {/* Task List Table */}
-      <div className="bg-slate-200/60 dark:bg-zinc-900 rounded-xl border border-slate-300 dark:border-zinc-800 overflow-hidden shadow-2xs">
-        {filteredTasks.length === 0 ? (
+      <div className={`bg-slate-200/60 dark:bg-zinc-900 rounded-xl border border-slate-300 dark:border-zinc-800 overflow-hidden shadow-2xs transition-opacity ${loading ? 'opacity-70' : ''}`}>
+        {loadError ? (
+          <div className="py-10 text-center text-sm">
+            <p className="text-rose-600 dark:text-rose-400">{loadError}</p>
+            <button type="button" onClick={() => setReloadKey(k => k + 1)} className="mt-2 text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer">Try again</button>
+          </div>
+        ) : filteredTasks.length === 0 ? (
           <div className="py-16 text-center text-slate-500 p-8">
             <CheckSquare className="w-12 h-12 mx-auto mb-3 text-slate-400 dark:text-zinc-700" />
-            <p className="text-sm font-semibold text-slate-800 dark:text-zinc-300">No tasks match your criteria</p>
-            <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">Try clearing filters or search query.</p>
+            <p className="text-sm font-semibold text-slate-800 dark:text-zinc-300">{loading ? 'Loading tasks…' : 'No tasks match your criteria'}</p>
+            {!loading && <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">Try clearing filters or search query.</p>}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -307,7 +347,7 @@ export const TasksView = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-300/50 dark:divide-zinc-800/60 text-slate-800 dark:text-zinc-300">
-                {filteredTasks.map(t => {
+                {pageTasks.map(t => {
                   const assignee = allUsers.find(u => u.id === t.assignedToId);
                   const project = visibleProjects.find(p => p.id === t.projectId);
                   const isUnderReview = t.status === 'in_review';
@@ -469,6 +509,10 @@ export const TasksView = () => {
             </table>
           </div>
         )}
+        {/* A page at a time: drawing thousands of rows froze the page. */}
+        <div className="px-3.5 py-2.5 border-t border-slate-300 dark:border-zinc-800">
+          <Pager {...taskPager} noun="tasks" />
+        </div>
       </div>
 
       {/* Task Drawer */}

@@ -1,5 +1,5 @@
 import React from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { 
   LayoutDashboard, 
   FolderKanban, 
@@ -29,13 +29,13 @@ export const Sidebar = () => {
     setActiveTab, 
     currentUser, 
     visibleProjects, 
-    visibleFeasibilities,
+    feasibilitySummary,
     setSelectedProjectDetailId,
     visibleTasks,
     visibleTickets,
     permissionMatrix,
     setQuickCreatePickerOpen
-  } = useApp();
+  } = useAppSelector(s => ({ activeTab: s.activeTab, setActiveTab: s.setActiveTab, currentUser: s.currentUser, visibleProjects: s.visibleProjects, feasibilitySummary: s.feasibilitySummary, setSelectedProjectDetailId: s.setSelectedProjectDetailId, visibleTasks: s.visibleTasks, visibleTickets: s.visibleTickets, permissionMatrix: s.permissionMatrix, setQuickCreatePickerOpen: s.setQuickCreatePickerOpen }));
 
   const pinnedProjects = visibleProjects.filter(p => p.isPinned);
   const pendingTasksCount = visibleTasks.filter(t => t.status !== 'completed' && t.status !== 'closed').length;
@@ -49,7 +49,7 @@ export const Sidebar = () => {
     { id: 'kanban', label: 'Kanban Board', icon: Columns3 },
     { id: 'tasks', label: 'Task Management', icon: CheckSquare, badge: pendingTasksCount },
     { id: 'tickets', label: 'Tickets Desk', icon: LifeBuoy, badge: openTicketsCount },
-    { id: 'feasibilities', label: 'Feasibilities', icon: Network, badge: visibleFeasibilities?.length },
+    { id: 'feasibilities', label: 'Feasibilities', icon: Network, badge: feasibilitySummary?.total },
     { id: 'clients', label: 'Clients', icon: Building2 },
     // Vendor master (spec slide 31). Everyone can view it; managing it
     // needs "Manage Vendor List" (checked inside VendorsView).

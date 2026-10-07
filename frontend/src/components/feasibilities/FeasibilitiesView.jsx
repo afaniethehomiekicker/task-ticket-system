@@ -1,5 +1,5 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { useApp } from '../../context/AppContext';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { useAppSelector } from '../../context/AppContext';
 import { 
   Search, Filter, Plus, Download, ArrowUpDown, Building, User as UserIcon, Pin, 
   Network, Globe, RadioTower, Zap, Truck, Box, AlertTriangle, ChevronDown
@@ -9,7 +9,8 @@ import { PriorityBadge } from '../common/Badge';
 import { canCreateFeasibility, isStaffRole } from '../../utils/permissions';
 import { FeasibilityEditModal } from './FeasibilityEditModal';
 
-const PRODUCTS = ['DPLC', 'Dark Fiber', 'IPT', 'IPT Mix', 'Pure IPT'];
+import { STANDARD_FEASIBILITY_PRODUCTS } from '../../utils/feasibilityProducts';
+import { Pager } from '../common/Pager';
 const STATUSES = ['draft', 'in_progress', 'feasible', 'not_feasible', 'converted', 'cancelled'];
 const PRIORITIES = ['low', 'normal', 'high', 'critical'];
 
@@ -39,9 +40,8 @@ const getStatusColor = (status) => {
 import { FilterSelect } from '../common/FilterSelect';
 export const FeasibilitiesView = () => {
   const { 
-    visibleFeasibilities, 
+    visibleFeasibilities, fetchFeasibilitiesPage, feasibilitySummary, feasibilitiesVersion, feasibilityProducts,
     allUsers, 
-    clients,
     currentUser, 
     setSelectedFeasibilityId, 
     setSelectedFeasibilityEditId,
@@ -50,7 +50,7 @@ export const FeasibilitiesView = () => {
     permissionMatrix,
     listPreset,
     setListPreset
-  } = useApp();
+  } = useAppSelector(s => ({ fetchFeasibilitiesPage: s.fetchFeasibilitiesPage, feasibilitySummary: s.feasibilitySummary, feasibilitiesVersion: s.feasibilitiesVersion, feasibilityProducts: s.feasibilityProducts, visibleFeasibilities: s.visibleFeasibilities, allUsers: s.allUsers, currentUser: s.currentUser, setSelectedFeasibilityId: s.setSelectedFeasibilityId, setSelectedFeasibilityEditId: s.setSelectedFeasibilityEditId, openQuickCreate: s.openQuickCreate, createFeasibility: s.createFeasibility, permissionMatrix: s.permissionMatrix, listPreset: s.listPreset, setListPreset: s.setListPreset }));
 
   const [search, setSearch] = useState('');
   // Dashboard card filter as the initial value: one render, already filtered.
@@ -71,53 +71,73 @@ export const FeasibilitiesView = () => {
   const [vendorFilter, setVendorFilter] = useState('all');
   const [sortBy, setSortBy] = useState('targetDate');
 
-  // Extract unique cities from feasibilities for filter dropdown
-  const cities = useMemo(() => {
-    const citySet = new Set();
-    visibleFeasibilities.forEach(f => {
-      if (f.city) citySet.add(f.city);
-    });
-    return Array.from(citySet).sort();
-  }, [visibleFeasibilities]);
+  // ---- One page at a time, from the server ----
+  // Filters, search and sort all run on the server (GET /api/feasibilities);
+  // the page keeps the ids it was given and reads each record from the
+  // shared cache, so pins and edits show at once. Refetches when a filter
+  // changes and after any feasibility change (feasibilitiesVersion).
+  const FEAS_PER_PAGE = 24; // fills 2, 3 and 4 columns evenly
+  const SORT_PARAM = { targetDate: 'target_date', priority: 'priority', status: 'status', created: 'created' };
+  const [page, setPage] = useState(1);
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [pageIds, setPageIds] = useState([]);
+  const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
 
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const filterKey = [debouncedSearch, statusFilter, productFilter, cityFilter, assigneeFilter, clientFilter, vendorFilter, sortBy].join('|');
+  // Any filter change goes back to page 1 (one request, not two).
+  const lastFilterKeyRef = useRef(filterKey);
+
+  useEffect(() => {
+    if (lastFilterKeyRef.current !== filterKey) {
+      lastFilterKeyRef.current = filterKey;
+      if (page !== 1) { setPage(1); return undefined; }
+    }
+    let cancelled = false;
+    setLoading(true);
+    setLoadError('');
+    fetchFeasibilitiesPage({
+      page, limit: FEAS_PER_PAGE, search: debouncedSearch, status: statusFilter, product: productFilter,
+      city: cityFilter, assignedUserId: assigneeFilter, clientId: clientFilter, vendor: vendorFilter,
+      sort: SORT_PARAM[sortBy] || '',
+    })
+      .then(({ feasibilities, pagination: pg }) => {
+        if (cancelled) return;
+        if (feasibilities.length === 0 && page > 1 && page > (pg.pages || 1)) { setPage(Math.max(1, pg.pages || 1)); return; }
+        setPageIds(feasibilities.map(f => String(f.id)));
+        setPagination(pg);
+      })
+      .catch(err => { if (!cancelled) setLoadError(err.message || 'Failed to load feasibilities'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, filterKey, feasibilitiesVersion, reloadKey]);
+
+  // The page's records, in the server's order, from the shared cache.
   const filteredFeasibilities = useMemo(() => {
-    return visibleFeasibilities.filter(f => {
-      const matchSearch = f.feasibilityNumber.toLowerCase().includes(search.toLowerCase()) || 
-                          f.product.toLowerCase().includes(search.toLowerCase()) ||
-                          f.city.toLowerCase().includes(search.toLowerCase()) ||
-                          f.requirementDetails.toLowerCase().includes(search.toLowerCase()) ||
-                          (f.client?.companyName && f.client.companyName.toLowerCase().includes(search.toLowerCase()));
-      // 'pending' = still open (draft / in progress) — dashboard drill-down.
-      const matchStatus = statusFilter === 'all' || f.status === statusFilter
-        || (statusFilter === 'pending' && ['draft', 'in_progress'].includes(f.status));
-      const matchProduct = productFilter === 'all' || f.product === productFilter;
-      const matchCity = cityFilter === 'all' || f.city === cityFilter;
-      // String compare (the select's value is text; this never matched).
-      const matchAssignee = assigneeFilter === 'all' || String(f.assignedUserId) === assigneeFilter;
-      // Slide 28 filters.
-      const matchClient = clientFilter === 'all' || String(f.clientId) === clientFilter;
-      const matchVendor = vendorFilter === 'all' ||
-        (f.vendors || []).some(v => (v.vendorName || '').toLowerCase() === vendorFilter.toLowerCase());
+    const byId = new Map((visibleFeasibilities || []).map(f => [String(f.id), f]));
+    return pageIds.map(id => byId.get(id)).filter(Boolean);
+  }, [pageIds, visibleFeasibilities]);
 
-      return matchSearch && matchStatus && matchProduct && matchCity && matchAssignee && matchClient && matchVendor;
-    }).sort((a, b) => {
-      if (a.isPinned && !b.isPinned) return -1;
-      if (!a.isPinned && b.isPinned) return 1;
+  const pager = {
+    page: pagination.page || page,
+    pages: Math.max(1, pagination.pages || 1),
+    total: pagination.total || 0,
+    start: ((pagination.page || page) - 1) * FEAS_PER_PAGE,
+    count: filteredFeasibilities.length,
+    setPage,
+  };
 
-      if (sortBy === 'targetDate') {
-        return (a.targetDate ? new Date(a.targetDate).getTime() : 0) - (b.targetDate ? new Date(b.targetDate).getTime() : 0);
-      }
-      if (sortBy === 'priority') {
-        const order = { critical: 4, high: 3, normal: 2, low: 1 };
-        return order[b.priority] - order[a.priority];
-      }
-      if (sortBy === 'status') {
-        const statusOrder = { converted: 6, feasible: 5, in_progress: 4, not_feasible: 3, draft: 2, cancelled: 1 };
-        return statusOrder[b.status] - statusOrder[a.status];
-      }
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    });
-  }, [visibleFeasibilities, search, statusFilter, productFilter, cityFilter, assigneeFilter, sortBy, clientFilter, vendorFilter]);
+  // Filter lists from the server summary (every feasibility you can see,
+  // not just this page).
+  const cities = feasibilitySummary?.cities || [];
 
   return (
     <div id="feasibilities-view" className="space-y-6 max-w-7xl mx-auto pb-12">
@@ -172,10 +192,9 @@ export const FeasibilitiesView = () => {
           {STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
         </select>
           <FilterSelect id="feas-client-filter" value={clientFilter} onChange={setClientFilter} allLabel="All Clients"
-            options={(clients || []).filter(c => c.status !== 'archived').map(c => [String(c.id), c.companyName])} />
+            options={feasibilitySummary?.clients || []} />
           <FilterSelect id="feas-vendor-filter" value={vendorFilter} onChange={setVendorFilter} allLabel="All Vendors"
-            options={Array.from(new Set((visibleFeasibilities || []).flatMap(f => (f.vendors || []).map(v => v.vendorName)).filter(Boolean)))
-              .sort((a, b) => a.localeCompare(b)).map(v => [v, v])} />
+            options={(feasibilitySummary?.vendors || []).map(v => [v, v])} />
 
         <select
           id="feasibilities-product-filter"
@@ -184,7 +203,8 @@ export const FeasibilitiesView = () => {
           className="px-3 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-slate-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
         >
           <option value="all">All Products</option>
-          {PRODUCTS.map(p => <option key={p} value={p}>{p}</option>)}
+          {/* Standard products + any typed in as a "New product". */}
+          {(feasibilityProducts?.length ? feasibilityProducts : STANDARD_FEASIBILITY_PRODUCTS).map(p => <option key={p} value={p}>{p}</option>)}
         </select>
 
         <select
@@ -226,12 +246,20 @@ export const FeasibilitiesView = () => {
       </div>
 
       {/* Feasibility Grid */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {filteredFeasibilities.length === 0 ? (
+      <div className={`transition-opacity ${loading ? 'opacity-60' : ''}`}>
+        <Pager {...pager} noun="feasibilities" />
+      </div>
+      <div className={`grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 transition-opacity ${loading ? 'opacity-60' : ''}`}>
+        {loadError ? (
+          <div className="col-span-full text-center py-10 text-sm">
+            <p className="text-rose-600 dark:text-rose-400">{loadError}</p>
+            <button type="button" onClick={() => setReloadKey(k => k + 1)} className="mt-2 text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer">Try again</button>
+          </div>
+        ) : filteredFeasibilities.length === 0 ? (
           <div className="col-span-full text-center py-16">
             <Network className="w-16 h-16 mx-auto text-slate-300 dark:text-zinc-700 mb-4" />
-            <h3 className="text-lg font-medium text-slate-900 dark:text-zinc-100 mb-1">No feasibilities found</h3>
-            <p className="text-sm text-slate-500 dark:text-zinc-400">Adjust filters or create a new feasibility request.</p>
+            <h3 className="text-lg font-medium text-slate-900 dark:text-zinc-100 mb-1">{loading ? 'Loading feasibilities…' : 'No feasibilities found'}</h3>
+            {!loading && <p className="text-sm text-slate-500 dark:text-zinc-400">Adjust filters or create a new feasibility request.</p>}
           </div>
         ) : (
           filteredFeasibilities.map(f => (
@@ -243,6 +271,8 @@ export const FeasibilitiesView = () => {
           ))
         )}
       </div>
+      <Pager {...pager} noun="feasibilities"
+        onPageChange={() => document.getElementById('feasibilities-view')?.scrollIntoView({ block: 'start' })} />
 
       <FeasibilityEditModal />
     </div>

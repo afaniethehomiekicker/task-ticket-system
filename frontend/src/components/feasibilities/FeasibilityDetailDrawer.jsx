@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import {
   X, Pencil, Trash2, Building, MapPin, Truck, User as UserIcon, Calendar,
   Plus, ShieldCheck, ArrowRightCircle, Pin, Paperclip
@@ -72,7 +72,7 @@ export const FeasibilityDetailDrawer = () => {
     deleteFeasibilityVendor,
     addFeasibilityVendor,
     deleteFeasibility,
-    convertFeasibilityToProject, reinstateFeasibilityVendor, apiFetch } = useApp();
+    convertFeasibilityToProject, reinstateFeasibilityVendor, apiFetch } = useAppSelector(s => ({ feasibilities: s.feasibilities, selectedFeasibilityId: s.selectedFeasibilityId, setSelectedFeasibilityId: s.setSelectedFeasibilityId, setSelectedFeasibilityEditId: s.setSelectedFeasibilityEditId, currentUser: s.currentUser, permissionMatrix: s.permissionMatrix, updateFeasibility: s.updateFeasibility, updateFeasibilityVendor: s.updateFeasibilityVendor, deleteFeasibilityVendor: s.deleteFeasibilityVendor, addFeasibilityVendor: s.addFeasibilityVendor, deleteFeasibility: s.deleteFeasibility, convertFeasibilityToProject: s.convertFeasibilityToProject, reinstateFeasibilityVendor: s.reinstateFeasibilityVendor, apiFetch: s.apiFetch }));
 
   const [isBusy, setIsBusy] = useState(false);
   // Which vendor's evidence panel is open.
@@ -263,6 +263,13 @@ export const FeasibilityDetailDrawer = () => {
           {feasibility.requirementDetails && (
             <div className="p-4 rounded-xl bg-slate-100 dark:bg-zinc-900/60 border border-slate-300 dark:border-zinc-800 text-xs text-slate-800 dark:text-zinc-300 leading-relaxed whitespace-pre-wrap">
               {feasibility.requirementDetails}
+            </div>
+          )}
+
+          {feasibility.subject && (
+            <div className="px-4 py-3 rounded-xl bg-slate-100 dark:bg-zinc-900/60 border border-slate-300 dark:border-zinc-800 text-xs">
+              <span className="text-slate-500 dark:text-zinc-400 block mb-1">Subject</span>
+              <span className="font-medium text-slate-900 dark:text-zinc-200 break-words">{feasibility.subject}</span>
             </div>
           )}
 

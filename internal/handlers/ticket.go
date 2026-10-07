@@ -33,6 +33,10 @@ type CreateTicketInput struct {
 	// every ticket gets one — the spec requires SLA tracking on all of them.
 	SLAHours   int `json:"sla_hours"`   // e.g., 4, 8, 24
 	SLAMinutes int `json:"sla_minutes"` // e.g., 30 for critical
+
+	// Private: only the people on the ticket (and their managers) see it.
+	// Off by default: its departments can view it (visibility.go).
+	IsPrivate bool `json:"is_private"`
 }
 
 // defaultSLAMinutes is the resolution SLA per priority, taken from the
@@ -72,6 +76,8 @@ type UpdateTicketInput struct {
 	AssignedToID      *uint  `json:"assigned_to_id"`
 	ProjectID         *uint  `json:"project_id"`
 	IsPinned          *bool  `json:"is_pinned"`
+	// Private / department-visible (canSetPrivacy).
+	IsPrivate *bool `json:"is_private"`
 }
 
 type TicketQueryParams struct {
@@ -87,6 +93,16 @@ type TicketQueryParams struct {
 	Limit        int    `form:"limit,default=20"`
 	SortBy       string `form:"sort_by,default=created_at"`
 	SortOrder    string `form:"sort_order,default=desc"`
+	// The Tickets page's sort: sla | priority | date. Pinned tickets first.
+	// When set, it replaces sort_by / sort_order.
+	Sort string `form:"sort"`
+	// breached | near | within | none (same rules as ticketSlaState in
+	// the frontend's permissions.js).
+	SLA string `form:"sla"`
+	// "1": the working set loaded at sign-in — unfinished tickets, tickets
+	// finished in the last 30 days, and tickets the caller pinned. History
+	// beyond that is fetched page by page.
+	Working string `form:"working"`
 }
 
 // Sortable columns for GET /api/tickets (whitelist — see safeOrderClause).
@@ -110,17 +126,15 @@ func GetTickets(c *gin.Context) {
 	}
 	params.Page, params.Limit = clampPagination(params.Page, params.Limit)
 
-	userRoleVal, _ := c.Get("user_role")
-	currentUserRole := userRoleVal.(string)
-
 	query := database.DB.
 		Preload("Client").
 		Preload("Project").
 		Preload("AssignedTo", userCard).
 		Preload("AssignedBy", userBasics).
-		Preload("CreatedBy", userCard).
-		Preload("Comments.User", userCard).
-		Order(safeOrderClause(params.SortBy, params.SortOrder, ticketSortColumns, "tickets.created_at"))
+		Preload("CreatedBy", userCard)
+	// No comments in the list (see GetTasks): the ticket drawer loads them
+	// when it opens (GET /api/tickets/:id/comments). The order is added
+	// below (sort or sort_by).
 
 	// Visibility (see visibility.go): admins their department, supervisors their
 	// own and their team's tickets, staff the tickets assigned to or created by
@@ -128,11 +142,36 @@ func GetTickets(c *gin.Context) {
 	query = applyTicketScope(query, viewerFrom(c))
 
 	// Apply filters
-	if params.Status != "" {
-		query = query.Where("status = ?", params.Status)
-	} else {
+	// Finished = a "done" or "cancelled" category in the status catalog.
+	finished := statusKeysIn("ticket", "done", "cancelled")
+	switch params.Status {
+	case "":
 		// See the matching comment in projects.go's GetProjects.
-		query = query.Where("status != ?", "archived")
+		query = query.Where("tickets.status != ?", "archived")
+	case "open": // anything not finished (dashboard drill-down)
+		query = query.Where("tickets.status != ? AND tickets.status NOT IN ?", "archived", finished)
+	case "escalated": // not a status: any escalation tier
+		query = query.Where("tickets.status != ? AND COALESCE(tickets.escalation_level, 'none') NOT IN ('', 'none')", "archived")
+	default:
+		query = query.Where("tickets.status = ?", params.Status)
+	}
+	if params.Working == "1" {
+		query = query.Where(fmt.Sprintf(`(tickets.status NOT IN ? OR tickets.updated_at >= ?
+			OR EXISTS (SELECT 1 FROM pins WHERE pins.user_id = %d AND pins.record_type = 'ticket' AND pins.record_id = tickets.id))`,
+			viewerFrom(c).ID), finished, time.Now().AddDate(0, 0, -30))
+	}
+	// SLA state. "now" is the database clock, as for every other time here.
+	notFinished := "tickets.status NOT IN ? AND tickets.status != 'archived'"
+	nearCond := "(tickets.sla_deadline - NOW() < INTERVAL '1 hour' OR (tickets.sla_deadline - NOW()) < (tickets.sla_deadline - tickets.created_at) * 0.25)"
+	switch params.SLA {
+	case "breached":
+		query = query.Where(notFinished+" AND tickets.sla_deadline IS NOT NULL AND tickets.sla_deadline < NOW()", finished)
+	case "near":
+		query = query.Where(notFinished+" AND tickets.sla_deadline >= NOW() AND "+nearCond, finished)
+	case "within":
+		query = query.Where(notFinished+" AND tickets.sla_deadline >= NOW() AND NOT "+nearCond, finished)
+	case "none":
+		query = query.Where("(tickets.sla_deadline IS NULL OR tickets.status IN ? OR tickets.status = 'archived')", finished)
 	}
 	if params.Priority != "" {
 		query = query.Where("priority = ?", params.Priority)
@@ -140,8 +179,10 @@ func GetTickets(c *gin.Context) {
 	if params.Category != "" {
 		query = query.Where("category = ?", params.Category)
 	}
-	if d := strings.TrimSpace(params.Department); d != "" && (currentUserRole == "super_admin" || currentUserRole == "admin") {
-		query = query.Where("LOWER(TRIM(department)) = LOWER(?)", d)
+	// Any role: the visibility scope above already limits what's returned
+	// (staff now see their departments' tickets, so they filter by it too).
+	if d := strings.TrimSpace(params.Department); d != "" {
+		query = query.Where("LOWER(TRIM(tickets.department)) = LOWER(?)", d)
 	}
 	if params.AssignedToID != "" {
 		query = query.Where("assigned_to_id = ?", params.AssignedToID)
@@ -152,12 +193,20 @@ func GetTickets(c *gin.Context) {
 	if params.ProjectID != "" {
 		query = query.Where("project_id = ?", params.ProjectID)
 	}
-	if params.Search != "" {
-		searchTerm := "%" + strings.ToLower(params.Search) + "%"
+	if search := strings.TrimSpace(params.Search); search != "" {
+		searchTerm := "%" + strings.ToLower(search) + "%"
 		query = query.Where(
-			"LOWER(title) LIKE ? OR LOWER(description) LIKE ? OR LOWER(ticket_number) LIKE ?",
-			searchTerm, searchTerm, searchTerm,
+			`(LOWER(tickets.title) LIKE ? OR LOWER(tickets.description) LIKE ? OR LOWER(tickets.ticket_number) LIKE ?
+			OR EXISTS (SELECT 1 FROM clients WHERE clients.id = tickets.client_id AND clients.deleted_at IS NULL
+				AND (LOWER(clients.company_name) LIKE ? OR LOWER(clients.contact_person) LIKE ?)))`,
+			searchTerm, searchTerm, searchTerm, searchTerm, searchTerm,
 		)
+	}
+	if params.Sort != "" {
+		// The page's sort replaces sort_by: pinned first, then the sort.
+		query = orderTickets(query, params.Sort, viewerFrom(c).ID)
+	} else {
+		query = query.Order(safeOrderClause(params.SortBy, params.SortOrder, ticketSortColumns, "tickets.created_at"))
 	}
 
 	// Count total
@@ -174,7 +223,8 @@ func GetTickets(c *gin.Context) {
 		return
 	}
 
-	redactTickets(c, tickets) // internal notes only for view_internal_notes
+	redactTickets(c, tickets)           // internal notes only for view_internal_notes
+	applyTicketAccessLevels(c, tickets) // department viewers: read-only
 	c.JSON(http.StatusOK, gin.H{
 		"tickets": tickets,
 		"pagination": gin.H{
@@ -184,6 +234,21 @@ func GetTickets(c *gin.Context) {
 			"pages": (total + int64(params.Limit) - 1) / int64(params.Limit),
 		},
 	})
+}
+
+// orderTickets — the caller's pinned tickets first, then sla (soonest
+// deadline; none first, as the page always did), priority, or date (newest).
+func orderTickets(q *gorm.DB, sort string, userID uint) *gorm.DB {
+	q = q.Order(fmt.Sprintf(
+		"(EXISTS (SELECT 1 FROM pins WHERE pins.user_id = %d AND pins.record_type = 'ticket' AND pins.record_id = tickets.id)) DESC",
+		userID))
+	switch sort {
+	case "sla":
+		q = q.Order("tickets.sla_deadline ASC NULLS FIRST")
+	case "priority":
+		q = q.Order("CASE tickets.priority WHEN 'critical' THEN 5 WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC")
+	}
+	return q.Order("tickets.created_at DESC").Order("tickets.id DESC")
 }
 
 // GetTicket returns a single ticket by ID
@@ -220,6 +285,18 @@ func GetTicket(c *gin.Context) {
 	}
 
 	redactTicket(c, &ticket) // internal notes only for view_internal_notes
+	applyTicketAccessLevel(c, &ticket)
+	if ticket.AccessLevel == "department" {
+		// Linked tasks may be private or belong to people outside the
+		// caller's departments: only the ones they could open themselves.
+		visible := ticket.Tasks[:0]
+		for i := range ticket.Tasks {
+			if userCanViewTask(c, &ticket.Tasks[i]) {
+				visible = append(visible, ticket.Tasks[i])
+			}
+		}
+		ticket.Tasks = visible
+	}
 	c.JSON(http.StatusOK, gin.H{"ticket": ticket})
 }
 
@@ -357,6 +434,7 @@ func CreateTicket(c *gin.Context) {
 		}(),
 		CreatedByID: &currentUserID,
 		SLADeadline: slaDeadline,
+		IsPrivate:   input.IsPrivate,
 	}
 
 	// Set defaults
@@ -433,7 +511,18 @@ func UpdateTicket(c *gin.Context) {
 		return
 	}
 
+	// Private / department-visible. Checked before anything is logged or
+	// saved. An unchanged value is a no-op (edit forms resend the current one).
+	privacyChange := input.IsPrivate != nil && *input.IsPrivate != ticket.IsPrivate
+	if privacyChange && !canSetPrivacy(viewerFrom(c), ticket.CreatedByID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the person who created this ticket, a supervisor or an admin can change whether it is private"})
+		return
+	}
+
 	updates := map[string]interface{}{}
+	if privacyChange {
+		updates["is_private"] = *input.IsPrivate
+	}
 	if input.Title != "" {
 		updates["title"] = input.Title
 	}

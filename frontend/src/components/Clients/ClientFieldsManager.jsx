@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { X, Plus, SlidersHorizontal } from 'lucide-react';
 
 // Manage extra client fields (spec slide 8: "Additional fields should be
@@ -8,7 +8,7 @@ import { X, Plus, SlidersHorizontal } from 'lucide-react';
 const TYPES = [['text', 'Text'], ['number', 'Number'], ['date', 'Date'], ['select', 'Dropdown']];
 
 export const ClientFieldsManager = ({ onClose }) => {
-  const { clientFields, saveClientField } = useApp();
+  const { clientFields, saveClientField } = useAppSelector(s => ({ clientFields: s.clientFields, saveClientField: s.saveClientField }));
   const [label, setLabel] = useState('');
   const [type, setType] = useState('text');
   const [options, setOptions] = useState('');

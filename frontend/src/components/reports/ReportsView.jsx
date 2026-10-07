@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { isStaffRole } from '../../utils/permissions';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { 
   BarChart3, Download, TrendingUp, CheckCircle, Clock, 
   AlertTriangle, ShieldCheck, PieChart, Users, ArrowUpRight
@@ -14,7 +14,7 @@ export const ReportsView = () => {
     visibleTickets, 
     allUsers,
     currentUser,
-    departments, getStatusCategory } = useApp();
+    departments, getStatusCategory, apiFetch } = useAppSelector(s => ({ apiFetch: s.apiFetch, visibleProjects: s.visibleProjects, visibleTasks: s.visibleTasks, visibleTickets: s.visibleTickets, allUsers: s.allUsers, currentUser: s.currentUser, departments: s.departments, getStatusCategory: s.getStatusCategory }));
 
   const [dateRange, setDateRange] = useState('30d');
 
@@ -26,13 +26,37 @@ export const ReportsView = () => {
   // models.go). This meant completedTasks was always empty regardless
   // of how many tasks were genuinely done, and Task Completion Rate
   // always showed 0% no matter what.
-  const totalTasks = visibleTasks.length;
-  const completedTasks = visibleTasks.filter(t => getStatusCategory('task', t.status) === 'done');
-  const taskCompletionRate = totalTasks > 0 ? Math.round((completedTasks.length / totalTasks) * 100) : 0;
+  // All-time task figures come from the server summary (see ticketTotals
+  // below); until it arrives, the loaded tasks stand in.
+  const [taskTotals, setTaskTotals] = useState(null);
+  const totalTasks = taskTotals ? taskTotals.total : visibleTasks.length;
+  const completedTaskCount = taskTotals ? taskTotals.completed
+    : visibleTasks.filter(t => getStatusCategory('task', t.status) === 'done').length;
+  const taskCompletionRate = totalTasks > 0 ? Math.round((completedTaskCount / totalTasks) * 100) : 0;
+  const deptTaskTotals = new Map((taskTotals?.by_department || []).map(r => [r.department || '', r]));
+  const completedByUser = new Map((taskTotals?.completed_by_user || []).map(r => [String(r.user_id), r.completed]));
 
-  const totalTickets = visibleTickets.length;
-  const resolvedTickets = visibleTickets.filter(t => getStatusCategory('ticket', t.status) === 'done');
-  const ticketResolutionRate = totalTickets > 0 ? Math.round((resolvedTickets.length / totalTickets) * 100) : 0;
+  // All-time ticket totals come from the server: the browser only holds open
+  // and recently finished tickets. Until they arrive, the loaded ones stand in.
+  const [ticketTotals, setTicketTotals] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/api/reports/summary')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        if (cancelled || !d) return;
+        if (d.tickets) setTicketTotals(d.tickets);
+        if (d.tasks) setTaskTotals(d.tasks);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const totalTickets = ticketTotals ? ticketTotals.total
+    : visibleTickets.length;
+  const resolvedTicketCount = ticketTotals ? ticketTotals.resolved
+    : visibleTickets.filter(t => getStatusCategory('ticket', t.status) === 'done').length;
+  const ticketResolutionRate = totalTickets > 0 ? Math.round((resolvedTicketCount / totalTickets) * 100) : 0;
 
   const breachedTickets = visibleTickets.filter(t => t.slaBreached);
   const slaCompliance = totalTickets > 0 ? Math.round(((totalTickets - breachedTickets.length) / totalTickets) * 100) : 100;
@@ -44,17 +68,20 @@ export const ReportsView = () => {
     const deptProjects = visibleProjects.filter(p => p.department === dept);
     const deptUsers = allUsers.filter(u => u.department === dept);
     // A task carries its own department (set from its project when created).
-    const deptTasks = visibleTasks.filter(t => t.department === dept);
-    // A finished task's status is 'done' — this counted 'completed'/'closed',
-    // which tasks never have, so every department's velocity read 0%.
-    const completedDeptTasks = deptTasks.filter(t => getStatusCategory('task', t.status) === 'done');
-    const velocity = deptTasks.length > 0 ? Math.round((completedDeptTasks.length / deptTasks.length) * 100) : 0;
+    // All-time counts from the server summary when it's in; else the
+    // loaded tasks. Finished = status category 'done'.
+    const serverRow = taskTotals ? deptTaskTotals.get(dept) : null;
+    const deptTasks = serverRow ? null : visibleTasks.filter(t => t.department === dept);
+    const taskCount = serverRow ? serverRow.total : (taskTotals ? 0 : deptTasks.length);
+    const completedCount = serverRow ? serverRow.completed
+      : (taskTotals ? 0 : deptTasks.filter(t => getStatusCategory('task', t.status) === 'done').length);
+    const velocity = taskCount > 0 ? Math.round((completedCount / taskCount) * 100) : 0;
 
     return {
       department: dept,
       projectCount: deptProjects.length,
-      taskCount: deptTasks.length,
-      completedTaskCount: completedDeptTasks.length,
+      taskCount,
+      completedTaskCount: completedCount,
       velocity
     };
   });
@@ -96,7 +123,7 @@ export const ReportsView = () => {
           <div className="flex items-baseline justify-between">
             <span className="text-3xl font-bold text-slate-900 dark:text-zinc-100">{taskCompletionRate}%</span>
             <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 flex items-center">
-              {completedTasks.length}/{totalTasks} done
+              {completedTaskCount}/{totalTasks} done
             </span>
           </div>
           <div className="w-full h-1.5 bg-slate-300 dark:bg-zinc-800 rounded-full mt-3 overflow-hidden">
@@ -126,7 +153,7 @@ export const ReportsView = () => {
           <div className="flex items-baseline justify-between">
             <span className="text-3xl font-bold text-amber-600 dark:text-amber-400">{ticketResolutionRate}%</span>
             <span className="text-xs font-medium text-slate-500 dark:text-zinc-400">
-              {resolvedTickets.length}/{totalTickets} resolved
+              {resolvedTicketCount}/{totalTickets} resolved
             </span>
           </div>
           <div className="w-full h-1.5 bg-slate-300 dark:bg-zinc-800 rounded-full mt-3 overflow-hidden">
@@ -198,7 +225,9 @@ export const ReportsView = () => {
             </thead>
             <tbody className="divide-y divide-slate-300/50 dark:divide-zinc-800/60 text-slate-800 dark:text-zinc-300">
               {allUsers.filter(u => isStaffRole(u.role) || u.role === 'supervisor').map(user => {
-                const userCompletedTasks = visibleTasks.filter(t => t.assignedToId === user.id && getStatusCategory('task', t.status) === 'done').length;
+                const userCompletedTasks = taskTotals
+                  ? (completedByUser.get(String(user.id)) || 0)
+                  : visibleTasks.filter(t => t.assignedToId === user.id && getStatusCategory('task', t.status) === 'done').length;
                 const userActiveTickets = visibleTickets.filter(t => t.assignedToId === user.id && !['done', 'cancelled', 'archived'].includes(getStatusCategory('ticket', t.status))).length;
 
                 return (

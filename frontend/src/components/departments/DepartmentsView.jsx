@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { Building2, Plus, Pencil, Archive, X, Check, Users2, Info } from 'lucide-react';
 // ASSUMPTION, unverified — I don't have the current permissions.js in this
 // session, so this import mirrors the established canManageClients pattern
@@ -19,7 +19,7 @@ import { canManageDepartments } from '../../utils/permissions';
 // side effect.
 
 export const DepartmentsView = () => {
-  const { departments, currentUser, permissionMatrix, createDepartment, updateDepartment, deleteDepartment } = useApp();
+  const { departments, currentUser, permissionMatrix, createDepartment, updateDepartment, deleteDepartment } = useAppSelector(s => ({ departments: s.departments, currentUser: s.currentUser, permissionMatrix: s.permissionMatrix, createDepartment: s.createDepartment, updateDepartment: s.updateDepartment, deleteDepartment: s.deleteDepartment }));
 
   // Super Admin only (spec slide 5) — canManageDepartments and the backend
   // (Department.go) apply the same rule.

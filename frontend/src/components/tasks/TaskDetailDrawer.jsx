@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useApp } from '../../context/AppContext';
+import { getBackendId, useAppSelector } from '../../context/AppContext';
 import {
   X, CheckSquare, Plus, MessageSquare, Clock, Calendar, Paperclip,
   Send, UserCheck, ShieldAlert, CheckCircle, RotateCcw, AlertTriangle, Trash2, Edit, Link2, XCircle, Archive, Lock
@@ -37,7 +37,7 @@ export const TaskDetailDrawer = () => {
     addTaskComment,
     addTaskDependency,
     removeTaskDependency,
-    deleteTask, getStatuses, getStatusCategory } = useApp();
+    deleteTask, getStatuses, getStatusCategory, recordComments, loadRecordComments } = useAppSelector(s => ({ selectedTaskId: s.selectedTaskId, setSelectedTaskId: s.setSelectedTaskId, setSelectedTaskEditId: s.setSelectedTaskEditId, tasks: s.tasks, projects: s.projects, allUsers: s.allUsers, currentUser: s.currentUser, permissionMatrix: s.permissionMatrix, updateTask: s.updateTask, updateTaskStatus: s.updateTaskStatus, submitTaskForReview: s.submitTaskForReview, approveTask: s.approveTask, reopenTask: s.reopenTask, toggleChecklistItem: s.toggleChecklistItem, addChecklistItem: s.addChecklistItem, addSubTask: s.addSubTask, updateSubTaskStatus: s.updateSubTaskStatus, updateSubTaskAssignee: s.updateSubTaskAssignee, fetchTaskAccess: s.fetchTaskAccess, grantTaskAccess: s.grantTaskAccess, revokeTaskAccess: s.revokeTaskAccess, addTaskComment: s.addTaskComment, addTaskDependency: s.addTaskDependency, removeTaskDependency: s.removeTaskDependency, deleteTask: s.deleteTask, getStatuses: s.getStatuses, getStatusCategory: s.getStatusCategory, recordComments: s.recordComments, loadRecordComments: s.loadRecordComments }));
 
   const [commentText, setCommentText] = useState('');
   const [commentIsInternal, setCommentIsInternal] = useState(false);
@@ -59,7 +59,7 @@ export const TaskDetailDrawer = () => {
   // returns below: hooks have to run in the same order on every render, and
   // placing it after `if (!task) return null` crashed the drawer ("Rendered
   // more hooks than during the previous render").
-  const accessTask = selectedTaskId ? (tasks || []).find(t => t.id === selectedTaskId) : null;
+  const accessTask = selectedTaskId ? (tasks || []).find(t => String(t.id) === String(selectedTaskId)) : null;
   const accessTaskId = accessTask?.id ?? null;
   const accessPanelAllowed = !!accessTask &&
     accessTask.accessLevel !== 'subtask' && accessTask.accessLevel !== 'granted' &&
@@ -81,14 +81,28 @@ export const TaskDetailDrawer = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessTaskId, accessPanelAllowed]);
 
+  // Comments are loaded when the drawer opens (the task list doesn't carry
+  // them). Not for a sub-task reference view: it has no comments section.
+  const commentsTaskId = accessTask && accessTask.accessLevel !== 'subtask' ? accessTask.id : null;
+  useEffect(() => {
+    if (commentsTaskId) loadRecordComments('task', commentsTaskId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commentsTaskId]);
+
   if (!selectedTaskId) return null;
 
-  const task = tasks.find(t => t.id === selectedTaskId);
+  const task = tasks.find(t => String(t.id) === String(selectedTaskId));
   if (!task) return null;
 
   const checklists = task.checklists || [];
   const subTasks = task.subTasks || [];
-  const comments = task.comments || [];
+  const loadedComments = recordComments?.[`task:${getBackendId(task.id)}`];
+  // While loading, fall back to any comments the task record already has.
+  const comments = loadedComments?.status === 'loaded' || (loadedComments?.comments || []).length
+    ? loadedComments.comments
+    : (task.comments || []);
+  const commentsLoading = !loadedComments || loadedComments.status === 'loading';
+  const commentsFailed = loadedComments?.status === 'error';
   const dependencies = task.dependencies || [];
 
   // Candidate pool for "add dependency" — every other real task, minus
@@ -707,7 +721,13 @@ export const TaskDetailDrawer = () => {
 
             <div className="space-y-3">
               {comments.length === 0 ? (
-                <p className="text-xs text-slate-500 dark:text-zinc-500">No discussion comments yet.</p>
+                <p className="text-xs text-slate-500 dark:text-zinc-500">
+                  {commentsLoading ? 'Loading comments…' : commentsFailed ? (
+                    <>Couldn't load comments.{' '}
+                      <button type="button" onClick={() => loadRecordComments('task', task.id)} className="text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer">Try again</button>
+                    </>
+                  ) : 'No discussion comments yet.'}
+                </p>
               ) : (
                 comments.map(c => (
                   <div key={c.id} className={`p-3 rounded-lg border space-y-1 ${

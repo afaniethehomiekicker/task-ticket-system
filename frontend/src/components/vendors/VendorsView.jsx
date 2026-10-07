@@ -1,5 +1,5 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import {
   Truck, Plus, Search, Pencil, Archive, RotateCcw, X, Phone, Mail, MapPin, User as UserIcon, Layers,
   FileSpreadsheet,
@@ -53,7 +53,7 @@ const StatChips = ({ stats }) => (
 );
 
 export const VendorsView = () => {
-  const { apiFetch, currentUser, permissionMatrix, setSelectedFeasibilityId } = useApp();
+  const { apiFetch, currentUser, permissionMatrix, setSelectedFeasibilityId } = useAppSelector(s => ({ apiFetch: s.apiFetch, currentUser: s.currentUser, permissionMatrix: s.permissionMatrix, setSelectedFeasibilityId: s.setSelectedFeasibilityId }));
   const canManage = canManageVendors(currentUser, permissionMatrix);
 
   const [tab, setTab] = useState('active'); // active | archived

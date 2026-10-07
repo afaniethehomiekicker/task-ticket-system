@@ -296,9 +296,9 @@ func fieldDiff(before, after interface{}, keys []string) (map[string]interface{}
 // Fields whose edits are recorded individually (status and assignee have
 // their own audit entries).
 var taskDiffFields = []string{"title", "description", "priority", "start_date", "due_date",
-	"estimated_hours", "actual_hours", "labels", "story_points"}
+	"estimated_hours", "actual_hours", "labels", "story_points", "is_private"}
 var ticketDiffFields = []string{"title", "description", "category", "department", "priority",
-	"severity", "project_id", "resolution_summary"}
+	"severity", "project_id", "resolution_summary", "is_private"}
 
 // taskAssigneeRoleError: admins and super admins assign work to their team
 // (staff and supervisors); they can't be given a task, sub-task or ticket

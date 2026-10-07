@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { CaptchaWidget } from './CaptchaWidget';
 import { Lock, Mail, Eye, EyeOff } from 'lucide-react';
 
@@ -37,7 +37,7 @@ const saveRemembered = (remember, email) => {
 // The single login page for every role. The old separate Super Admin portal
 // (/admin-login) now shows this same page — see Adminlogin.jsx.
 export const Login = () => {
-  const { setCurrentUserId, setAuthToken } = useApp();
+  const { setCurrentUserId, setAuthToken } = useAppSelector(s => ({ setCurrentUserId: s.setCurrentUserId, setAuthToken: s.setAuthToken }));
 
   const [initial] = useState(readRemembered);
   const [email, setEmail] = useState(initial.email);

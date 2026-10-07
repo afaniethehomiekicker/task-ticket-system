@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { ListChecks, Plus, Lock } from 'lucide-react';
 
 // Settings → Workflow Statuses (Super Admin). Spec slide 21: "Configurable
@@ -17,7 +17,7 @@ const CATEGORIES = [
 const CATEGORY_LABEL = { ...Object.fromEntries(CATEGORIES), review: 'Review — awaiting approval' };
 
 export const WorkflowStatusesPanel = () => {
-  const { getStatuses, createWorkflowStatus, updateWorkflowStatus } = useApp();
+  const { getStatuses, createWorkflowStatus, updateWorkflowStatus } = useAppSelector(s => ({ getStatuses: s.getStatuses, createWorkflowStatus: s.createWorkflowStatus, updateWorkflowStatus: s.updateWorkflowStatus }));
   const [entity, setEntity] = useState('ticket');
   const [labels, setLabels] = useState({});
   const [newLabel, setNewLabel] = useState('');

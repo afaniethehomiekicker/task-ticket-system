@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { X } from 'lucide-react';
 
 // New file, mirroring TaskEditModal.jsx's structure exactly. Handles the
@@ -9,26 +9,35 @@ import { X } from 'lucide-react';
 // fields), so this follows an existing pattern rather than inventing one.
 
 import { canAssignTickets, isStaffRole } from '../../utils/permissions';
-const PRODUCTS = ['DPLC', 'Dark Fiber', 'IPT', 'IPT Mix', 'Pure IPT'];
+import { CitySelect } from '../common/CitySelect';
+import { ClientPicker } from '../common/ClientPicker';
+import { feasibilityProductOptions, matchExistingProduct, MAX_PRODUCT_LENGTH, MAX_SUBJECT_LENGTH } from '../../utils/feasibilityProducts';
 
 export const FeasibilityEditModal = () => {
   const {
-    feasibilities,
+    feasibilities, feasibilityProducts, feasibilitySummary,
     selectedFeasibilityEditId,
     setSelectedFeasibilityEditId,
     updateFeasibility,
-    clients,
     allUsers,
     departments,
     currentUser,
     permissionMatrix,
-  } = useApp();
+  } = useAppSelector(s => ({ feasibilities: s.feasibilities, feasibilityProducts: s.feasibilityProducts, feasibilitySummary: s.feasibilitySummary, selectedFeasibilityEditId: s.selectedFeasibilityEditId, setSelectedFeasibilityEditId: s.setSelectedFeasibilityEditId, updateFeasibility: s.updateFeasibility, allUsers: s.allUsers, departments: s.departments, currentUser: s.currentUser, permissionMatrix: s.permissionMatrix }));
   // Changing the handling department or person is a reassignment: needs
   // "Reassign Tickets & Tasks" (the backend refuses it otherwise).
   const canReassign = canAssignTickets(currentUser, permissionMatrix);
 
   const feasibility = (feasibilities || []).find(f => String(f.id) === String(selectedFeasibilityEditId));
   const [isSaving, setIsSaving] = useState(false);
+  // Standard products + any typed in before (this record's own included).
+  // Server list, plus this record's own product.
+  const PRODUCTS = feasibilityProductOptions([...(feasibilityProducts || []), ...(feasibility ? [feasibility] : [])]);
+  // "New product": type a product that isn't in the list.
+  const [newProduct, setNewProduct] = useState(false);
+  const [customProduct, setCustomProduct] = useState('');
+  // Name of the selected client, shown without looking it up.
+  const [clientLabel, setClientLabel] = useState('');
 
   const [formData, setFormData] = useState({
     product: 'DPLC',
@@ -37,6 +46,7 @@ export const FeasibilityEditModal = () => {
     toLocation: '',
     city: '',
     requirementDetails: '',
+    subject: '',
     clientId: '',
     assignedDept: '',
     assignedUserId: '',
@@ -54,6 +64,7 @@ export const FeasibilityEditModal = () => {
         toLocation: feasibility.toLocation || '',
         city: feasibility.city || '',
         requirementDetails: feasibility.requirementDetails || '',
+        subject: feasibility.subject || '',
         clientId: feasibility.clientId || '',
         assignedDept: feasibility.assignedDept || '',
         assignedUserId: feasibility.assignedUserId || '',
@@ -61,6 +72,11 @@ export const FeasibilityEditModal = () => {
         targetDate: feasibility.targetDate ? String(feasibility.targetDate).slice(0, 10) : '',
         notes: feasibility.notes || '',
       });
+      setNewProduct(false);
+      setCustomProduct('');
+      setClientLabel(feasibility.client?.companyName
+        ? `${feasibility.client.companyName}${feasibility.client.clientNumber ? ` (${feasibility.client.clientNumber})` : ''}`
+        : '');
     }
   }, [feasibility]);
 
@@ -73,7 +89,9 @@ export const FeasibilityEditModal = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSaving(true);
-    const result = await updateFeasibility(selectedFeasibilityEditId, formData);
+    const product = newProduct ? matchExistingProduct(customProduct, PRODUCTS) : formData.product;
+    if (!product) { setIsSaving(false); return; }
+    const result = await updateFeasibility(selectedFeasibilityEditId, { ...formData, product });
     setIsSaving(false);
     if (result) {
       setSelectedFeasibilityEditId(null);
@@ -97,9 +115,31 @@ export const FeasibilityEditModal = () => {
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto">
+          <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-zinc-300 cursor-pointer select-none w-fit">
+            <input
+              type="checkbox"
+              checked={newProduct}
+              onChange={(e) => setNewProduct(e.target.checked)}
+              className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+            />
+            New product <span className="text-slate-500 dark:text-zinc-500">(not in the list)</span>
+          </label>
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1">Product</label>
+              {newProduct ? (
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  maxLength={MAX_PRODUCT_LENGTH}
+                  placeholder="Type the product name"
+                  value={customProduct}
+                  onChange={(e) => setCustomProduct(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg text-xs text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-indigo-500"
+                />
+              ) : (
               <select
                 name="product"
                 value={formData.product}
@@ -108,6 +148,7 @@ export const FeasibilityEditModal = () => {
               >
                 {PRODUCTS.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
+              )}
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1">Capacity</label>
@@ -147,12 +188,11 @@ export const FeasibilityEditModal = () => {
 
           <div>
             <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1">City</label>
-            <input
-              type="text"
-              name="city"
+            <CitySelect
+              compact
               value={formData.city}
-              onChange={handleChange}
-              className="w-full px-3 py-2 bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg text-xs text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-indigo-500"
+              onChange={(city) => setFormData(fd => ({ ...fd, city }))}
+              extraCities={feasibilitySummary?.cities || []}
             />
           </div>
 
@@ -168,16 +208,26 @@ export const FeasibilityEditModal = () => {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1">Client</label>
-            <select
-              name="clientId"
-              value={formData.clientId}
+            <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1">Subject</label>
+            <input
+              type="text"
+              name="subject"
+              maxLength={MAX_SUBJECT_LENGTH}
+              placeholder="Short subject line (optional)"
+              value={formData.subject}
               onChange={handleChange}
               className="w-full px-3 py-2 bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg text-xs text-slate-900 dark:text-zinc-100 focus:outline-hidden focus:border-indigo-500"
-            >
-              <option value="">No client</option>
-              {(clients || []).map(c => <option key={c.id} value={c.id}>{c.companyName}</option>)}
-            </select>
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 mb-1">Client</label>
+            <ClientPicker
+              compact
+              value={formData.clientId}
+              label={clientLabel}
+              onChange={(clientId, label) => { setFormData(fd => ({ ...fd, clientId })); setClientLabel(label); }}
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-4">

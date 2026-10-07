@@ -166,12 +166,18 @@ func canonicalDepartment(name string) (string, bool) {
 // — and of their own history — entirely. They can read it (detail, timeline,
 // lists, reports) but not change it: every write still checks
 // userCanAccessTicket.
+//
+// Also everyone in the department a non-private ticket is with, or that
+// raised it (department-wide visibility, see visibility.go) — read-only too.
 func userCanViewTicket(c *gin.Context, t *models.Ticket) bool {
 	if userCanAccessTicket(c, t) {
 		return true
 	}
 	v := viewerFrom(c)
 	if t.ReturnedByID != nil && *t.ReturnedByID == v.ID && v.ID != 0 {
+		return true
+	}
+	if ticketInViewerDepts(v, t) {
 		return true
 	}
 	return v.isDeptAdmin() && sameDept(v.Dept, t.ReturnedFromDept)

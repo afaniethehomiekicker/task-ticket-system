@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { Timer, AlertTriangle, CheckCircle2 } from 'lucide-react';
 
 // SLA tracking for one ticket — spec slide 22: "System tracks: start time,
@@ -23,7 +23,7 @@ const duration = (ms) => {
 };
 
 export const SLAStatus = ({ ticket }) => {
-  const { getStatusCategory } = useApp();
+  const { getStatusCategory } = useAppSelector(s => ({ getStatusCategory: s.getStatusCategory }));
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {

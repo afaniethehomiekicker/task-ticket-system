@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { AppProvider, useApp } from "./context/AppContext";
+import { AppProvider, useAppSelector } from "./context/AppContext";
 import { Sidebar } from "./components/layout/Sidebar";
 import { Navbar } from "./components/layout/Navbar";
 import { DashboardView } from "./components/dashboard/DashboardView";
@@ -33,7 +33,7 @@ const AppContent = () => {
   const {
     activeTab, quickCreateOpen, setQuickCreateOpen, currentUser, authToken, dataLoaded,
     setSelectedTaskId, setSelectedTicketId, setSelectedProjectDetailId, setSelectedFeasibilityId,
-  } = useApp();
+  } = useAppSelector(s => ({ activeTab: s.activeTab, quickCreateOpen: s.quickCreateOpen, setQuickCreateOpen: s.setQuickCreateOpen, currentUser: s.currentUser, authToken: s.authToken, dataLoaded: s.dataLoaded, setSelectedTaskId: s.setSelectedTaskId, setSelectedTicketId: s.setSelectedTicketId, setSelectedProjectDetailId: s.setSelectedProjectDetailId, setSelectedFeasibilityId: s.setSelectedFeasibilityId }));
 
   // Detail windows are app-level now; changing page closes whichever is
   // open so it doesn't sit on top of the new page.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +58,7 @@ type CreateFeasibilityInput struct {
 	ToLocation         string `json:"to_location"`
 	City               string `json:"city"`
 	RequirementDetails string `json:"requirement_details"`
+	Subject            string `json:"subject"` // optional
 
 	AssignedDept   string `json:"assigned_dept"`
 	AssignedUserID *uint  `json:"assigned_user_id"`
@@ -91,6 +93,8 @@ type UpdateFeasibilityInput struct {
 	ToLocation         string `json:"to_location"`
 	City               string `json:"city"`
 	RequirementDetails string `json:"requirement_details"`
+	// Pointer so the optional subject can be cleared ("" = remove it).
+	Subject *string `json:"subject"`
 
 	AssignedDept   string `json:"assigned_dept"`
 	AssignedUserID *uint  `json:"assigned_user_id"`
@@ -99,6 +103,22 @@ type UpdateFeasibilityInput struct {
 	Status     string `json:"status"`
 	Notes      string `json:"notes"`
 	TargetDate string `json:"target_date"`
+}
+
+// Limits for the free-text product (a product not in the standard list can
+// be typed in) and the optional subject.
+const (
+	maxFeasibilityProductLen = 100
+	maxFeasibilitySubjectLen = 200
+)
+
+// cleanFeasibilityText trims a value and checks its length.
+func cleanFeasibilityText(v string, max int, field string) (string, string) {
+	v = strings.TrimSpace(v)
+	if len([]rune(v)) > max {
+		return "", fmt.Sprintf("%s can be at most %d characters", field, max)
+	}
+	return v, ""
 }
 
 // FeasibilityID was previously required in the JSON body, but this struct
@@ -148,11 +168,7 @@ type ConvertFeasibilityInput struct {
 
 // GetFeasibilities fetches all feasibility records
 func GetFeasibilities(c *gin.Context) {
-	searchQuery := strings.TrimSpace(c.Query("search"))
-	statusFilter := c.Query("status")
-	productFilter := c.Query("product")
-	cityFilter := c.Query("city")
-
+	v := viewerFrom(c)
 	query := database.DB.
 		Preload("Client").
 		Preload("AssignedUser").
@@ -161,35 +177,162 @@ func GetFeasibilities(c *gin.Context) {
 		Preload("Attachments").
 		Preload("ConvertedProject")
 
-	// Only what the caller may see (see feasibilityScopeClause).
-	query = applyFeasibilityScope(query, viewerFrom(c))
+	// Only what the caller may see (see feasibilityScopeClause), then the
+	// Feasibilities page's filters.
+	query = applyFeasibilityFilters(c, applyFeasibilityScope(query, v))
 
-	if searchQuery != "" {
-		likeQuery := "%" + strings.ToLower(searchQuery) + "%"
-		query = query.Where(
-			"(LOWER(feasibility_number) LIKE ? OR LOWER(product) LIKE ? OR LOWER(city) LIKE ? OR LOWER(requirement_details) LIKE ?)",
-			likeQuery, likeQuery, likeQuery, likeQuery,
-		)
-	}
-	if statusFilter != "" {
-		query = query.Where("status = ?", statusFilter)
-	} else {
-		// See the matching comment in projects.go's GetProjects.
-		query = query.Where("status != ?", "archived")
-	}
-	if productFilter != "" {
-		query = query.Where("product = ?", productFilter)
-	}
-	if cityFilter != "" {
-		query = query.Where("city = ?", cityFilter)
+	// Paged when ?page= is given (the Feasibilities page asks for one page
+	// at a time). Without it, everything, as before.
+	_, paged := c.GetQuery("page")
+	var total int64
+	var page, limit int
+	if paged {
+		page, _ = strconv.Atoi(c.Query("page"))
+		limit, _ = strconv.Atoi(c.DefaultQuery("limit", "50"))
+		page, limit = clampPagination(page, limit)
+		query.Session(&gorm.Session{}).Model(&models.Feasibility{}).Count(&total)
+		query = query.Offset((page - 1) * limit).Limit(limit)
 	}
 
 	var feasibilities []models.Feasibility
-	if result := query.Order("created_at desc").Find(&feasibilities); result.Error != nil {
+	if result := orderFeasibilities(query, c.Query("sort"), v.ID).Find(&feasibilities); result.Error != nil {
 		serverError(c, "Failed to fetch feasibilities", result.Error)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"feasibilities": feasibilities})
+	if !paged {
+		c.JSON(http.StatusOK, gin.H{"feasibilities": feasibilities})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"feasibilities": feasibilities,
+		"pagination": gin.H{
+			"page":  page,
+			"limit": limit,
+			"total": total,
+			"pages": (total + int64(limit) - 1) / int64(limit),
+		},
+	})
+}
+
+// applyFeasibilityFilters — the Feasibilities page's filters:
+//
+//	search       number, product, city, requirement, subject, client name
+//	status       a status; "pending" = draft or in progress; default all but archived
+//	product, city, assigned_user_id, client_id
+//	vendor       a vendor on the feasibility (by name, any case)
+func applyFeasibilityFilters(c *gin.Context, q *gorm.DB) *gorm.DB {
+	if search := strings.TrimSpace(c.Query("search")); search != "" {
+		like := "%" + strings.ToLower(search) + "%"
+		q = q.Where(`(LOWER(feasibilities.feasibility_number) LIKE ? OR LOWER(feasibilities.product) LIKE ?
+			OR LOWER(feasibilities.city) LIKE ? OR LOWER(feasibilities.requirement_details) LIKE ?
+			OR LOWER(feasibilities.subject) LIKE ?
+			OR EXISTS (SELECT 1 FROM clients WHERE clients.id = feasibilities.client_id
+				AND clients.deleted_at IS NULL AND LOWER(clients.company_name) LIKE ?))`,
+			like, like, like, like, like, like)
+	}
+	switch status := c.Query("status"); status {
+	case "":
+		// See the matching comment in projects.go's GetProjects.
+		q = q.Where("feasibilities.status != ?", "archived")
+	case "pending":
+		q = q.Where("feasibilities.status IN ?", []string{"draft", "in_progress"})
+	default:
+		q = q.Where("feasibilities.status = ?", status)
+	}
+	if product := c.Query("product"); product != "" {
+		q = q.Where("feasibilities.product = ?", product)
+	}
+	if city := c.Query("city"); city != "" {
+		q = q.Where("feasibilities.city = ?", city)
+	}
+	if id, err := strconv.Atoi(c.Query("assigned_user_id")); err == nil && id > 0 {
+		q = q.Where("feasibilities.assigned_user_id = ?", id)
+	}
+	if id, err := strconv.Atoi(c.Query("client_id")); err == nil && id > 0 {
+		q = q.Where("feasibilities.client_id = ?", id)
+	}
+	if vendor := strings.TrimSpace(c.Query("vendor")); vendor != "" {
+		q = q.Where(`EXISTS (SELECT 1 FROM feasibility_vendors fv WHERE fv.feasibility_id = feasibilities.id
+			AND fv.deleted_at IS NULL AND LOWER(fv.vendor_name) = LOWER(?))`, vendor)
+	}
+	return q
+}
+
+// orderFeasibilities — the caller's pinned feasibilities first, then the
+// page's sort: target_date (soonest; none first, as the page always did),
+// priority (critical first), status, or created (newest, the default).
+func orderFeasibilities(q *gorm.DB, sort string, userID uint) *gorm.DB {
+	// userID is the caller's numeric id from the token (formatted as a number,
+	// so nothing user-typed reaches the SQL). GORM's Order() drops bound
+	// expressions, hence the plain string.
+	q = q.Order(fmt.Sprintf(
+		"(EXISTS (SELECT 1 FROM pins WHERE pins.user_id = %d AND pins.record_type = 'feasibility' AND pins.record_id = feasibilities.id)) DESC",
+		userID))
+	switch sort {
+	case "target_date":
+		q = q.Order("NULLIF(feasibilities.target_date, '') ASC NULLS FIRST")
+	case "priority":
+		q = q.Order("CASE feasibilities.priority WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC")
+	case "status":
+		q = q.Order(`CASE feasibilities.status WHEN 'converted' THEN 6 WHEN 'feasible' THEN 5 WHEN 'in_progress' THEN 4
+			WHEN 'not_feasible' THEN 3 WHEN 'draft' THEN 2 WHEN 'cancelled' THEN 1 ELSE 0 END DESC`)
+	}
+	// Newest first breaks ties (and is the "created" sort); id keeps paging stable.
+	return q.Order("feasibilities.created_at DESC").Order("feasibilities.id DESC")
+}
+
+// GetFeasibilitySummary — GET /api/feasibilities/summary
+//
+// What other screens need now that the full list isn't loaded in the
+// browser: counts (sidebar badge, dashboard "Pending"), the caller's pinned
+// feasibilities (dashboard), and the values for the page's filter lists.
+// Same visibility rules as the list.
+func GetFeasibilitySummary(c *gin.Context) {
+	v := viewerFrom(c)
+	scoped := func() *gorm.DB {
+		return applyFeasibilityScope(database.DB.Model(&models.Feasibility{}), v).
+			Where("feasibilities.status != ?", "archived")
+	}
+
+	var total, pending int64
+	scoped().Count(&total)
+	scoped().Where("feasibilities.status IN ?", []string{"draft", "in_progress"}).Count(&pending)
+
+	var cities []string
+	scoped().Where("TRIM(feasibilities.city) <> ''").Distinct("feasibilities.city").
+		Order("feasibilities.city").Pluck("feasibilities.city", &cities)
+
+	var vendors []string
+	database.DB.Model(&models.FeasibilityVendor{}).
+		Where("feasibility_id IN (?)", scoped().Select("feasibilities.id")).
+		Where("TRIM(vendor_name) <> ''").
+		Distinct("vendor_name").Order("vendor_name").Pluck("vendor_name", &vendors)
+
+	type clientOpt struct {
+		ID          uint   `json:"id"`
+		CompanyName string `json:"company_name"`
+	}
+	var clients []clientOpt
+	database.DB.Model(&models.Client{}).
+		Where("id IN (?)", scoped().Where("feasibilities.client_id IS NOT NULL").Select("feasibilities.client_id")).
+		Order("company_name").Select("id", "company_name").Scan(&clients)
+
+	var pinned []models.Feasibility
+	scoped().
+		Where("feasibilities.id IN (?)", database.DB.Model(&models.Pin{}).
+			Where("user_id = ? AND record_type = ?", v.ID, "feasibility").Select("record_id")).
+		Select("feasibilities.id", "feasibilities.feasibility_number", "feasibilities.product",
+			"feasibilities.capacity", "feasibilities.status").
+		Order("feasibilities.created_at DESC").Limit(20).Find(&pinned)
+
+	c.JSON(http.StatusOK, gin.H{
+		"total":   total,
+		"pending": pending,
+		"cities":  cities,
+		"vendors": vendors,
+		"clients": clients,
+		"pinned":  pinned,
+	})
 }
 
 // GetFeasibility fetches a single feasibility by ID
@@ -256,10 +399,24 @@ func CreateFeasibility(c *gin.Context) {
 		feasNum = nextID
 	}
 
+	product, msg := cleanFeasibilityText(input.Product, maxFeasibilityProductLen, "Product")
+	if msg == "" && product == "" {
+		msg = "Product is required"
+	}
+	subject, subjMsg := cleanFeasibilityText(input.Subject, maxFeasibilitySubjectLen, "Subject")
+	if msg == "" {
+		msg = subjMsg
+	}
+	if msg != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+
 	feasibility := models.Feasibility{
 		FeasibilityNumber:  feasNum,
 		ClientID:           &input.ClientID,
-		Product:            input.Product,
+		Product:            product,
+		Subject:            subject,
 		Capacity:           input.Capacity,
 		FromLocation:       input.FromLocation,
 		ToLocation:         input.ToLocation,
@@ -363,8 +520,21 @@ func UpdateFeasibility(c *gin.Context) {
 	if input.ClientID != nil {
 		updates["client_id"] = *input.ClientID
 	}
-	if input.Product != "" {
-		updates["product"] = input.Product
+	if strings.TrimSpace(input.Product) != "" {
+		product, msg := cleanFeasibilityText(input.Product, maxFeasibilityProductLen, "Product")
+		if msg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
+		updates["product"] = product
+	}
+	if input.Subject != nil {
+		subject, msg := cleanFeasibilityText(*input.Subject, maxFeasibilitySubjectLen, "Subject")
+		if msg != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+			return
+		}
+		updates["subject"] = subject
 	}
 	if input.Capacity != "" {
 		updates["capacity"] = input.Capacity
@@ -508,10 +678,10 @@ func DeleteFeasibility(c *gin.Context) {
 
 	now := time.Now()
 	if err := database.DB.Model(&feasibility).Updates(map[string]interface{}{
-		"status":         "archived",
+		"status":             "archived",
 		"pre_archive_status": feasibility.Status,
-		"archived_at":    now,
-		"archived_by_id": callerID(c),
+		"archived_at":        now,
+		"archived_by_id":     callerID(c),
 	}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to archive feasibility"})
 		return
@@ -826,14 +996,13 @@ func ConvertFeasibilityToProject(c *gin.Context) {
 
 		if err := tx.Create(&project).Error; err != nil {
 			return err
-		}		// Link the feasibility's client in the project's client list too
+		} // Link the feasibility's client in the project's client list too
 		// (slide 9: projects can have several clients).
 		if project.ClientID != nil {
 			if err := setProjectClients(tx, &project, []uint{*project.ClientID}); err != nil {
 				return err
 			}
 		}
-
 
 		// Link feasibility to project
 		convertedAt := time.Now()
@@ -885,8 +1054,25 @@ func ConvertFeasibilityToProject(c *gin.Context) {
 }
 
 // GetFeasibilityProducts returns the list of valid products (for dropdowns)
+// — the standard ones, then any other product typed in on a feasibility.
 func GetFeasibilityProducts(c *gin.Context) {
 	products := []string{"DPLC", "Dark Fiber", "IPT", "IPT Mix", "Pure IPT"}
+	var custom []string
+	database.DB.Model(&models.Feasibility{}).
+		Where("TRIM(product) <> ''").
+		Distinct("product").Order("product").Pluck("product", &custom)
+	for _, p := range custom {
+		known := false
+		for _, s := range products {
+			if strings.EqualFold(strings.TrimSpace(p), s) {
+				known = true
+				break
+			}
+		}
+		if !known {
+			products = append(products, strings.TrimSpace(p))
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"products": products})
 }
 

@@ -1,5 +1,5 @@
 import React from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { FolderKanban, CheckSquare, LifeBuoy, Building2, X } from 'lucide-react';
 
 // The four options here MUST match a real tab QuickCreateModal knows how
@@ -16,7 +16,7 @@ const QUICK_CREATE_TYPES = [
 ];
 
 export const QuickCreateTypePicker = () => {
-  const { quickCreatePickerOpen, setQuickCreatePickerOpen, openQuickCreate } = useApp();
+  const { quickCreatePickerOpen, setQuickCreatePickerOpen, openQuickCreate } = useAppSelector(s => ({ quickCreatePickerOpen: s.quickCreatePickerOpen, setQuickCreatePickerOpen: s.setQuickCreatePickerOpen, openQuickCreate: s.openQuickCreate }));
 
   if (!quickCreatePickerOpen) return null;
 

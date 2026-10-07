@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { Timer } from 'lucide-react';
 
 // Settings → SLA (Super Admin). Spec slide 22: "Example SLA (fully
@@ -10,7 +10,7 @@ import { Timer } from 'lucide-react';
 const ORDER = ['critical', 'high', 'normal', 'low'];
 
 export const SLAPoliciesPanel = () => {
-  const { fetchSLAPolicies, updateSLAPolicy } = useApp();
+  const { fetchSLAPolicies, updateSLAPolicy } = useAppSelector(s => ({ fetchSLAPolicies: s.fetchSLAPolicies, updateSLAPolicy: s.updateSLAPolicy }));
   const [rows, setRows] = useState([]);
   const [edits, setEdits] = useState({});
   const [error, setError] = useState('');

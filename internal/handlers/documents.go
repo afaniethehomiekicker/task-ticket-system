@@ -56,6 +56,17 @@ func documentsDir() string {
 // audit text plus the audit resource (vendor evidence is logged on its
 // feasibility). It has written the error response when ok is false.
 func documentRecord(c *gin.Context, recordType string, recordID uint) (label, auditType string, auditID uint, ok bool) {
+	return documentRecordAccess(c, recordType, recordID, false)
+}
+
+// documentRecordForRead is documentRecord for listing and downloading: a
+// department viewer of a non-private task or ticket may read its files, but
+// uploading and removing still need full access (documentRecord).
+func documentRecordForRead(c *gin.Context, recordType string, recordID uint) (label, auditType string, auditID uint, ok bool) {
+	return documentRecordAccess(c, recordType, recordID, true)
+}
+
+func documentRecordAccess(c *gin.Context, recordType string, recordID uint, readOnly bool) (label, auditType string, auditID uint, ok bool) {
 	deny := func() (string, string, uint, bool) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return "", "", 0, false
@@ -70,7 +81,7 @@ func documentRecord(c *gin.Context, recordType string, recordID uint) (label, au
 		if database.DB.First(&t, recordID).Error != nil {
 			return missing()
 		}
-		if !userCanAccessTicket(c, &t) {
+		if !userCanAccessTicket(c, &t) && !(readOnly && userCanViewTicket(c, &t)) {
 			return deny()
 		}
 		return t.TicketNumber, "ticket", t.ID, true
@@ -79,7 +90,7 @@ func documentRecord(c *gin.Context, recordType string, recordID uint) (label, au
 		if database.DB.First(&t, recordID).Error != nil {
 			return missing()
 		}
-		if !userCanAccessTask(c, &t) {
+		if !userCanAccessTask(c, &t) && !(readOnly && userCanViewTask(c, &t)) {
 			return deny()
 		}
 		return t.TaskNumber, "task", t.ID, true
@@ -135,7 +146,7 @@ func ListDocuments(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, _, _, ok := documentRecord(c, rt, rid); !ok {
+	if _, _, _, ok := documentRecordForRead(c, rt, rid); !ok {
 		return
 	}
 	var docs []models.Document
@@ -263,7 +274,7 @@ func DownloadDocument(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Document not found"})
 		return
 	}
-	if _, _, _, ok := documentRecord(c, doc.RecordType, doc.RecordID); !ok {
+	if _, _, _, ok := documentRecordForRead(c, doc.RecordType, doc.RecordID); !ok {
 		return
 	}
 	path := filepath.Join(documentsDir(), filepath.Base(doc.StoragePath))

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { useApp } from "../../context/AppContext";
+import { useAppSelector } from "../../context/AppContext";
 
 import AsyncSelect from "react-select/async";
 
@@ -15,6 +15,8 @@ const TICKET_CATEGORIES = [
 import { CustomFieldInputs } from '../Clients/CustomFieldInputs';
 import { isTaskAssignable, isInDepartment } from '../../utils/permissions';
 import { PrivateToggle } from './PrivateToggle';
+import { CitySelect } from './CitySelect';
+import { feasibilityProductOptions, matchExistingProduct, MAX_PRODUCT_LENGTH, MAX_SUBJECT_LENGTH } from '../../utils/feasibilityProducts';
 export const QuickCreateModal = ({ isOpen, onClose }) => {
   const {
     createProject,
@@ -22,6 +24,8 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     createTicket,
     createClient,
     createFeasibility,
+    feasibilityProducts,
+    feasibilitySummary,
     quickCreateConfig,
     visibleProjects,
     currentUser,
@@ -29,8 +33,8 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     apiFetch,
     searchAssignees,
     departments,
-    clients,
-  } = useApp() || {};
+    fetchClientsPage,
+  } = useAppSelector(s => ({ createProject: s.createProject, createTask: s.createTask, createTicket: s.createTicket, createClient: s.createClient, createFeasibility: s.createFeasibility, feasibilityProducts: s.feasibilityProducts, feasibilitySummary: s.feasibilitySummary, quickCreateConfig: s.quickCreateConfig, visibleProjects: s.visibleProjects, currentUser: s.currentUser, allUsers: s.allUsers, apiFetch: s.apiFetch, searchAssignees: s.searchAssignees, departments: s.departments, fetchClientsPage: s.fetchClientsPage }));
 
   const [localTab, setLocalTab] = useState(quickCreateConfig?.tab || "project");
   const [openNonce, setOpenNonce] = useState(0);
@@ -124,11 +128,14 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   const [clientCustom, setClientCustom] = useState({});
   const [isSubmittingClient, setIsSubmittingClient] = useState(false);
 
-  // Form states — Feasibility. Product list matches FeasibilitiesView.jsx's
-  // own PRODUCTS constant, kept in sync manually since there's no shared
-  // source for it yet.
-  const FEASIBILITY_PRODUCTS = ["DPLC", "Dark Fiber", "IPT", "IPT Mix", "Pure IPT"];
+  // Form states — Feasibility. Standard products plus any typed in on earlier
+  // feasibilities (utils/feasibilityProducts.js, shared with the edit form).
+  const FEASIBILITY_PRODUCTS = feasibilityProductOptions(feasibilityProducts);
   const [feasProduct, setFeasProduct] = useState(FEASIBILITY_PRODUCTS[0]);
+  // "New product": type a product that isn't in the list.
+  const [feasNewProduct, setFeasNewProduct] = useState(false);
+  const [feasCustomProduct, setFeasCustomProduct] = useState("");
+  const [feasSubject, setFeasSubject] = useState("");
   const [feasCapacity, setFeasCapacity] = useState("");
   const [feasFromLocation, setFeasFromLocation] = useState("");
   const [feasToLocation, setFeasToLocation] = useState("");
@@ -154,13 +161,19 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     // work (their visible client list), so the box isn't just "No options".
     // Typing 2+ letters searches every client by name / ID.
     if ((inputValue || "").trim().length < 2) {
-      return (clients || [])
-        .filter((c) => c && c.status !== "archived")
-        .slice(0, 20)
-        .map((c) => ({
-          value: c.id,
-          label: `${c.companyName}${c.clientNumber ? ` (${c.clientNumber})` : ""}${c.city ? ` — ${c.city}` : ""}`,
-        }));
+      // The first 20 of the clients this user can see, from the server
+      // (the client book isn't kept in the browser).
+      try {
+        const { clients: firstPage } = await fetchClientsPage({ page: 1, limit: 20 });
+        return firstPage
+          .filter((c) => c && c.status !== "archived")
+          .map((c) => ({
+            value: c.id,
+            label: `${c.companyName}${c.clientNumber ? ` (${c.clientNumber})` : ""}${c.city ? ` — ${c.city}` : ""}`,
+          }));
+      } catch {
+        return [];
+      }
     }
     try {
       // Was a raw fetch() with no Authorization header — every keystroke
@@ -362,6 +375,9 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     setClientCity("");
     setClientCustom({});
     setFeasProduct(FEASIBILITY_PRODUCTS[0]);
+    setFeasNewProduct(false);
+    setFeasCustomProduct("");
+    setFeasSubject("");
     setFeasCapacity("");
     setFeasFromLocation("");
     setFeasToLocation("");
@@ -493,12 +509,16 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
 
       if (!created) return;
     } else if (localTab === "feasibility") {
-      if (!feasProduct) return;
+      const product = feasNewProduct
+        ? matchExistingProduct(feasCustomProduct, FEASIBILITY_PRODUCTS)
+        : feasProduct;
+      if (!product) return;
       if (typeof createFeasibility !== "function") return;
 
       setIsSubmittingFeasibility(true);
       const created = await createFeasibility({
-        product: feasProduct,
+        product,
+        subject: feasSubject.trim(),
         capacity: feasCapacity.trim(),
         fromLocation: feasFromLocation.trim(),
         toLocation: feasToLocation.trim(),
@@ -1232,11 +1252,35 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
 
           {localTab === "feasibility" && (
             <form onSubmit={handleSubmit} className="space-y-4">
+              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-zinc-300 cursor-pointer select-none w-fit">
+                <input
+                  id="feas-new-product"
+                  type="checkbox"
+                  checked={feasNewProduct}
+                  onChange={(e) => setFeasNewProduct(e.target.checked)}
+                  className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                />
+                New product <span className="text-xs text-slate-500 dark:text-zinc-500">(not in the list)</span>
+              </label>
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
                     Product *
                   </label>
+                  {feasNewProduct ? (
+                    <input
+                      id="feas-custom-product"
+                      type="text"
+                      required
+                      autoFocus
+                      maxLength={MAX_PRODUCT_LENGTH}
+                      placeholder="Type the product name"
+                      value={feasCustomProduct}
+                      onChange={(e) => setFeasCustomProduct(e.target.value)}
+                      className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                    />
+                  ) : (
                   <select
                     value={feasProduct}
                     onChange={(e) => setFeasProduct(e.target.value)}
@@ -1247,6 +1291,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                       <option key={p} value={p}>{p}</option>
                     ))}
                   </select>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
@@ -1294,12 +1339,11 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                   <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
                     City
                   </label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Karachi"
+                  <CitySelect
+                    id="feas-city"
                     value={feasCity}
-                    onChange={(e) => setFeasCity(e.target.value)}
-                    className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                    onChange={setFeasCity}
+                    extraCities={feasibilitySummary?.cities || []}
                   />
                 </div>
                 <div>
@@ -1371,6 +1415,21 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                   value={feasRequirementDetails}
                   onChange={(e) => setFeasRequirementDetails(e.target.value)}
                   className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden resize-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
+                  Subject
+                </label>
+                <input
+                  id="feas-subject"
+                  type="text"
+                  maxLength={MAX_SUBJECT_LENGTH}
+                  placeholder="Short subject line (optional)"
+                  value={feasSubject}
+                  onChange={(e) => setFeasSubject(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
                 />
               </div>
 

@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { X } from 'lucide-react';
 
 export const ProjectEditModal = () => {
-  const { projects, selectedProjectEditId, setSelectedProjectEditId, updateProject } = useApp();
+  const { projects, selectedProjectEditId, setSelectedProjectEditId, updateProject } = useAppSelector(s => ({ projects: s.projects, selectedProjectEditId: s.selectedProjectEditId, setSelectedProjectEditId: s.setSelectedProjectEditId, updateProject: s.updateProject }));
 
   const project = (projects || []).find(p => p.id === selectedProjectEditId);
   const [isSaving, setIsSaving] = useState(false);

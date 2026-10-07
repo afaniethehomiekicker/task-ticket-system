@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import AsyncSelect from 'react-select/async';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { canCreateProject } from '../../utils/permissions';
 import { Building2, Pencil } from 'lucide-react';
 
@@ -15,7 +15,7 @@ const toOption = (c) => ({
 });
 
 export const ProjectClientsPanel = ({ project }) => {
-  const { currentUser, permissionMatrix, apiFetch, clients, updateProject } = useApp();
+  const { currentUser, permissionMatrix, apiFetch, fetchClientsPage, updateProject } = useAppSelector(s => ({ currentUser: s.currentUser, permissionMatrix: s.permissionMatrix, apiFetch: s.apiFetch, fetchClientsPage: s.fetchClientsPage, updateProject: s.updateProject }));
   const [editing, setEditing] = useState(false);
   const [selected, setSelected] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -34,7 +34,13 @@ export const ProjectClientsPanel = ({ project }) => {
   const loadOptions = async (input) => {
     const q = (input || '').trim();
     if (q.length < 2) {
-      return (clients || []).filter(c => c.status !== 'archived').slice(0, 20).map(toOption);
+      // First 20 of the clients this user can see, from the server.
+      try {
+        const { clients: firstPage } = await fetchClientsPage({ page: 1, limit: 20 });
+        return firstPage.filter(c => c.status !== 'archived').map(toOption);
+      } catch {
+        return [];
+      }
     }
     try {
       const res = await apiFetch(`/api/clients/lookup?search=${encodeURIComponent(q)}`);

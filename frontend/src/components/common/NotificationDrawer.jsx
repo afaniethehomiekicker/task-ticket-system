@@ -1,5 +1,5 @@
 import React from 'react';
-import { useApp } from '../../context/AppContext';
+import { useAppSelector } from '../../context/AppContext';
 import { Bell, Check, Trash2, X, AlertTriangle, CheckCircle, Clock, MessageSquare, ArrowUpRight } from 'lucide-react';
 
 export const NotificationDrawer = ({ open, onClose }) => {
@@ -14,7 +14,7 @@ export const NotificationDrawer = ({ open, onClose }) => {
     setActiveTab,
     setListPreset,
     reloadClients
-  } = useApp();
+  } = useAppSelector(s => ({ userNotifications: s.userNotifications, markNotificationAsRead: s.markNotificationAsRead, markAllNotificationsAsRead: s.markAllNotificationsAsRead, setSelectedTaskId: s.setSelectedTaskId, setSelectedTicketId: s.setSelectedTicketId, setSelectedProjectDetailId: s.setSelectedProjectDetailId, setSelectedFeasibilityId: s.setSelectedFeasibilityId, setActiveTab: s.setActiveTab, setListPreset: s.setListPreset, reloadClients: s.reloadClients }));
 
   if (!open) return null;
 

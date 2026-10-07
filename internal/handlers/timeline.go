@@ -69,7 +69,7 @@ func GetTaskTimeline(c *gin.Context) {
 		return
 	}
 	me := viewerFrom(c).ID
-	full := userCanAccessTask(c, &task)
+	full := userCanViewTask(c, &task) // read: department viewers too
 	if !full && !hasSubtaskAssignedIn(task.ID, me) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return

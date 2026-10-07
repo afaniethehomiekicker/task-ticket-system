@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useApp } from '../../context/AppContext';
+import React, { useState, useEffect } from 'react';
+import { useAppSelector } from '../../context/AppContext';
 import { 
   X, Pin, Calendar, Users, Clock, CheckSquare, LifeBuoy, FileText, 
   Paperclip, Plus, ArrowRight, TrendingUp, AlertCircle, Edit, Trash2, Archive, Upload, ShieldAlert, UserPlus, UserMinus, Check
@@ -60,8 +60,9 @@ export const ProjectDetailModal = () => {
     addProjectAttachment,
     setSelectedTaskId,
     setSelectedTicketId,
-    openQuickCreate
-  } = useApp();
+    openQuickCreate,
+    fetchTasksPage, fetchTicketsPage,
+  } = useAppSelector(s => ({ selectedProjectDetailId: s.selectedProjectDetailId, setSelectedProjectDetailId: s.setSelectedProjectDetailId, projects: s.projects, tasks: s.tasks, tickets: s.tickets, allUsers: s.allUsers, currentUser: s.currentUser, permissionMatrix: s.permissionMatrix, togglePinProject: s.togglePinProject, updateProject: s.updateProject, departments: s.departments, deleteProject: s.deleteProject, addProjectMember: s.addProjectMember, removeProjectMember: s.removeProjectMember, addProjectAttachment: s.addProjectAttachment, setSelectedTaskId: s.setSelectedTaskId, setSelectedTicketId: s.setSelectedTicketId, openQuickCreate: s.openQuickCreate, fetchTasksPage: s.fetchTasksPage, fetchTicketsPage: s.fetchTicketsPage }));
 
   const [activeTab, setActiveTab] = useState('overview');
   const [showEditModal, setShowEditModal] = useState(false);
@@ -83,6 +84,22 @@ export const ProjectDetailModal = () => {
   const [editBudgetUnit, setEditBudgetUnit] = useState('hours');
   const [isSavingQuickBudget, setIsSavingQuickBudget] = useState(false);
   const [isArchiving, setIsArchiving] = useState(false);
+
+  // The browser holds only open and recently finished tasks / tickets: load
+  // this project's full history when it's opened, so its Tasks and Tickets
+  // tabs list everything (they go into the shared cache).
+  useEffect(() => {
+    if (!selectedProjectDetailId) return;
+    const loadAll = async (fetchPage) => {
+      for (let p = 1; p <= 10; p++) {
+        const { pagination } = await fetchPage({ projectId: selectedProjectDetailId, page: p, limit: 200 });
+        if (p >= (pagination.pages || 1)) break;
+      }
+    };
+    loadAll(fetchTasksPage).catch(() => {});
+    loadAll(fetchTicketsPage).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProjectDetailId]);
 
   if (!selectedProjectDetailId) return null;
 

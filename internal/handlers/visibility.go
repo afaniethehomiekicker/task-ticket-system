@@ -30,6 +30,18 @@ import (
 //	staff / any other  work assigned to them and work they created
 //	projects           department / owner (admins) or membership (everyone else)
 //
+// Department-wide visibility (supervisors, staff and other non-admin roles):
+// on top of the rules above, they also see every task and ticket of every
+// department they belong to (home + additional) that is NOT marked private —
+// read-only. Those come back with access_level "department"; every write
+// still checks userCanAccessTask / userCanAccessTicket, which this does not
+// widen. A private task or ticket follows only the rules above.
+//
+//	task in my department    tasks.department is one of mine, or its
+//	                         assignee is in one of my departments
+//	ticket in my department  the department it is with now, or the one
+//	                         that raised it (origin_department), is mine
+//
 // "Created by me" is included for tasks and tickets on purpose: the spec has
 // the ticket's creator close it after client confirmation, and a creator who
 // can't see what they just created is a bug in either layer.
@@ -151,6 +163,110 @@ func (v viewer) seesEverything() bool {
 
 func (v viewer) isDeptAdmin() bool { return v.Role == "admin" && v.Dept != "" }
 
+// usesDeptView: the viewer gets department-wide read access to non-private
+// tasks and tickets. Super admins and department admins already see their
+// whole scope; a role "admin" without a department gets nothing extra.
+func (v viewer) usesDeptView() bool {
+	return v.ID != 0 && !v.seesEverything() && v.Role != "admin" && len(v.depts()) > 0
+}
+
+// colInDeptsSQL matches a department-name column against any of depts,
+// case- and space-insensitively. Built as explicit ORs (not IN ?) so it
+// works the same wherever the clause is embedded.
+func colInDeptsSQL(col string, depts []string) (string, []interface{}) {
+	parts := make([]string, 0, len(depts))
+	args := make([]interface{}, 0, len(depts))
+	for _, d := range depts {
+		parts = append(parts, "LOWER(TRIM("+col+")) = LOWER(?)")
+		args = append(args, strings.TrimSpace(d))
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args
+}
+
+// orScope joins a role clause with the department clause.
+func orScope(base string, baseArgs []interface{}, extra string, extraArgs []interface{}) (string, []interface{}) {
+	if extra == "" {
+		return base, baseArgs
+	}
+	args := make([]interface{}, 0, len(baseArgs)+len(extraArgs))
+	args = append(args, baseArgs...)
+	args = append(args, extraArgs...)
+	return "(" + base + " OR " + extra + ")", args
+}
+
+// taskDeptClause: non-private tasks of the viewer's departments. Empty when
+// the viewer doesn't get department-wide visibility.
+func taskDeptClause(v viewer) (string, []interface{}) {
+	if !v.usesDeptView() {
+		return "", nil
+	}
+	depts := v.depts()
+	deptSQL, deptA := colInDeptsSQL("tasks.department", depts)
+	memSQL, memA := usersInAnyDeptSQL(depts)
+	clause := "(COALESCE(tasks.is_private, false) = false AND (" + deptSQL +
+		" OR tasks.assignee_id IN (SELECT users.id FROM users WHERE " + memSQL + " AND users.deleted_at IS NULL)))"
+	args := make([]interface{}, 0, len(deptA)+len(memA))
+	args = append(args, deptA...)
+	args = append(args, memA...)
+	return clause, args
+}
+
+// ticketDeptClause: non-private tickets that are with, or were raised by,
+// one of the viewer's departments.
+func ticketDeptClause(v viewer) (string, []interface{}) {
+	if !v.usesDeptView() {
+		return "", nil
+	}
+	depts := v.depts()
+	curSQL, curA := colInDeptsSQL("tickets.department", depts)
+	orgSQL, orgA := colInDeptsSQL("tickets.origin_department", depts)
+	args := make([]interface{}, 0, len(curA)+len(orgA))
+	args = append(args, curA...)
+	args = append(args, orgA...)
+	return "(COALESCE(tickets.is_private, false) = false AND (" + curSQL + " OR " + orgSQL + "))", args
+}
+
+// inViewerDepts reports whether dept is one of the viewer's departments.
+func (v viewer) inViewerDepts(dept string) bool {
+	for _, d := range v.depts() {
+		if sameDept(d, dept) {
+			return true
+		}
+	}
+	return false
+}
+
+// taskInViewerDepts is the single-record form of taskDeptClause. assignee
+// may be nil; it is then looked up when the task's own department doesn't
+// already decide it.
+func taskInViewerDepts(v viewer, t *models.Task, assignee *models.User) bool {
+	if t == nil || t.IsPrivate || !v.usesDeptView() {
+		return false
+	}
+	if v.inViewerDepts(t.Department) {
+		return true
+	}
+	if t.AssigneeID == nil {
+		return false
+	}
+	if assignee == nil {
+		var u models.User
+		if database.DB.Select("id", "department", "extra_departments").First(&u, *t.AssigneeID).Error != nil {
+			return false
+		}
+		assignee = &u
+	}
+	return sharesDept(*assignee, v.depts())
+}
+
+// ticketInViewerDepts is the single-record form of ticketDeptClause.
+func ticketInViewerDepts(v viewer, t *models.Ticket) bool {
+	if t == nil || t.IsPrivate || !v.usesDeptView() {
+		return false
+	}
+	return v.inViewerDepts(t.Department) || v.inViewerDepts(t.OriginDepartment)
+}
+
 func sameDept(a, b string) bool {
 	a, b = strings.TrimSpace(a), strings.TrimSpace(b)
 	return a != "" && strings.EqualFold(a, b)
@@ -189,10 +305,13 @@ func taskScopeClause(v viewer) (string, []interface{}) {
 		return "(LOWER(tasks.department) = LOWER(?) OR tasks.creator_id = ? OR tasks.assignee_id IN " + deptMemberIDsSQL() + " OR " + subtaskOfMine + " OR " + grantedToMe + ")",
 			[]interface{}{v.Dept, v.ID, v.Dept, v.Dept, v.ID, v.ID}
 	case v.Role == "supervisor":
-		return "(tasks.assignee_id = ? OR tasks.creator_id = ? OR tasks.assignee_id IN (SELECT id FROM users WHERE supervisor_id = ? AND deleted_at IS NULL) OR " + subtaskOfMine + " OR " + grantedToMe + ")",
-			[]interface{}{v.ID, v.ID, v.ID, v.ID, v.ID}
+		dc, da := taskDeptClause(v)
+		return orScope("(tasks.assignee_id = ? OR tasks.creator_id = ? OR tasks.assignee_id IN (SELECT id FROM users WHERE supervisor_id = ? AND deleted_at IS NULL) OR "+subtaskOfMine+" OR "+grantedToMe+")",
+			[]interface{}{v.ID, v.ID, v.ID, v.ID, v.ID}, dc, da)
 	default:
-		return "(tasks.assignee_id = ? OR tasks.creator_id = ? OR " + subtaskOfMine + " OR " + grantedToMe + ")", []interface{}{v.ID, v.ID, v.ID, v.ID}
+		dc, da := taskDeptClause(v)
+		return orScope("(tasks.assignee_id = ? OR tasks.creator_id = ? OR "+subtaskOfMine+" OR "+grantedToMe+")",
+			[]interface{}{v.ID, v.ID, v.ID, v.ID}, dc, da)
 	}
 }
 
@@ -209,11 +328,15 @@ func ticketScopeClause(v viewer) (string, []interface{}) {
 		return "(LOWER(tickets.department) = LOWER(?) OR LOWER(tickets.origin_department) = LOWER(?) OR tickets.created_by_id = ? OR tickets.assigned_to_id IN " + deptMemberIDsSQL() + " OR LOWER(tickets.returned_from_dept) = LOWER(?) OR tickets.returned_by_id = ?)",
 			[]interface{}{v.Dept, v.Dept, v.ID, v.Dept, v.Dept, v.Dept, v.ID}
 	case v.Role == "supervisor":
-		return "(tickets.assigned_to_id = ? OR tickets.created_by_id = ? OR tickets.assigned_to_id IN (SELECT id FROM users WHERE supervisor_id = ? AND deleted_at IS NULL) OR tickets.returned_by_id = ?)",
-			[]interface{}{v.ID, v.ID, v.ID, v.ID}
+		dc, da := ticketDeptClause(v)
+		return orScope("(tickets.assigned_to_id = ? OR tickets.created_by_id = ? OR tickets.assigned_to_id IN (SELECT id FROM users WHERE supervisor_id = ? AND deleted_at IS NULL) OR tickets.returned_by_id = ?)",
+			[]interface{}{v.ID, v.ID, v.ID, v.ID}, dc, da)
 	default:
-		// Plus tickets they worked on and returned (read-only).
-		return "(tickets.assigned_to_id = ? OR tickets.created_by_id = ? OR tickets.returned_by_id = ?)", []interface{}{v.ID, v.ID, v.ID}
+		// Plus tickets they worked on and returned (read-only), and the
+		// non-private tickets of their departments (read-only).
+		dc, da := ticketDeptClause(v)
+		return orScope("(tickets.assigned_to_id = ? OR tickets.created_by_id = ? OR tickets.returned_by_id = ?)",
+			[]interface{}{v.ID, v.ID, v.ID}, dc, da)
 	}
 }
 
@@ -330,6 +453,40 @@ func userCanAccessTask(c *gin.Context, t *models.Task) bool {
 	return taskVisibleTo(v, t, sup) || hasRecordAccess("task", t.ID, v.ID)
 }
 
+// userCanViewTask is read access: full access (userCanAccessTask) or the
+// department-wide view of a non-private task. Reads only — detail, comments,
+// work logs, documents, timeline. Every write keeps checking
+// userCanAccessTask.
+func userCanViewTask(c *gin.Context, t *models.Task) bool {
+	return userCanAccessTask(c, t) || taskInViewerDepts(viewerFrom(c), t, nil)
+}
+
+// deptOnlyTaskView: the caller sees the task only through its department.
+func deptOnlyTaskView(c *gin.Context, t *models.Task) bool {
+	return !userCanAccessTask(c, t) && taskInViewerDepts(viewerFrom(c), t, nil)
+}
+
+// limitToDeptView marks a task as read-only for a department viewer. The
+// linked ticket is cut to a reference: it may be private, or in a
+// department the viewer isn't part of.
+func limitToDeptView(t *models.Task) {
+	t.Ticket = ticketRef(t.Ticket)
+	t.AccessLevel = "department"
+}
+
+// ticketRef is a ticket as a reference only: id, number, title, status.
+func ticketRef(t *models.Ticket) *models.Ticket {
+	if t == nil {
+		return nil
+	}
+	return &models.Ticket{
+		Model:        gorm.Model{ID: t.ID},
+		TicketNumber: t.TicketNumber,
+		Title:        t.Title,
+		Status:       t.Status,
+	}
+}
+
 // hasRecordAccess reports an explicit grant (models.RecordAccess).
 func hasRecordAccess(recordType string, recordID, userID uint) bool {
 	if recordID == 0 || userID == 0 {
@@ -411,8 +568,11 @@ func limitToSubtaskView(t *models.Task, userID uint) {
 	t.AccessLevel = "subtask"
 }
 
-// applySubtaskViews applies limitToSubtaskView to every task in a scoped list
-// that the caller only sees through a subtask.
+// applySubtaskViews sets the access level of every task in a scoped list that
+// the caller doesn't fully see: "granted" (shared with them), "department"
+// (a non-private task of their department — read-only), or the subtask
+// reference view (limitToSubtaskView). Lookups are done once per list, not
+// once per task.
 func applySubtaskViews(c *gin.Context, tasks []models.Task) {
 	v := viewerFrom(c)
 	if v.seesEverything() || len(tasks) == 0 {
@@ -435,20 +595,96 @@ func applySubtaskViews(c *gin.Context, tasks []models.Task) {
 	for _, id := range grantedIDs {
 		granted[id] = true
 	}
+	// Assignees of tasks whose own department isn't the viewer's — needed to
+	// decide the department view without one query per task.
+	assignees := map[uint]*models.User{}
+	if v.usesDeptView() {
+		var ids []uint
+		for i := range tasks {
+			if a := tasks[i].AssigneeID; a != nil && !tasks[i].IsPrivate && !v.inViewerDepts(tasks[i].Department) {
+				ids = append(ids, *a)
+			}
+		}
+		if len(ids) > 0 {
+			var us []models.User
+			database.DB.Select("id", "department", "extra_departments").Where("id IN ?", ids).Find(&us)
+			for i := range us {
+				assignees[us[i].ID] = &us[i]
+			}
+		}
+	}
 	for i := range tasks {
 		var sup *uint
 		if a := tasks[i].AssigneeID; a != nil && team[*a] {
 			id := v.ID
 			sup = &id
 		}
-		if granted[tasks[i].ID] && !taskVisibleTo(v, &tasks[i], sup) {
+		if taskVisibleTo(v, &tasks[i], sup) {
+			continue
+		}
+		if granted[tasks[i].ID] {
 			tasks[i].AccessLevel = "granted"
 			continue
 		}
-		if !taskVisibleTo(v, &tasks[i], sup) {
-			limitToSubtaskView(&tasks[i], v.ID)
+		var assignee *models.User
+		if a := tasks[i].AssigneeID; a != nil {
+			assignee = assignees[*a]
+			if assignee == nil {
+				// Not loaded: the department alone decides (or it's private).
+				assignee = &models.User{}
+			}
+		}
+		if taskInViewerDepts(v, &tasks[i], assignee) {
+			limitToDeptView(&tasks[i])
+			continue
+		}
+		limitToSubtaskView(&tasks[i], v.ID)
+	}
+}
+
+// applyTicketAccessLevels marks the tickets in a scoped list that the caller
+// sees only through their department as "department" (read-only).
+func applyTicketAccessLevels(c *gin.Context, tickets []models.Ticket) {
+	v := viewerFrom(c)
+	if !v.usesDeptView() || len(tickets) == 0 {
+		return
+	}
+	team := map[uint]bool{}
+	if v.Role == "supervisor" {
+		var ids []uint
+		database.DB.Model(&models.User{}).Where("supervisor_id = ?", v.ID).Pluck("id", &ids)
+		for _, id := range ids {
+			team[id] = true
 		}
 	}
+	for i := range tickets {
+		var sup *uint
+		if a := tickets[i].AssignedToID; a != nil && team[*a] {
+			id := v.ID
+			sup = &id
+		}
+		if !ticketVisibleTo(v, &tickets[i], sup) && ticketInViewerDepts(v, &tickets[i]) {
+			tickets[i].AccessLevel = "department"
+		}
+	}
+}
+
+// applyTicketAccessLevel is the single-ticket form.
+func applyTicketAccessLevel(c *gin.Context, t *models.Ticket) {
+	if t != nil && !userCanAccessTicket(c, t) && ticketInViewerDepts(viewerFrom(c), t) {
+		t.AccessLevel = "department"
+	}
+}
+
+// canSetPrivacy: who may mark a task or ticket private or public — its
+// creator, supervisors, admins and the Super Admin. Someone who was only
+// assigned the work can't change who else sees it.
+func canSetPrivacy(v viewer, creatorID *uint) bool {
+	switch v.Role {
+	case "super_admin", "admin", "supervisor":
+		return true
+	}
+	return v.ID != 0 && creatorID != nil && *creatorID == v.ID
 }
 
 // ---- feasibilities ------------------------------------------------------------

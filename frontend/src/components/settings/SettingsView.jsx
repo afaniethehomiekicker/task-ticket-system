@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useApp } from "../../context/AppContext";
+import { useAppSelector } from "../../context/AppContext";
 import {
   Settings,
   Shield,
@@ -27,7 +27,11 @@ export const SettingsView = () => {
     customRoles = ["super_admin", "admin", "supervisor", "staff"],
     createCustomRole,
     deleteCustomRole,
-  } = useApp();
+  } = useAppSelector(s => ({
+    currentUser: s.currentUser, darkMode: s.darkMode, setDarkMode: s.setDarkMode,
+    permissionMatrix: s.permissionMatrix, updateRolePermission: s.updateRolePermission,
+    customRoles: s.customRoles, createCustomRole: s.createCustomRole, deleteCustomRole: s.deleteCustomRole,
+  }));
 
   const isSuperAdmin = currentUser?.role === "super_admin";
 
