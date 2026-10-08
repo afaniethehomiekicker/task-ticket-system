@@ -101,9 +101,10 @@ func CreateSubTask(c *gin.Context) {
 		return
 	}
 
-	priority := input.Priority
-	if priority == "" {
-		priority = "normal"
+	priority, okPriority := normalizeWorkPriority(input.Priority)
+	if !okPriority {
+		c.JSON(http.StatusBadRequest, gin.H{"error": invalidWorkPriorityMsg})
+		return
 	}
 
 	subTask := models.SubTask{
@@ -199,7 +200,12 @@ func UpdateSubTask(c *gin.Context) {
 		updates["status"] = input.Status
 	}
 	if input.Priority != "" {
-		updates["priority"] = input.Priority
+		p, ok := normalizeWorkPriority(input.Priority)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": invalidWorkPriorityMsg})
+			return
+		}
+		updates["priority"] = p
 	}
 	if input.Deadline != "" {
 		updates["deadline"] = input.Deadline

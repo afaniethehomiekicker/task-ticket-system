@@ -236,7 +236,6 @@ export const TicketsView = () => {
         >
           <option value="all">All Priorities</option>
           <option value="critical">Critical</option>
-          <option value="urgent">Urgent</option>
           <option value="high">High</option>
           <option value="normal">Normal</option>
           <option value="low">Low</option>

@@ -473,8 +473,18 @@ export function canWorkTicket(user, t, permissionMatrix = DEFAULT_PERMISSION_MAT
 // and the edit form). "Reopened" only through the Reopen step; while the
 // ticket is away from the department that raised it, finishing it goes
 // through Return, not a status. The current status is always kept.
+// Handling a routed ticket while ALSO being in the department that raised it
+// (home or additional department, e.g. CNOC + Support): they may finish it in
+// place, and the server moves it back to the raising department (mirrors
+// handlesForOrigin / finishInOrigin in ticket_flow_rules.go).
+export function handlesTicketForOrigin(user, t, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  if (!user || !t || !handlesTicketNow(user, t, permissionMatrix)) return false;
+  const origin = ticketOrigin(t);
+  return !!origin && userDepartments(user).some(d => sameDeptName(d, origin));
+}
+
 export function allowedTicketStatuses(user, t, statuses = [], getCategory = () => '', permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
-  const away = isTicketAwayFromOrigin(t) && user?.role !== 'super_admin';
+  const away = isTicketAwayFromOrigin(t) && user?.role !== 'super_admin' && !handlesTicketForOrigin(user, t, permissionMatrix);
   return statuses.filter(st => {
     if (st.key === t?.status) return true;
     if (st.key === 'reopened') return false;

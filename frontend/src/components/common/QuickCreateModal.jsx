@@ -941,7 +941,6 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                   <option value="low">Low</option>
                   <option value="normal">Normal</option>
                   <option value="high">High</option>
-                  <option value="urgent">Urgent</option>
                   <option value="critical">Critical</option>
                 </select>
               </div>
@@ -1039,7 +1038,6 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                     <option value="low">Low</option>
                     <option value="normal">Normal</option>
                     <option value="high">High</option>
-                    <option value="urgent">Urgent</option>
                     <option value="critical">Critical</option>
                   </select>
                 </div>

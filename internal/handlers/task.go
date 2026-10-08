@@ -378,11 +378,17 @@ func CreateTask(c *gin.Context) {
 		department = currentUserDept
 	}
 
+	priority, okPriority := normalizeWorkPriority(input.Priority)
+	if !okPriority {
+		c.JSON(http.StatusBadRequest, gin.H{"error": invalidWorkPriorityMsg})
+		return
+	}
+
 	task := models.Task{
 		TaskNumber:  taskNumber,
 		Title:       input.Title,
 		Description: input.Description,
-		Priority:    input.Priority,
+		Priority:    priority,
 		StoryPoints: input.StoryPoints,
 		ProjectID:   &input.ProjectID,
 		TicketID:    input.TicketID,
@@ -522,7 +528,12 @@ func UpdateTask(c *gin.Context) {
 		updates["description"] = input.Description
 	}
 	if input.Priority != "" {
-		updates["priority"] = input.Priority
+		p, ok := normalizeWorkPriority(input.Priority)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": invalidWorkPriorityMsg})
+			return
+		}
+		updates["priority"] = p
 	}
 	// The edit form always submits the task's current status along with
 	// whatever else changed, so an unchanged status must be a no-op. Otherwise

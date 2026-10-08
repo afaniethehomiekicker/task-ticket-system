@@ -104,6 +104,9 @@ func main() {
 	// Old shared pin flags become per-person pins (spec slide 28).
 	handlers.MigrateSharedPins()
 
+	// "Urgent" priority was removed; existing records become "critical".
+	handlers.MigrateUrgentPriority()
+
 	// Project status follows its tasks; bring existing projects up to date.
 	handlers.SyncAllProjectStatuses()
 	handlers.StartSLAMonitor()

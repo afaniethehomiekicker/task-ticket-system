@@ -277,18 +277,26 @@ export const TaskDetailDrawer = () => {
         onClick={(e) => e.stopPropagation()}
       >
         {/* Drawer Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-300 dark:border-zinc-800 bg-slate-300/40 dark:bg-zinc-900/50">
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-100 dark:bg-indigo-950/80 px-2 py-0.5 rounded">
+        <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-slate-300 dark:border-zinc-800 bg-slate-300/40 dark:bg-zinc-900/50">
+          <div className="min-w-0">
+            {/* Number, then title, then the status / priority / flags row
+                (same layout as the ticket drawer). */}
+            <span className="inline-block font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-100 dark:bg-indigo-950/80 px-2 py-0.5 rounded">
               {task.taskNumber}
             </span>
-            <TaskStatusBadge status={task.status} />
-            <PriorityBadge priority={task.priority} />
-            {task.isPrivate && <PrivateBadge />}
-            {isViewOnly && <DeptViewBadge />}
+            <h2 className="mt-1.5 mb-2 text-lg font-bold text-slate-900 dark:text-zinc-100 break-words">
+              {task.title}
+            </h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <TaskStatusBadge status={task.status} />
+              <PriorityBadge priority={task.priority} />
+              {task.isPrivate && <PrivateBadge />}
+              {isViewOnly && <DeptViewBadge />}
+            </div>
+            <WorkingOnIndicator type="task" record={task} size="md" className="mt-2" />
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
 {canEdit && (
             <button
               id="edit-task-btn"
@@ -379,12 +387,8 @@ export const TaskDetailDrawer = () => {
           )}
           </>)}
 
-          {/* Title & Description */}
+          {/* Description (the title is in the header) */}
           <div>
-            <h2 className="text-lg font-bold text-slate-900 dark:text-zinc-100 mb-2">
-              {task.title}
-            </h2>
-            <WorkingOnIndicator type="task" record={task} size="md" className="mb-2" />
             <div className="p-4 rounded-xl bg-slate-100 dark:bg-zinc-900/60 border border-slate-300 dark:border-zinc-800 text-xs text-slate-800 dark:text-zinc-300 leading-relaxed">
               {task.description || 'No detailed description provided.'}
             </div>

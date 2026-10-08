@@ -520,6 +520,7 @@ func UpdateTicket(c *gin.Context) {
 	}
 
 	updates := map[string]interface{}{}
+	homeNote := "" // set when a dual-department handler finishes it in place
 	if privacyChange {
 		updates["is_private"] = *input.IsPrivate
 	}
@@ -587,6 +588,9 @@ func UpdateTicket(c *gin.Context) {
 			return
 		}
 		applyTicketStatusSideEffects(&ticket, input.Status, updates)
+		if finishInOrigin(viewerFrom(c), &ticket, input.Status, updates) {
+			homeNote = finishedHomeNote(&ticket, input.Status)
+		}
 		if strings.TrimSpace(input.ResolutionSummary) != "" {
 			updates["resolution_summary"] = strings.TrimSpace(input.ResolutionSummary)
 		}
@@ -668,6 +672,9 @@ func UpdateTicket(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update ticket"})
 			return
 		}
+	}
+	if homeNote != "" {
+		flowComment(ticket.ID, viewerFrom(c).ID, homeNote)
 	}
 
 	// Reload for audit
@@ -814,6 +821,10 @@ func UpdateTicketStatus(c *gin.Context) {
 	}
 
 	applyTicketStatusSideEffects(&ticket, input.Status, updates)
+	homeNote := ""
+	if finishInOrigin(viewerFrom(c), &ticket, input.Status, updates) {
+		homeNote = finishedHomeNote(&ticket, input.Status)
+	}
 
 	if input.ResolutionSummary != "" {
 		updates["resolution_summary"] = input.ResolutionSummary
@@ -822,6 +833,9 @@ func UpdateTicketStatus(c *gin.Context) {
 	if err := database.DB.Model(&ticket).Updates(updates).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update status"})
 		return
+	}
+	if homeNote != "" {
+		flowComment(ticket.ID, currentUserID, homeNote)
 	}
 
 	utils.LogAuditWithValues(currentUserID, "status_changed", "ticket", ticket.ID,

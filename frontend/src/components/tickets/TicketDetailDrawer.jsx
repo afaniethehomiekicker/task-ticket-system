@@ -203,10 +203,12 @@ export const TicketDetailDrawer = () => {
         {/* Header */}
         <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-slate-300 dark:border-zinc-800 bg-slate-300/40 dark:bg-zinc-900/50">
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2 mb-1.5">
-              <span className="font-mono text-xs font-bold text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/60 px-2 py-0.5 rounded">
-                {ticket.ticketNumber}
-              </span>
+            {/* Number, then title, then the status / priority / flags row. */}
+            <span className="inline-block font-mono text-xs font-bold text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/60 px-2 py-0.5 rounded">
+              {ticket.ticketNumber}
+            </span>
+            <h2 className="mt-1.5 mb-2 text-lg font-bold text-slate-900 dark:text-zinc-100 break-words">{ticket.title}</h2>
+            <div className="flex flex-wrap items-center gap-2">
               <TicketStatusBadge status={ticket.status} />
               <PriorityBadge priority={ticket.priority} />
               {ticket.isPrivate && <PrivateBadge />}
@@ -217,7 +219,6 @@ export const TicketDetailDrawer = () => {
                 </span>
               )}
             </div>
-            <h2 className="text-lg font-bold text-slate-900 dark:text-zinc-100 break-words">{ticket.title}</h2>
             <WorkingOnIndicator type="ticket" record={ticket} size="md" className="mt-2" />
           </div>
           <div className="flex items-center gap-1 shrink-0">

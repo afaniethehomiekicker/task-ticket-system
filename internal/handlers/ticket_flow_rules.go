@@ -83,6 +83,39 @@ func canWorkTicket(v viewer, t *models.Ticket) bool {
 	return isTicketCreator(v, t) && !isAwayFromOrigin(t)
 }
 
+// handlesForOrigin: someone handling a routed ticket who is ALSO a member of
+// the department that raised it (home or additional department — e.g. a
+// staff member in both CNOC and Support). They speak for both sides, so they
+// may resolve / close / cancel it in place instead of using Return; the
+// ticket then goes home to the raising department (finishInOrigin).
+func handlesForOrigin(v viewer, t *models.Ticket) bool {
+	return handlesTicketNow(v, t) && v.inViewerDepts(originOf(t))
+}
+
+// finishInOrigin: when a handlesForOrigin person finishes a routed ticket
+// through the status dropdown, it moves back to the raising department the
+// same way Return does — so it is with the right team for closing or
+// Reopen, and Reopen knows who did the work. The assignee stays (they are in
+// that department too). Returns true when it applied, so the caller can add
+// a timeline note.
+func finishInOrigin(v viewer, t *models.Ticket, newStatus string, updates map[string]interface{}) bool {
+	cat := statusCategory("ticket", newStatus)
+	if (cat != "done" && cat != "cancelled") || !isAwayFromOrigin(t) || v.Role == "super_admin" || !handlesForOrigin(v, t) {
+		return false
+	}
+	updates["department"] = originOf(t)
+	updates["returned_by_id"] = v.ID
+	updates["returned_from_dept"] = t.Department
+	return true
+}
+
+// finishedHomeNote is the timeline note for finishInOrigin. Call it BEFORE
+// saving: GORM writes the new department back into t on Updates.
+func finishedHomeNote(t *models.Ticket, newStatus string) string {
+	return statusLabel("ticket", newStatus) + " in " + deptName(t.Department) + " and moved back to " + originOf(t) +
+		" (handled by someone in both departments)"
+}
+
 // ticketStatusChangeError checks a status change made through the status
 // dropdown or the edit form (PUT /tickets/:id, PATCH /tickets/:id/status).
 // Returns 0 when allowed.
@@ -104,7 +137,7 @@ func ticketStatusChangeError(c *gin.Context, t *models.Ticket, newStatus string)
 		return http.StatusForbidden, "Only the team currently handling this ticket can change its status"
 	}
 	cat := statusCategory("ticket", newStatus)
-	if (cat == "done" || cat == "cancelled") && isAwayFromOrigin(t) && v.Role != "super_admin" {
+	if (cat == "done" || cat == "cancelled") && isAwayFromOrigin(t) && v.Role != "super_admin" && !handlesForOrigin(v, t) {
 		return http.StatusBadRequest, "This ticket was raised by " + originOf(t) +
 			". When the work is done, use Return to hand it back — " + originOf(t) + " closes it after the client confirms"
 	}
