@@ -5,6 +5,7 @@ import {
   User as UserIcon, Building, Paperclip, MessageSquare, Archive, History
 } from 'lucide-react';
 import { PriorityBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
+import { WorkingOnIndicator } from '../common/WorkingOnIndicator';
 import { canArchiveRecords, canEscalateTicket, canAssignTickets, canViewInternalNotes, canTransferOwnWork, sameDepartmentUsers, isInDepartment, isTaskAssignable, assignedByName, canWorkTicket, allowedTicketStatuses } from '../../utils/permissions';
 
 // Rebuilt from scratch after the original file was overwritten. It reads the
@@ -217,6 +218,7 @@ export const TicketDetailDrawer = () => {
               )}
             </div>
             <h2 className="text-lg font-bold text-slate-900 dark:text-zinc-100 break-words">{ticket.title}</h2>
+            <WorkingOnIndicator type="ticket" record={ticket} size="md" className="mt-2" />
           </div>
           <div className="flex items-center gap-1 shrink-0">
             {!isViewOnly && (

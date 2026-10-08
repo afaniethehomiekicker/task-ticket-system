@@ -6,6 +6,7 @@ import {
   Eye, EyeOff, KeyRound
 } from 'lucide-react';
 import { RoleBadge } from '../common/Badge';
+import { WorkingNowList } from '../common/WorkingOnIndicator';
 import { canManageUsers, getRoleDisplayName, isInDepartment, userDepartments, isStaffRole } from '../../utils/permissions';
 
 export const TeamView = () => {
@@ -413,6 +414,7 @@ export const TeamView = () => {
                         style={{ width: `${Math.min(totalLoad * 20, 100)}%` }}
                       />
                     </div>
+                    <WorkingNowList userId={user.id} />
                   </div>
                 </div>
 

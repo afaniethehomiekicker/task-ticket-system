@@ -13,6 +13,7 @@ import { PrivateBadge, DeptViewBadge } from '../common/PrivateToggle';
 import { exportTasksToCSV } from '../../utils/exportUtils';
 
 import { FilterSelect } from '../common/FilterSelect';
+import { WorkingOnIndicator } from '../common/WorkingOnIndicator';
 export const TasksView = () => {
   const { 
     visibleTasks, 
@@ -396,6 +397,7 @@ export const TasksView = () => {
                             ))}
                           </div>
                         )}
+                        <WorkingOnIndicator type="task" record={t} className="mt-1" />
                       </td>
                       <td className="p-3.5 text-slate-600 dark:text-zinc-400">{project?.code || 'PRJ'}</td>
                       <td className="p-3.5">

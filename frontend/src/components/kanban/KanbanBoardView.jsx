@@ -4,6 +4,7 @@ import { Columns3, Plus, Search, Clock, CheckSquare } from 'lucide-react';
 import { PriorityBadge } from '../common/Badge';
 import { canCreateTask, isStaffRole, isDepartmentView, isLimitedTaskView } from '../../utils/permissions';
 import { PrivateBadge } from '../common/PrivateToggle';
+import { WorkingOnIndicator } from '../common/WorkingOnIndicator';
 
 export const KanbanBoardView = () => {
   const { 
@@ -313,6 +314,8 @@ export const KanbanBoardView = () => {
                           <h4 className="text-xs font-semibold text-slate-900 dark:text-zinc-100 line-clamp-2 mb-2 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition">
                             {task.title || 'Untitled Task'}
                           </h4>
+
+                          <WorkingOnIndicator type="task" record={task} className="mb-2" />
 
                           {taskLabels.length > 0 && (
                             <div className="flex flex-wrap gap-1 mb-3">

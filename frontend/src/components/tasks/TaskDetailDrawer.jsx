@@ -5,6 +5,7 @@ import {
   Send, UserCheck, ShieldAlert, CheckCircle, RotateCcw, AlertTriangle, Trash2, Edit, Link2, XCircle, Archive, Lock
 } from 'lucide-react';
 import { PriorityBadge, TaskStatusBadge, RoleBadge } from '../common/Badge';
+import { WorkingOnIndicator } from '../common/WorkingOnIndicator';
 
 import { canApproveWork, canArchiveRecords, canViewInternalNotes, canAssignTickets, canGrantRecordAccess, canTransferOwnWork, sameDepartmentUsers, isTaskAssignable, assignedByName } from '../../utils/permissions';
 
@@ -383,6 +384,7 @@ export const TaskDetailDrawer = () => {
             <h2 className="text-lg font-bold text-slate-900 dark:text-zinc-100 mb-2">
               {task.title}
             </h2>
+            <WorkingOnIndicator type="task" record={task} size="md" className="mb-2" />
             <div className="p-4 rounded-xl bg-slate-100 dark:bg-zinc-900/60 border border-slate-300 dark:border-zinc-800 text-xs text-slate-800 dark:text-zinc-300 leading-relaxed">
               {task.description || 'No detailed description provided.'}
             </div>

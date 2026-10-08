@@ -5,6 +5,7 @@ import {
   Paperclip, Plus, ArrowRight, TrendingUp, AlertCircle, Edit, Trash2, Archive, Upload, ShieldAlert, UserPlus, UserMinus, Check
 } from 'lucide-react';
 import { PriorityBadge, ProjectStatusBadge, TaskStatusBadge, TicketStatusBadge, RoleBadge } from '../common/Badge';
+import { WorkingOnIndicator } from '../common/WorkingOnIndicator';
 import { canCreateTask, formatBudget, formatDate, canCreateProject, canArchiveRecords, isStaffRole } from '../../utils/permissions';
 import { TeamWorkloadModal } from './TeamWorkloadModal';
 import { ProjectActivityLog } from './ProjectActivityLog';
@@ -231,6 +232,7 @@ export const ProjectDetailModal = () => {
             >
               <Pin className="w-4 h-4 fill-current" />
             </button>
+            <WorkingOnIndicator type="project" record={project} size="md" className="shrink-0" />
           </div>
 
           <div className="flex items-center gap-2">

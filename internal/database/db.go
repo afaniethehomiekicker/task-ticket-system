@@ -116,6 +116,8 @@ func ConnectDB() {
 		&models.Notification{},
 		// Per-person pins (spec slide 28).
 		&models.Pin{},
+		// "I'm working on this" markers on tasks / tickets / projects.
+		&models.WorkSession{},
 		// Uploaded documents / evidence (spec slides 25, 27).
 		&models.Document{},
 		// Missing from this list the same way FeasibilityVendor/

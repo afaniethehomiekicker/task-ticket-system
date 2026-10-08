@@ -12,6 +12,7 @@ import { assignedByName, ticketSlaState, isStaffRole, isDepartmentView } from '.
 import { clientOptionsFromTickets } from '../../utils/clientOptions';
 import { PrivateBadge, DeptViewBadge } from '../common/PrivateToggle';
 import { FilterSelect } from '../common/FilterSelect';
+import { WorkingOnIndicator } from '../common/WorkingOnIndicator';
 export const TicketsView = () => {
   const { 
     visibleTickets, 
@@ -367,6 +368,7 @@ export const TicketsView = () => {
                             </>
                           )}
                         </div>
+                        <WorkingOnIndicator type="ticket" record={t} className="mt-1" />
                       </td>
                       <td className="p-3.5 text-indigo-600 dark:text-indigo-400 font-medium">
                         {t.category}

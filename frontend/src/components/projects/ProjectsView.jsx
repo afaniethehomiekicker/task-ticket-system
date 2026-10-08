@@ -10,6 +10,7 @@ import { clientOptionsFromProjects } from '../../utils/clientOptions';
 import { exportProjectsToCSV } from '../../utils/exportUtils';
 
 import { FilterSelect } from '../common/FilterSelect';
+import { WorkingOnIndicator } from '../common/WorkingOnIndicator';
 export const ProjectsView = () => {
   const { 
     visibleProjects, 
@@ -218,9 +219,10 @@ export const ProjectsView = () => {
                   <h3 className="text-sm font-bold text-slate-900 dark:text-zinc-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition line-clamp-1 mb-1.5">
                     {project.title}
                   </h3>
-                  <p className="text-xs text-slate-600 dark:text-zinc-400 line-clamp-2 leading-relaxed mb-4">
+                  <p className="text-xs text-slate-600 dark:text-zinc-400 line-clamp-2 leading-relaxed mb-3">
                     {project.description}
                   </p>
+                  <WorkingOnIndicator type="project" record={project} className="mb-3" />
                 </div>
 
                 <div>
@@ -303,6 +305,7 @@ export const ProjectsView = () => {
                     </td>
                     <td className="p-3.5 font-semibold text-slate-900 dark:text-zinc-100">
                       {p.title}
+                      <WorkingOnIndicator type="project" record={p} className="mt-1 block font-normal" />
                     </td>
                     <td className="p-3.5">{p.department}</td>
                     <td className="p-3.5"><ProjectStatusBadge status={p.status} /></td>

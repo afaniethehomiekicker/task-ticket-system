@@ -18,6 +18,36 @@ export const getBackendId = (rawId) => {
   return match ? parseInt(match[0], 10) : null;
 };
 
+// --- "I'm working on this" markers -------------------------------------------
+export const EMPTY_WORK_SESSIONS = Object.freeze({ list: [], byRecord: {}, byUser: {} });
+
+const normalizeWorkSession = (raw) => {
+  if (!raw || !raw.record_type || !raw.record_id || !raw.user_id) return null;
+  return {
+    id: raw.id,
+    userId: raw.user_id,
+    recordType: raw.record_type,
+    recordId: raw.record_id,
+    startedAt: raw.started_at || '',
+    recordNumber: raw.record_number || '',
+    recordTitle: raw.record_title || '',
+    recordStatus: raw.record_status || '',
+    userName: raw.user_name || '',
+    userAvatar: raw.user_avatar || '',
+  };
+};
+
+const indexWorkSessions = (list) => {
+  const byRecord = {};
+  const byUser = {};
+  for (const w of list) {
+    const rk = `${w.recordType}:${w.recordId}`;
+    (byRecord[rk] = byRecord[rk] || []).push(w);
+    (byUser[w.userId] = byUser[w.userId] || []).push(w);
+  }
+  return { list, byRecord, byUser };
+};
+
 // --- User shape translation ------------------------------------------------
 //
 // The Go backend is the ONLY source of user data. What's needed here is
@@ -1740,6 +1770,127 @@ export const AppProvider = ({ children }) => {
     if (type === 'ticket') setTicketsVersion(v => v + 1);
     if (type === 'task') setTasksVersion(v => v + 1);
     return true;
+  };
+
+  // ---- "I'm working on this" markers (tasks / tickets / projects) ----
+  // Who is actively working on what right now. A person marks a task or
+  // ticket assigned to them, or a project they're a member of; everyone who
+  // can see that record sees the marker. The server clears a marker once the
+  // record is finished / cancelled / archived or the person is no longer on
+  // it (handlers/working.go).
+  //   workSessions.byRecord  "type:id" -> [session]   (badges next to records)
+  //   workSessions.byUser    userId    -> [session]   (Team view)
+  const [workSessions, setWorkSessions] = useState(EMPTY_WORK_SESSIONS);
+  const workSigRef = useRef('');
+
+  const applyWorkSessions = (list) => {
+    // Re-render only when something actually changed: this is polled.
+    const sig = list.map(w => `${w.recordType}:${w.recordId}:${w.userId}:${w.recordStatus}`).sort().join('|');
+    if (sig === workSigRef.current) return;
+    workSigRef.current = sig;
+    setWorkSessions(indexWorkSessions(list));
+  };
+
+  const loadWorkSessions = async () => {
+    try {
+      const res = await apiFetch('/api/working');
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      applyWorkSessions((data.sessions || []).map(normalizeWorkSession).filter(Boolean));
+    } catch {
+      // try again on the next poll
+    }
+  };
+
+  // Load on sign-in, then every 30 seconds while the tab is visible.
+  useEffect(() => {
+    if (!currentUserId) {
+      workSigRef.current = '';
+      setWorkSessions(EMPTY_WORK_SESSIONS);
+      return undefined;
+    }
+    loadWorkSessions();
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') loadWorkSessions();
+    }, 30000);
+    const onVisible = () => { if (document.visibilityState === 'visible') loadWorkSessions(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUserId]);
+
+  // A status change, reassignment, route or membership change can clear
+  // markers on the server: re-check shortly after the lists change.
+  useEffect(() => {
+    if (!currentUserId) return undefined;
+    const t = setTimeout(loadWorkSessions, 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks, tickets, projects]);
+
+  const workErrorMessage = async (res, fallback) => {
+    const data = await res.json().catch(() => ({}));
+    return data.error || fallback;
+  };
+
+  // Returns { ok: true } or { ok: false, error }.
+  const startWorking = async (type, id) => {
+    const bid = getBackendId(id);
+    if (!bid || !currentUser) return { ok: false, error: 'Nothing to mark' };
+    const optimistic = {
+      id: `tmp-${type}-${bid}`,
+      userId: currentUser.id,
+      recordType: type,
+      recordId: bid,
+      startedAt: new Date().toISOString(),
+      recordNumber: '',
+      recordTitle: '',
+      recordStatus: '',
+      userName: currentUser.name || '',
+      userAvatar: currentUser.avatar || '',
+    };
+    setWorkSessions(prev => indexWorkSessions([
+      ...prev.list.filter(w => !(w.recordType === type && String(w.recordId) === String(bid) && String(w.userId) === String(currentUser.id))),
+      optimistic,
+    ]));
+    workSigRef.current = '';
+    try {
+      const res = await apiFetch(`/api/working/${type}/${bid}`, { method: 'PUT' });
+      if (!res.ok) {
+        const error = await workErrorMessage(res, 'Could not mark this as being worked on');
+        await loadWorkSessions();
+        return { ok: false, error };
+      }
+    } catch {
+      await loadWorkSessions();
+      return { ok: false, error: 'Could not reach the server' };
+    }
+    await loadWorkSessions();
+    return { ok: true };
+  };
+
+  const stopWorking = async (type, id) => {
+    const bid = getBackendId(id);
+    if (!bid || !currentUser) return { ok: false, error: 'Nothing to clear' };
+    setWorkSessions(prev => indexWorkSessions(prev.list.filter(w =>
+      !(w.recordType === type && String(w.recordId) === String(bid) && String(w.userId) === String(currentUser.id)))));
+    workSigRef.current = '';
+    try {
+      const res = await apiFetch(`/api/working/${type}/${bid}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const error = await workErrorMessage(res, 'Could not clear the marker');
+        await loadWorkSessions();
+        return { ok: false, error };
+      }
+    } catch {
+      await loadWorkSessions();
+      return { ok: false, error: 'Could not reach the server' };
+    }
+    await loadWorkSessions();
+    return { ok: true };
   };
 
   const withPins = (list, type) => (list || []).map(r =>
@@ -4760,6 +4911,10 @@ export const AppProvider = ({ children }) => {
         feasibilityProducts,
         togglePin,
         isPinnedFor,
+        workSessions,
+        startWorking,
+        stopWorking,
+        refreshWorkSessions: loadWorkSessions,
         userNotifications,
         unreadNotificationCount,
         setCurrentUserId,

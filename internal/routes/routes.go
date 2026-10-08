@@ -243,6 +243,10 @@ func RegisterRoutes(r *gin.Engine) {
 			protected.GET("/pins", handlers.GetPins)
 			protected.PUT("/pins/:type/:id", handlers.AddPin)
 			protected.DELETE("/pins/:type/:id", handlers.RemovePin)
+			// "I'm working on this" markers (working.go).
+			protected.GET("/working", handlers.GetWorkSessions)
+			protected.PUT("/working/:type/:id", handlers.StartWorkSession)
+			protected.DELETE("/working/:type/:id", handlers.StopWorkSession)
 			protected.GET("/notifications", handlers.GetNotifications)
 			protected.PATCH("/notifications/:id/read", handlers.MarkNotificationRead)
 			protected.POST("/notifications/read-all", handlers.MarkAllNotificationsRead)

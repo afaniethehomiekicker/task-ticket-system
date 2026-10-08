@@ -670,6 +670,21 @@ type Pin struct {
 	RecordID   uint      `gorm:"not null;uniqueIndex:idx_pin" json:"record_id"`
 }
 
+// WorkSession — "I'm working on this right now". One row per person per
+// record they have marked as actively in progress; a person can have several
+// at once. Only the record's assignee (task / ticket) or a project member can
+// start one, and everyone who can already see the record sees the marker.
+// Rows clear themselves (pruneWorkSessions in handlers/working.go) once the
+// record is finished, cancelled, archived or deleted, or the person is no
+// longer its assignee / a project member.
+type WorkSession struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	StartedAt  time.Time `gorm:"not null" json:"started_at"`
+	UserID     uint      `gorm:"not null;uniqueIndex:idx_work_session;index" json:"user_id"`
+	RecordType string    `gorm:"size:20;not null;uniqueIndex:idx_work_session;index:idx_work_session_record" json:"record_type"` // task | ticket | project
+	RecordID   uint      `gorm:"not null;uniqueIndex:idx_work_session;index:idx_work_session_record" json:"record_id"`
+}
+
 // Document is one uploaded file (spec slide 27: "Upload PDFs, images,
 // screenshots, network diagrams, and supporting documents — tracked with who
 // uploaded it, when, on which record, with version history"; slide 25:
