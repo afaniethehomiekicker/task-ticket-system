@@ -81,6 +81,7 @@ export const FeasibilityDetailDrawer = () => {
   const [vendorForm, setVendorForm] = useState({ vendorName: '', contactPerson: '', contactEmail: '', contactPhone: '', quotationRef: '' });
   const vendorList = useVendorList(apiFetch);
   const [showConvert, setShowConvert] = useState(false);
+  const [convertError, setConvertError] = useState('');
   const [convertForm, setConvertForm] = useState({ projectTitle: '', projectDescription: '', projectPriority: 'normal' });
 
   if (!selectedFeasibilityId) return null;
@@ -90,7 +91,8 @@ export const FeasibilityDetailDrawer = () => {
   const canManage = canCreateProject(currentUser, permissionMatrix);
   const isClosedOut = feasibility.status === 'converted' || feasibility.status === 'cancelled';
   const vendors = feasibility.vendors || [];
-  const feasibleCount = vendors.filter(v => v.status === 'feasible').length;
+  // Withdrawn vendors don't count (same rule as the server).
+  const feasibleCount = vendors.filter(v => v.status === 'feasible' && !v.withdrawn).length;
 
   const close = () => setSelectedFeasibilityId(null);
 
@@ -177,13 +179,15 @@ export const FeasibilityDetailDrawer = () => {
     e.preventDefault();
     if (!convertForm.projectTitle.trim()) return;
     setIsBusy(true);
-    await convertFeasibilityToProject(feasibility.id, {
+    setConvertError('');
+    const res = await convertFeasibilityToProject(feasibility.id, {
       project_title: convertForm.projectTitle.trim(),
       project_description: convertForm.projectDescription.trim(),
       project_priority: convertForm.projectPriority,
     });
     setIsBusy(false);
-    setShowConvert(false);
+    if (res?.ok) setShowConvert(false);
+    else setConvertError(res?.error || 'Conversion failed');
   };
 
   const handleArchive = async () => {
@@ -329,7 +333,12 @@ export const FeasibilityDetailDrawer = () => {
               {!isClosedOut && (
                 <button
                   type="button"
-                  onClick={() => setShowAddVendor(v => !v)}
+                  onClick={() => {
+                    // Opening the form: reload the vendor list so vendors
+                    // just added on the Vendors page are offered.
+                    if (!showAddVendor) invalidateVendorList();
+                    setShowAddVendor(v => !v);
+                  }}
                   className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" /> Add vendor
@@ -483,8 +492,10 @@ export const FeasibilityDetailDrawer = () => {
               {canManage && !isClosedOut && !showConvert && (
                 <button
                   type="button"
-                  onClick={() => { setShowConvert(true); setConvertForm(f => ({ ...f, projectTitle: f.projectTitle || `${feasibility.product} — ${feasibility.city}` })); }}
-                  className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                  disabled={feasibleCount === 0}
+                  title={feasibleCount === 0 ? 'Mark at least one vendor as Feasible first' : undefined}
+                  onClick={() => { setConvertError(''); setShowConvert(true); setConvertForm(f => ({ ...f, projectTitle: f.projectTitle || `${feasibility.product} — ${feasibility.city}` })); }}
+                  className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer"
                 >
                   <ArrowRightCircle className="w-3.5 h-3.5" /> Convert to Project
                 </button>
@@ -502,6 +513,16 @@ export const FeasibilityDetailDrawer = () => {
             </div>
           </div>
 
+          {canManage && !isClosedOut && feasibleCount === 0 && (
+            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+              To convert to a project, at least one vendor must be marked <b>Feasible</b> (set the vendor's status above).
+            </p>
+          )}
+          {!canManage && !isClosedOut && (
+            <p className="text-[11px] text-slate-500 dark:text-zinc-400">
+              Converting to a project needs the "Create Projects" permission.
+            </p>
+          )}
           {showConvert && (
             <form onSubmit={handleConvert} className="space-y-2 p-3 rounded-xl bg-purple-50 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-900">
               <input
@@ -518,8 +539,9 @@ export const FeasibilityDetailDrawer = () => {
                 onChange={(e) => setConvertForm({ ...convertForm, projectDescription: e.target.value })}
                 className="w-full px-3 py-2 text-xs rounded-lg border border-purple-300 dark:border-purple-800 bg-white dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 focus:outline-hidden resize-none"
               />
+              {convertError && <p className="text-xs text-rose-600 dark:text-rose-400">{convertError}</p>}
               <div className="flex items-center gap-2 justify-end">
-                <button type="button" onClick={() => setShowConvert(false)} disabled={isBusy} className="px-3 py-1.5 text-xs text-slate-600 dark:text-zinc-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer disabled:opacity-60">Cancel</button>
+                <button type="button" onClick={() => { setShowConvert(false); setConvertError(''); }} disabled={isBusy} className="px-3 py-1.5 text-xs text-slate-600 dark:text-zinc-400 hover:bg-slate-300/60 dark:hover:bg-zinc-800 rounded-lg cursor-pointer disabled:opacity-60">Cancel</button>
                 <button type="submit" disabled={isBusy || !convertForm.projectTitle.trim()} className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-60 text-white rounded-lg text-xs font-semibold cursor-pointer">
                   {isBusy ? 'Converting...' : 'Confirm conversion'}
                 </button>

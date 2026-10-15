@@ -118,6 +118,14 @@ func ConnectDB() {
 		&models.Pin{},
 		// "I'm working on this" markers on tasks / tickets / projects.
 		&models.WorkSession{},
+		// Client CRM change history (services, IP / Transmission plans).
+		&models.ClientRecordChange{},
+		// Client products & services (client CRM step 2).
+		&models.ClientService{},
+		// IP Plan / Transmission Plan rows (client CRM steps 3–4).
+		&models.ClientPlanRow{},
+		// Plan sheet column titles renamed by the Super Admin.
+		&models.PlanColumnLabel{},
 		// Uploaded documents / evidence (spec slides 25, 27).
 		&models.Document{},
 		// Missing from this list the same way FeasibilityVendor/

@@ -694,6 +694,31 @@ func canSetPrivacy(v viewer, creatorID *uint) bool {
 // feasibility if it's assigned to you or you raised it; a supervisor also
 // sees their team's; a department admin sees their department's (plus any
 // assigned to or raised by them); super_admin sees everything.
+//
+// Department-wide (like tasks and tickets): staff and supervisors also see
+// every feasibility of each department they belong to — home and
+// additional departments. A feasibility belongs to a department when it's
+// assigned to that department, or raised by / assigned to someone in it
+// (a feasibility raised by a CNOC member with no department set is a CNOC
+// feasibility).
+
+// feasibilityDeptClause: feasibilities of the viewer's departments. Empty
+// when the viewer doesn't get department-wide visibility.
+func feasibilityDeptClause(v viewer) (string, []interface{}) {
+	if !v.usesDeptView() {
+		return "", nil
+	}
+	depts := v.depts()
+	deptSQL, deptA := colInDeptsSQL("feasibilities.assigned_dept", depts)
+	memSQL, memA := usersInAnyDeptSQL(depts)
+	members := "(SELECT users.id FROM users WHERE " + memSQL + " AND users.deleted_at IS NULL)"
+	clause := "(" + deptSQL + " OR feasibilities.created_by_id IN " + members + " OR feasibilities.assigned_user_id IN " + members + ")"
+	args := make([]interface{}, 0, len(deptA)+2*len(memA))
+	args = append(args, deptA...)
+	args = append(args, memA...)
+	args = append(args, memA...)
+	return clause, args
+}
 
 func feasibilityScopeClause(v viewer) (string, []interface{}) {
 	switch {
@@ -703,10 +728,12 @@ func feasibilityScopeClause(v viewer) (string, []interface{}) {
 		return "(LOWER(feasibilities.assigned_dept) = LOWER(?) OR feasibilities.assigned_user_id = ? OR feasibilities.created_by_id = ?)",
 			[]interface{}{v.Dept, v.ID, v.ID}
 	case v.Role == "supervisor":
-		return "(feasibilities.assigned_user_id = ? OR feasibilities.created_by_id = ? OR feasibilities.assigned_user_id IN (SELECT id FROM users WHERE supervisor_id = ? AND deleted_at IS NULL))",
-			[]interface{}{v.ID, v.ID, v.ID}
+		dc, da := feasibilityDeptClause(v)
+		return orScope("(feasibilities.assigned_user_id = ? OR feasibilities.created_by_id = ? OR feasibilities.assigned_user_id IN (SELECT id FROM users WHERE supervisor_id = ? AND deleted_at IS NULL))",
+			[]interface{}{v.ID, v.ID, v.ID}, dc, da)
 	default:
-		return "(feasibilities.assigned_user_id = ? OR feasibilities.created_by_id = ?)", []interface{}{v.ID, v.ID}
+		dc, da := feasibilityDeptClause(v)
+		return orScope("(feasibilities.assigned_user_id = ? OR feasibilities.created_by_id = ?)", []interface{}{v.ID, v.ID}, dc, da)
 	}
 }
 
@@ -740,7 +767,34 @@ func userCanAccessFeasibility(c *gin.Context, f *models.Feasibility) bool {
 	if v.Role == "supervisor" {
 		sup = supervisorOf(f.AssignedUserID)
 	}
-	return feasibilityVisibleTo(v, f, sup)
+	if feasibilityVisibleTo(v, f, sup) {
+		return true
+	}
+	return feasibilityInViewerDepts(v, f)
+}
+
+// feasibilityInViewerDepts: the single-record form of feasibilityDeptClause.
+func feasibilityInViewerDepts(v viewer, f *models.Feasibility) bool {
+	if !v.usesDeptView() || f == nil {
+		return false
+	}
+	if v.inViewerDepts(f.AssignedDept) {
+		return true
+	}
+	var ids []uint
+	for _, id := range []*uint{f.CreatedByID, f.AssignedUserID} {
+		if id != nil && *id != 0 {
+			ids = append(ids, *id)
+		}
+	}
+	if len(ids) == 0 {
+		return false
+	}
+	memSQL, memA := usersInAnyDeptSQL(v.depts())
+	args := append([]interface{}{ids}, memA...)
+	var n int64
+	database.DB.Model(&models.User{}).Where("users.id IN ? AND "+memSQL, args...).Count(&n)
+	return n > 0
 }
 
 // ---- project as a reference (spec slide 14) ------------------------------------

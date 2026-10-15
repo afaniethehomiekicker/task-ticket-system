@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
 	"task-ticket-backend/internal/database"
 	"task-ticket-backend/internal/models"
@@ -91,7 +92,10 @@ func GetClientOverview(c *gin.Context) {
 	fq := database.DB.Model(&models.Feasibility{}).
 		Where("feasibilities.client_id = ? AND feasibilities.status <> ?", client.ID, "archived")
 	fq = applyFeasibilityScope(fq, v)
-	fq.Order("feasibilities.updated_at DESC").Find(&feas)
+	// Vendors checked on each feasibility, with their result (client CRM
+	// step 5: "vendors checked, current status and results").
+	fq.Preload("Vendors", func(db *gorm.DB) *gorm.DB { return db.Order("feasibility_vendors.id ASC") }).
+		Order("feasibilities.updated_at DESC").Find(&feas)
 
 	fillProjectProgress(projects)
 
@@ -176,6 +180,7 @@ func GetClientOverview(c *gin.Context) {
 	aq.Order("audit_logs.created_at DESC, audit_logs.id DESC").Limit(30).Find(&activity)
 
 	c.JSON(http.StatusOK, gin.H{
+		"crm":           clientCRMSummary(c, client.ID),
 		"client":        client,
 		"counts":        counts,
 		"projects":      projects,
@@ -184,4 +189,50 @@ func GetClientOverview(c *gin.Context) {
 		"recent_tasks":  tasks,
 		"activity":      activity,
 	})
+}
+
+// crmSummary — the client CRM numbers on the 360° view (step 5). Plan
+// numbers are only filled in for people who may view the plans.
+type crmSummary struct {
+	ServicesInUse     int64 `json:"services_in_use"`
+	ServicesClosed    int64 `json:"services_closed"`
+	ThroughUs         int64 `json:"through_us"`
+	DirectWithClient  int64 `json:"direct_with_client"`
+	VendorsInUse      int64 `json:"vendors_in_use"`
+	CanViewPlans      bool  `json:"can_view_plans"`
+	IPPlanRows        int64 `json:"ip_plan_rows"`
+	BGPPlanRows       int64 `json:"bgp_plan_rows"`
+	TransmissionRows  int64 `json:"transmission_rows"` // core
+	ClientTxRows      int64 `json:"client_transmission_rows"`
+	PlanChanges30Days int64 `json:"plan_changes_30_days"`
+}
+
+func clientCRMSummary(c *gin.Context, clientID uint) crmSummary {
+	var s crmSummary
+	svc := func() *gorm.DB { return database.DB.Model(&models.ClientService{}).Where("client_id = ?", clientID) }
+	svc().Where("status <> ?", "closed").Count(&s.ServicesInUse)
+	svc().Where("status = ?", "closed").Count(&s.ServicesClosed)
+	svc().Where("status <> ? AND arrangement = ?", "closed", "through_us").Count(&s.ThroughUs)
+	svc().Where("status <> ? AND arrangement = ?", "closed", "direct").Count(&s.DirectWithClient)
+	database.DB.Raw(`SELECT COUNT(DISTINCT LOWER(vendor_name)) FROM client_services
+		WHERE client_id = ? AND status <> 'closed' AND vendor_name <> ''`, clientID).Scan(&s.VendorsInUse)
+
+	if canViewNetworkPlans(c) {
+		s.CanViewPlans = true
+		rows := func(plan string) *gorm.DB {
+			return database.DB.Model(&models.ClientPlanRow{}).Where("client_id = ? AND plan_type = ? AND removed = ?", clientID, plan, false)
+		}
+		rows("ip").Count(&s.IPPlanRows)
+		rows("bgp").Count(&s.BGPPlanRows)
+		rows("transmission").Count(&s.TransmissionRows)
+		rows("tx_client").Count(&s.ClientTxRows)
+		// Saves in the last 30 days: one save writes several history rows
+		// with the same ticket, person and minute.
+		database.DB.Raw(`SELECT COUNT(*) FROM (
+			SELECT DISTINCT ticket_id, changed_by_id, date_trunc('minute', created_at)
+			FROM client_record_changes
+			WHERE client_id = ? AND record_type IN ('ip_plan', 'bgp_plan', 'transmission_plan', 'client_transmission_plan') AND created_at >= ?
+		) saves`, clientID, time.Now().AddDate(0, 0, -30)).Scan(&s.PlanChanges30Days)
+	}
+	return s
 }

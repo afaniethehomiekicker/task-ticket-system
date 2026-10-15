@@ -2,9 +2,18 @@ import { useEffect, useState } from 'react';
 
 // Shared, cached copy of the active vendor list (GET /api/vendors) for
 // vendor pickers. The Vendors page calls invalidateVendorList() after any
-// change so pickers see it next time they open.
+// change, and the feasibility "Add vendor" form refreshes it every time it
+// opens, so a vendor added on the Vendors page (in this tab, another tab, or
+// by someone else) is always offered.
+//
+// The cache used to live for the whole session and also kept an empty list
+// when the first request failed (e.g. it ran before sign-in finished), so
+// vendors added later never showed up in the picker until a full reload.
+
+const MAX_AGE_MS = 60 * 1000;
 
 let cache = null;        // Promise<Array> | null
+let cachedAt = 0;
 const listeners = new Set();
 
 export const normalizeVendor = (raw) => {
@@ -32,14 +41,19 @@ export const normalizeVendor = (raw) => {
 };
 
 const load = (apiFetch) => {
-  if (!cache) {
-    cache = apiFetch('/api/vendors')
-      .then((r) => (r.ok ? r.json() : { vendors: [] }))
+  if (!cache || Date.now() - cachedAt > MAX_AGE_MS) {
+    cachedAt = Date.now();
+    const p = apiFetch('/api/vendors')
+      .then((r) => {
+        if (!r.ok) throw new Error(`vendors: HTTP ${r.status}`);
+        return r.json();
+      })
       .then((d) => (d.vendors || []).map(normalizeVendor).filter(Boolean))
       .catch(() => {
-        cache = null; // retry next time
+        if (cache === p) cache = null; // never keep a failed load — retry next time
         return [];
       });
+    cache = p;
   }
   return cache;
 };

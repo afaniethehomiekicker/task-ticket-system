@@ -3,19 +3,15 @@ import { useAppSelector } from "../../context/AppContext";
 
 import AsyncSelect from "react-select/async";
 
-const TICKET_CATEGORIES = [
-  "Technical Support",
-  "Bug Report",
-  "Feature Request",
-  "Billing & Account",
-  "General Inquiry",
-  "Generic",
-];
+
 
 import { CustomFieldInputs } from '../Clients/CustomFieldInputs';
 import { isTaskAssignable, isInDepartment } from '../../utils/permissions';
 import { PrivateToggle } from './PrivateToggle';
 import { CitySelect } from './CitySelect';
+import { TICKET_CATEGORIES } from '../../utils/ticketCategories';
+import { FeasibilityVendorPicker } from '../feasibilities/FeasibilityVendorPicker';
+import { invalidateVendorList } from '../vendors/vendorList';
 import { feasibilityProductOptions, matchExistingProduct, MAX_PRODUCT_LENGTH, MAX_SUBJECT_LENGTH } from '../../utils/feasibilityProducts';
 export const QuickCreateModal = ({ isOpen, onClose }) => {
   const {
@@ -145,6 +141,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
   const [feasRequirementDetails, setFeasRequirementDetails] = useState("");
   const [feasPriority, setFeasPriority] = useState("normal");
   const [feasTargetDate, setFeasTargetDate] = useState("");
+  const [feasVendors, setFeasVendors] = useState([]);
   const [isSubmittingFeasibility, setIsSubmittingFeasibility] = useState(false);
   // Guards project/task/ticket submits against double-clicks while the
   // request is in flight (client/feasibility have their own flags above).
@@ -387,6 +384,7 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
     setFeasRequirementDetails("");
     setFeasPriority("normal");
     setFeasTargetDate("");
+    setFeasVendors([]);
   };
 
   const handleSubmit = async (e) => {
@@ -527,10 +525,19 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
         requirementDetails: feasRequirementDetails.trim(),
         priority: feasPriority,
         targetDate: feasTargetDate || "",
+        vendors: feasVendors.map(v => ({
+          vendorId: v.vendorId,
+          vendorName: v.vendorName,
+          contactPerson: v.contactPerson,
+          contactEmail: v.contactEmail,
+          contactPhone: v.contactPhone,
+        })),
       });
       setIsSubmittingFeasibility(false);
 
       if (!created) return;
+      // New vendor names were just added to the vendor list.
+      if (feasVendors.some(v => !v.vendorId)) invalidateVendorList();
     }
 
     resetAllFields();
@@ -1430,6 +1437,8 @@ export const QuickCreateModal = ({ isOpen, onClose }) => {
                   className="w-full px-3.5 py-2 rounded-lg border border-slate-300 dark:border-zinc-700 bg-slate-100 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
                 />
               </div>
+
+              <FeasibilityVendorPicker value={feasVendors} onChange={setFeasVendors} />
 
               <div className="flex justify-end gap-3 pt-4 border-t border-slate-300 dark:border-zinc-800">
                 <button

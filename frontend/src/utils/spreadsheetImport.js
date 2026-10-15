@@ -75,6 +75,13 @@ export async function downloadProblemRows({ columns, rows, sheetName, fileName }
   downloadBlob(blob, fileName);
 }
 
+// Downloads a table as an Excel workbook. columns: [{ label, width }],
+// rows: arrays of cell values in column order.
+export async function downloadTableAsExcel({ columns, rows, sheetName, fileName }) {
+  const blob = await runWorker('table', { columns, rows, sheetName: (sheetName || 'Sheet1').slice(0, 31) });
+  downloadBlob(blob, fileName);
+}
+
 // A random key identifying one import attempt (see handlers/import.go). Uses
 // getRandomValues, which unlike randomUUID also works on plain-HTTP pages.
 export function newIdempotencyKey() {

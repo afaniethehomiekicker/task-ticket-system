@@ -90,7 +90,21 @@ async function problems({ columns, rows, sheetName }) {
   }).toBlob();
 }
 
-const jobs = { parse, template, problems };
+// A plain data export (e.g. a client's IP Plan): one sheet, every value
+// written as text so nothing can turn into a formula.
+async function table({ columns, rows, sheetName }) {
+  const data = [
+    columns.map(c => ({ value: c.label, ...HEADER_STYLE })),
+    ...rows.map(r => r.map(v => ({ value: v == null ? '' : String(v), type: String, format: '@' }))),
+  ];
+  return writeExcelFile(data, {
+    sheet: sheetName,
+    columns: columns.map(c => ({ width: c.width || 18 })),
+    stickyRowsCount: 1,
+  }).toBlob();
+}
+
+const jobs = { parse, template, problems, table };
 
 self.onmessage = async (e) => {
   const { type, payload } = e.data || {};

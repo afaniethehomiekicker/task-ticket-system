@@ -38,6 +38,13 @@ var AllPermissionKeys = []string{
 	"create_clients",
 	"view_admin_clients",
 	"edit_admin_clients_30min",
+	// Client CRM (client_crm*.go): products & services, and the per-client
+	// IP Plan / Transmission Plan sheets. The Super Admin decides who gets
+	// these in the matrix.
+	"manage_client_services",
+	"view_network_plans",
+	"edit_network_plans",
+	"view_plan_passwords",
 }
 
 var PermissionLabels = map[string]string{
@@ -60,6 +67,10 @@ var PermissionLabels = map[string]string{
 	"create_clients":            "Create Clients",
 	"view_admin_clients":        "View Clients Added by Admins",
 	"edit_admin_clients_30min":  "Edit Admin-Added Clients (30 min, then on approval)",
+	"manage_client_services":    "Manage Client Products & Services",
+	"view_network_plans":        "View Client IP & Transmission Plans",
+	"edit_network_plans":        "Edit Client IP & Transmission Plans",
+	"view_plan_passwords":       "View Transmission Plan Passwords",
 }
 
 var roleKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -200,6 +211,11 @@ func seedDefaultPermissions() {
 		"create_clients":           true,
 		"view_admin_clients":       true,
 		"edit_admin_clients_30min": true,
+		// Client CRM defaults — the Super Admin can change any of these.
+		"manage_client_services": true,
+		"view_network_plans":     true,
+		"edit_network_plans":     true,
+		"view_plan_passwords":    true,
 	}
 	// Supervisor defaults
 	supervisorPerms := map[string]bool{
@@ -222,6 +238,10 @@ func seedDefaultPermissions() {
 		"create_clients":            false,
 		"view_admin_clients":        false,
 		"edit_admin_clients_30min":  false,
+		"manage_client_services":    true,
+		"view_network_plans":        true,
+		"edit_network_plans":        true,
+		"view_plan_passwords":       false,
 	}
 	// Staff defaults
 	staffPerms := map[string]bool{
@@ -244,6 +264,10 @@ func seedDefaultPermissions() {
 		"create_clients":            false,
 		"view_admin_clients":        false,
 		"edit_admin_clients_30min":  false,
+		"manage_client_services":    false,
+		"view_network_plans":        true,
+		"edit_network_plans":        false,
+		"view_plan_passwords":       false,
 	}
 
 	rolePerms := map[string]map[string]bool{

@@ -19,7 +19,13 @@ export const PERMISSION_KEYS = {
   // (Client Entry)" roles), see internal/handlers/client_edit.go.
   CREATE_CLIENTS: 'create_clients',
   VIEW_ADMIN_CLIENTS: 'view_admin_clients',
-  EDIT_ADMIN_CLIENTS_30MIN: 'edit_admin_clients_30min'
+  EDIT_ADMIN_CLIENTS_30MIN: 'edit_admin_clients_30min',
+  // Client CRM (internal/handlers/client_crm.go): products & services and the
+  // per-client IP Plan / Transmission Plan sheets.
+  MANAGE_CLIENT_SERVICES: 'manage_client_services',
+  VIEW_NETWORK_PLANS: 'view_network_plans',
+  EDIT_NETWORK_PLANS: 'edit_network_plans',
+  VIEW_PLAN_PASSWORDS: 'view_plan_passwords'
 };
 
 export const PERMISSION_LABELS = {
@@ -41,7 +47,11 @@ export const PERMISSION_LABELS = {
   [PERMISSION_KEYS.ARCHIVE_RECORDS]: 'Archive & Restore Projects, Tasks & Tickets',
   [PERMISSION_KEYS.CREATE_CLIENTS]: 'Create Clients',
   [PERMISSION_KEYS.VIEW_ADMIN_CLIENTS]: 'View Clients Added by Admins',
-  [PERMISSION_KEYS.EDIT_ADMIN_CLIENTS_30MIN]: 'Edit Admin-Added Clients (30 min, then on approval)'
+  [PERMISSION_KEYS.EDIT_ADMIN_CLIENTS_30MIN]: 'Edit Admin-Added Clients (30 min, then on approval)',
+  [PERMISSION_KEYS.MANAGE_CLIENT_SERVICES]: 'Manage Client Products & Services',
+  [PERMISSION_KEYS.VIEW_NETWORK_PLANS]: 'View Client IP & Transmission Plans',
+  [PERMISSION_KEYS.EDIT_NETWORK_PLANS]: 'Edit Client IP & Transmission Plans',
+  [PERMISSION_KEYS.VIEW_PLAN_PASSWORDS]: 'View Transmission Plan Passwords'
 };
 
 // Default role -> permission matrix. Super Admin is deliberately excluded —
@@ -66,7 +76,11 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.ARCHIVE_RECORDS]: true,
     [PERMISSION_KEYS.CREATE_CLIENTS]: true,
     [PERMISSION_KEYS.VIEW_ADMIN_CLIENTS]: true,
-    [PERMISSION_KEYS.EDIT_ADMIN_CLIENTS_30MIN]: true
+    [PERMISSION_KEYS.EDIT_ADMIN_CLIENTS_30MIN]: true,
+    [PERMISSION_KEYS.MANAGE_CLIENT_SERVICES]: true,
+    [PERMISSION_KEYS.VIEW_NETWORK_PLANS]: true,
+    [PERMISSION_KEYS.EDIT_NETWORK_PLANS]: true,
+    [PERMISSION_KEYS.VIEW_PLAN_PASSWORDS]: true
   },
   supervisor: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -87,7 +101,11 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.ARCHIVE_RECORDS]: false,
     [PERMISSION_KEYS.CREATE_CLIENTS]: false,
     [PERMISSION_KEYS.VIEW_ADMIN_CLIENTS]: false,
-    [PERMISSION_KEYS.EDIT_ADMIN_CLIENTS_30MIN]: false
+    [PERMISSION_KEYS.EDIT_ADMIN_CLIENTS_30MIN]: false,
+    [PERMISSION_KEYS.MANAGE_CLIENT_SERVICES]: true,
+    [PERMISSION_KEYS.VIEW_NETWORK_PLANS]: true,
+    [PERMISSION_KEYS.EDIT_NETWORK_PLANS]: true,
+    [PERMISSION_KEYS.VIEW_PLAN_PASSWORDS]: false
   },
   staff: {
     [PERMISSION_KEYS.MANAGE_USERS]: false,
@@ -108,7 +126,11 @@ export const DEFAULT_PERMISSION_MATRIX = {
     [PERMISSION_KEYS.ARCHIVE_RECORDS]: false,
     [PERMISSION_KEYS.CREATE_CLIENTS]: false,
     [PERMISSION_KEYS.VIEW_ADMIN_CLIENTS]: false,
-    [PERMISSION_KEYS.EDIT_ADMIN_CLIENTS_30MIN]: false
+    [PERMISSION_KEYS.EDIT_ADMIN_CLIENTS_30MIN]: false,
+    [PERMISSION_KEYS.MANAGE_CLIENT_SERVICES]: false,
+    [PERMISSION_KEYS.VIEW_NETWORK_PLANS]: true,
+    [PERMISSION_KEYS.EDIT_NETWORK_PLANS]: false,
+    [PERMISSION_KEYS.VIEW_PLAN_PASSWORDS]: false
   }
 };
 
@@ -306,6 +328,29 @@ export function canManageVendors(user, permissionMatrix = DEFAULT_PERMISSION_MAT
   if (!user) return false;
   if (user.role === 'super_admin') return true;
   return !!permissionMatrix?.[user.role]?.[PERMISSION_KEYS.MANAGE_VENDORS];
+}
+
+// Client CRM (client_crm.go). The Super Admin always has all of these; other
+// roles get them from the permission matrix. The server checks again — these
+// only decide which buttons to show.
+const hasMatrixPermission = (user, key, permissionMatrix) => {
+  if (!user) return false;
+  if (user.role === 'super_admin') return true;
+  return !!permissionMatrix?.[user.role]?.[key];
+};
+export function canManageClientServices(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  return hasMatrixPermission(user, PERMISSION_KEYS.MANAGE_CLIENT_SERVICES, permissionMatrix);
+}
+export function canViewNetworkPlans(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  return hasMatrixPermission(user, PERMISSION_KEYS.VIEW_NETWORK_PLANS, permissionMatrix);
+}
+export function canEditNetworkPlans(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  return canViewNetworkPlans(user, permissionMatrix)
+    && hasMatrixPermission(user, PERMISSION_KEYS.EDIT_NETWORK_PLANS, permissionMatrix);
+}
+export function canViewPlanPasswords(user, permissionMatrix = DEFAULT_PERMISSION_MATRIX) {
+  return canViewNetworkPlans(user, permissionMatrix)
+    && hasMatrixPermission(user, PERMISSION_KEYS.VIEW_PLAN_PASSWORDS, permissionMatrix);
 }
 
 // Archive and restore projects, tasks, tickets and subtasks (the backend's

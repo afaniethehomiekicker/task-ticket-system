@@ -1169,8 +1169,14 @@ export const AppProvider = ({ children }) => {
       client: normalizeClient(data.client),
       counts: data.counts || {},
       projects: (data.projects || []).map(normalizeProject).filter(Boolean),
-      tickets: (data.tickets || []).map(normalizeTicket).filter(Boolean),
+      // The 360° view shows who each ticket is with (the server includes it).
+      tickets: (data.tickets || []).map(t => {
+        const n = normalizeTicket(t);
+        return n && { ...n, assignedToName: t.assigned_to?.name || '' };
+      }).filter(Boolean),
       feasibilities: (data.feasibilities || []).map(normalizeFeasibility).filter(Boolean),
+      // Client CRM numbers (services, plans) — client_overview.go.
+      crm: data.crm || {},
       recentTasks: (data.recent_tasks || []).map(normalizeTask).filter(Boolean),
       activity: (data.activity || []).map(normalizeAuditLog).filter(Boolean),
     };
@@ -2877,8 +2883,11 @@ export const AppProvider = ({ children }) => {
   };
 
   const convertFeasibilityToProject = async (feasibilityId, projectData) => {
+    // Returns { ok: true } or { ok: false, error } — the drawer shows the
+    // error (it used to fail silently, so a refused conversion looked like
+    // nothing happened).
     const targetId = getBackendId(feasibilityId);
-    if (!targetId) return;
+    if (!targetId) return { ok: false, error: 'Feasibility not found' };
 
     try {
       const res = await apiFetch(`/api/feasibilities/${targetId}/convert`, {
@@ -2906,9 +2915,13 @@ export const AppProvider = ({ children }) => {
           const newProject = normalizeProject(resData.project);
           setProjects(prev => [newProject, ...prev]);
         }
+        return { ok: true, project: resData.project };
       }
+      const errData = await res.json().catch(() => ({}));
+      return { ok: false, error: errData.error || `Conversion failed (${res.status})` };
     } catch (err) {
       console.error('Failed to sync convertFeasibilityToProject to API:', err);
+      return { ok: false, error: 'Could not reach the server' };
     }
   };
 

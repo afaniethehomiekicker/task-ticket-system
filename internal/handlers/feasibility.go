@@ -928,16 +928,16 @@ func ConvertFeasibilityToProject(c *gin.Context) {
 		return
 	}
 
-	// Must have at least one feasible vendor
+	// Must have at least one feasible vendor (a withdrawn one doesn't count).
 	hasFeasible := false
 	for _, v := range feasibility.Vendors {
-		if v.Status == "feasible" {
+		if v.Status == "feasible" && !v.Withdrawn {
 			hasFeasible = true
 			break
 		}
 	}
 	if !hasFeasible {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot convert: no vendor marked as feasible"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Can't convert yet: mark at least one vendor as Feasible first"})
 		return
 	}
 

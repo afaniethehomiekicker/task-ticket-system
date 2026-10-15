@@ -30,6 +30,7 @@ func EnsureIDCounters() {
 		{"USR", "users", "user_number"},
 		{"DEP", "departments", "dept_number"},
 		{"VEN", "vendors", "vendor_number"},
+		{"SVC", "client_services", "service_number"},
 	}
 	for _, s := range sources {
 		pattern := "^" + s.prefix + "-[0-9]+$"

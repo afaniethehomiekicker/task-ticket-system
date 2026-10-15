@@ -103,6 +103,24 @@ func RegisterRoutes(r *gin.Engine) {
 				clients.GET("/:id", handlers.GetClient)
 				// Client 360° view (spec slide 10).
 				clients.GET("/:id/overview", handlers.GetClientOverview)
+				// Client CRM foundation (client_crm.go): ticket picker / check
+				// for plan changes, change history, and the caller's CRM rights.
+				clients.GET("/:id/ticket-options", handlers.GetClientTicketOptions)
+				clients.GET("/:id/ticket-check", handlers.CheckClientTicket)
+				clients.GET("/:id/changes", handlers.GetClientChanges)
+				clients.GET("/:id/crm-access", handlers.GetClientCRMAccess)
+				// Client products & services (client_services.go); the
+				// manage_client_services check is inside the handlers.
+				clients.GET("/service-products", handlers.GetServiceProducts)
+				clients.GET("/:id/services", handlers.GetClientServices)
+				clients.POST("/:id/services", handlers.CreateClientService)
+				clients.PUT("/:id/services/:serviceId", handlers.UpdateClientService)
+				clients.GET("/:id/services/:serviceId/plans", handlers.GetServicePlanRows)
+				// IP Plan / Transmission Plan sheets (client_plans.go);
+				// permission checks are inside the handlers.
+				clients.GET("/:id/plans/:plan", handlers.GetClientPlan)
+				clients.POST("/:id/plans/:plan/changes", handlers.SaveClientPlanChanges)
+				clients.POST("/:id/plans/:plan/rows/:rowId/secret", handlers.RevealPlanSecret)
 				// Management edits any client; staff with "Edit Admin-Added
 				// Clients" edit admin-added ones for 30 minutes, then on
 				// approval — checked inside (client_edit.go).
@@ -244,6 +262,10 @@ func RegisterRoutes(r *gin.Engine) {
 			protected.PUT("/pins/:type/:id", handlers.AddPin)
 			protected.DELETE("/pins/:type/:id", handlers.RemovePin)
 			// "I'm working on this" markers (working.go).
+			// Plan sheet column titles (plan_columns.go); renaming is
+			// Super Admin only, checked in the handler.
+			protected.GET("/plan-column-labels", handlers.GetPlanColumnLabels)
+			protected.PUT("/plan-column-labels/:plan", handlers.SavePlanColumnLabels)
 			protected.GET("/working", handlers.GetWorkSessions)
 			protected.PUT("/working/:type/:id", handlers.StartWorkSession)
 			protected.DELETE("/working/:type/:id", handlers.StopWorkSession)
